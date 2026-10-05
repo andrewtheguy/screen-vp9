@@ -56,10 +56,31 @@ const Q_FINEST: u32 = 8;
 /// VP9's coarsest quantizer.
 const Q_COARSEST: u32 = 63;
 
-/// libvpx's encoder speed, 0–9, higher being faster and worse. 7 is inside the
-/// 5–8 band libvpx's own live-encoding guidance names, and where the one other
-/// real-time desktop encoder to consult sits. Measured rather than inherited.
-const CPU_USED: c_int = 7;
+/// How much of libvpx's search an encoder spends on a frame: its speed setting,
+/// 0–9, higher being faster and worse. An encoder starts at [`Speed::Usual`] and
+/// is moved on the fly ([`Encoder::set_speed`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Speed {
+    /// Speed 7: inside the 5–8 band libvpx's own live-encoding guidance names,
+    /// and where the one other real-time desktop encoder to consult sits.
+    /// Measured rather than inherited. For a picture that is the stream.
+    #[default]
+    Usual,
+    /// Speed 9, the fastest libvpx's real-time VP9 has: more bytes and a rougher
+    /// picture for the least time in the encoder. For a picture that stands in
+    /// for another one for a while, where the time is worth more than either.
+    Fastest,
+}
+
+impl Speed {
+    /// libvpx's `cpu_used` for this speed.
+    fn cpu_used(self) -> c_int {
+        match self {
+            Self::Usual => 7,
+            Self::Fastest => 9,
+        }
+    }
+}
 
 /// A tile column is about this wide, so libvpx's `tile_columns` is the log2 of
 /// how many of them the picture holds: none under 1920 pixels, two at 1080p,
@@ -346,6 +367,8 @@ pub struct Encoder {
     chroma: Chroma,
     /// The dial in force, which [`Self::set_quality`] moves.
     quality: u8,
+    /// The speed in force, which [`Self::set_speed`] moves.
+    speed: Speed,
     /// Where timestamps are measured from. Real elapsed time rather than a
     /// frame counter, so a pts is a millisecond on the timebase set below: the
     /// desktop decides when a frame happens, and a counter would tell the
@@ -451,6 +474,7 @@ impl Encoder {
             size: (width, height),
             chroma,
             quality,
+            speed: Speed::default(),
             started: std::time::Instant::now(),
             pts: -1,
         };
@@ -469,7 +493,7 @@ impl Encoder {
             // flat colour, hard edges and text, none of which a camera preset
             // expects.
             encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_TUNE_CONTENT, vpx::vp9e_tune_content_VP9E_CONTENT_SCREEN as c_int, "tune_content")?;
-            encoder.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, CPU_USED, "cpuused")?;
+            encoder.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, encoder.speed.cpu_used(), "cpuused")?;
             // Say in the bitstream what the conversion did: BT.601 matrix,
             // studio swing. libvpx writes *unknown* unless told, and a decoder
             // given unknown guesses — Chromium picks BT.709 for anything HD — so
@@ -567,6 +591,25 @@ impl Encoder {
         Ok(())
     }
 
+    /// The speed this encoder is coding at.
+    pub fn speed(&self) -> Speed {
+        self.speed
+    }
+
+    /// Move the speed on the live encoder, without a keyframe, as
+    /// [`Self::set_quality`] moves the dial: the next frame is searched at the
+    /// new speed against the frames before it. A refusal leaves the encoder at
+    /// the speed [`Self::speed`] reports.
+    pub fn set_speed(&mut self, speed: Speed) -> Result<(), Error> {
+        if speed == self.speed {
+            return Ok(());
+        }
+        // SAFETY: the context is live and the control's argument is an `int`.
+        unsafe { self.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, speed.cpu_used(), "cpuused")? };
+        self.speed = speed;
+        Ok(())
+    }
+
     /// Encode `picture` and append the frame to `out`. `keyframe` makes it one a
     /// decoder can start from; the first frame is one either way. Returns whether
     /// the frame is a keyframe, or `None` when the encoder produced no bitstream
@@ -657,7 +700,7 @@ impl Encoder {
 }
 
 // SAFETY: an `Encoder` owns its context exclusively — it is not `Clone`, and
-// `encode` and `set_quality` take `&mut self` — and libvpx keeps no thread-local
+// `encode`, `set_quality` and `set_speed` take `&mut self` — and libvpx keeps no thread-local
 // state for an encoder instance, so moving one between threads is sound. The
 // gateway carries one onto a blocking worker for the encode and back.
 //
@@ -1277,6 +1320,31 @@ mod tests {
 
         encoder.set_quality(0).expect("a clamp");
         assert_eq!(encoder.quality(), QUALITY_MIN, "clamped, not wrapped");
+    }
+
+    /// The speed reaches the running encoder without a keyframe, and the chain
+    /// across the change still decodes to its picture.
+    #[test]
+    fn the_speed_moves_on_a_live_encoder_without_a_keyframe() {
+        let mut encoder = Encoder::new(320, 240, Chroma::Subsampled, 90, 2).expect("an encoder");
+        assert_eq!(encoder.speed(), Speed::Usual);
+        let frame = |encoder: &mut Encoder, step| encode(encoder, &picture(320, 240, Chroma::Subsampled, &moving(step)), false);
+        let mut frames = vec![frame(&mut encoder, 0).0];
+        for speed in [Speed::Fastest, Speed::Usual] {
+            encoder.set_speed(speed).expect("the encoder to accept a new speed");
+            assert_eq!(encoder.speed(), speed);
+            for step in 1..4 {
+                let (data, keyframe) = frame(&mut encoder, step);
+                assert!(!keyframe, "moving the speed cost a keyframe");
+                frames.push(data);
+            }
+        }
+        let decoded = decode_chain(&frames, 320, 240);
+        // Inside the block's last place, and the background far from it.
+        let block = rgb_at(&decoded, 320, 3 * 3 + 50, 3 * 3 + 40);
+        let ground = rgb_at(&decoded, 320, 300, 200);
+        assert!(block.iter().all(|c| c.abs_diff(230) <= 8), "the block decoded as {block:?}");
+        assert!(ground.iter().zip([30u8, 60, 90]).all(|(c, want)| c.abs_diff(want) <= 8), "the background decoded as {ground:?}");
     }
 
     /// An odd side is carried as it is, at both chromas, and decodes at its own
