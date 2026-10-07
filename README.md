@@ -20,6 +20,15 @@ libvpx comes from [libvpx-prebuilt](https://github.com/andrewtheguy/libvpx-prebu
 static archive for macOS arm64, Linux x86_64 and aarch64 and Windows x86_64;
 nothing is configured or installed at build time.
 
+`examples/bench.rs` times two encoders against each other on a captured IVF
+stream, interleaved frame by frame so that load on the machine lands on both,
+and reports the ratio of their times with the bytes and PSNR each made. Naming
+one candidate twice measures the harness itself:
+
+```sh
+cargo run --release --example bench -- capture.ivf 90 5 --a libvpx --b libvpx
+```
+
 Use it by release tag:
 
 ```toml
