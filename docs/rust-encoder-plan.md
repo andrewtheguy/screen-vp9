@@ -82,7 +82,7 @@ keyframe-on-request flag, `set_quality`, `set_speed` and `Picture`.
 ## Test material
 
 Six IVF captures, kept out of git in `tmp/` (copies in
-`/mnt/dasdata/backup/screen-vp9-capture`):
+`/mnt/dasdata/backup/vp9-artifacts`):
 
 | Capture | Content | Size, chroma, quality | Threads |
 |---|---|---|---|
