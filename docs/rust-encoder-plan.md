@@ -10,6 +10,9 @@ Decoding stays with libvpx permanently.
   independent decoder every encoder test needs.
 - **Location:** a module inside this crate, behind the existing `Encoder` API.
   It is meant for screen-vp9 only.
+- **Branch:** the work is merged into `rust-encoder`, a long-lived branch off
+  `main`, so that `main` keeps taking other changes and releases. `rust-encoder`
+  takes `main` in as it moves and is merged into `main` once, at switch over.
 - **No fallback:** when the Rust encoder passes the gate, the libvpx encoder
   path is deleted, not kept behind a feature. Until then the module is reachable
   only from tests and the benchmark.
