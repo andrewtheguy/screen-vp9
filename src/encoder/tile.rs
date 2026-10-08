@@ -8,16 +8,18 @@
 //! vary more, since a smaller block's DC prediction comes from nearer pixels
 //! and its transform keeps an edge's energy to itself. In an inter frame a
 //! square is measured against both of its predictions, the previous frame
-//! where it is and DC, and takes the one it varies less from. A square whose
-//! source is what it was in the previous frame is the previous frame's,
-//! skipped, without being measured; one that is so only in part is split.
+//! at the vectors a decoder predicts for it and DC, and takes the one it
+//! varies least from. A square whose source is what it was in the previous
+//! frame is the previous frame's, skipped, without being measured; one that
+//! is so only in part is split.
 
-use super::bool_writer::BoolWriter;
+use super::bool_writer::{self, BoolWriter};
+use super::mv::{self, Mv};
 use super::predict::{self, Edges};
 use super::quantize::Quantizer;
 use super::tables::{
-    INTER_MODE_PROBS, INTRA_INTER_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, PARTITION_PROBS, SINGLE_REF_PROBS, SKIP_PROBS,
-    UV_MODE_PROBS, Y_MODE_PROBS,
+    INTER_MODE_PROBS, INTRA_INTER_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, MV_REF_BLOCKS, PARTITION_PROBS, SINGLE_REF_PROBS,
+    SKIP_PROBS, UV_MODE_PROBS, Y_MODE_PROBS,
 };
 use super::{Geometry, Reconstruction, tokens, transform};
 
@@ -35,21 +37,9 @@ const SB_LOG2: u32 = 3;
 /// third more bytes and 1–3 dB.
 const SPLIT_VARIANCE: i64 = 8;
 
-/// Per square size, 8×8 to 64×64, the two neighbours whose modes give an
-/// inter block's mode context, as (row, column) offsets in 8×8s: the first
-/// two of libvpx's `mv_ref_blocks`.
-const MODE_NEIGHBOURS: [[(isize, isize); 2]; 4] = [[(-1, 0), (0, -1)], [(-1, 0), (0, -1)], [(-1, 1), (1, -1)], [(-1, 3), (3, -1)]];
-
-/// What a neighbour adds to the mode context's counter (libvpx's
-/// `mode_2_counter`): an intra block, a `NEARESTMV` one and a `ZEROMV` one.
+/// What an intra neighbour adds to the mode context's counter (libvpx's
+/// `mode_2_counter`); `InterMode::counter` gives the rest.
 const INTRA_COUNT: usize = 9;
-const NEARESTMV_COUNT: usize = 0;
-const ZEROMV_COUNT: usize = 3;
-
-/// How far, in 8×8s, a block may reach past the frame's bottom or right edge
-/// before a decoder clamps the vectors it predicts for it away from zero
-/// (libvpx's `clamp_mv_ref`, which allows 16 pixels).
-const MV_BORDER: usize = 2;
 
 /// libvpx's `counter_to_context`; 9 marks a counter two neighbours cannot
 /// add up to.
@@ -83,30 +73,75 @@ pub(super) struct Previous<'a> {
 enum Mode {
     /// DC prediction.
     Intra,
-    /// The previous frame where the block is, and the residual against it.
-    Zero,
+    /// The previous frame at a vector from where the block is, and the
+    /// residual against it.
+    Inter(Mv),
     /// The previous frame where the block is, as it is: the source has not
     /// changed there, so nothing is coded but the skip.
     Unchanged,
 }
 
-/// What a decoder keeps of a coded 8×8 that the blocks after it read.
+/// How an inter block's vector is coded, in the order of the inter mode
+/// tree's leaves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InterMode {
+    /// The zero vector.
+    Zero,
+    /// The first vector a decoder predicts.
+    Nearest,
+    /// The second.
+    Near,
+    /// A vector of its own, coded against the first predicted.
+    New,
+}
+
+impl InterMode {
+    /// What a neighbour coded this way adds to the mode context's counter
+    /// (libvpx's `mode_2_counter`).
+    fn counter(self) -> usize {
+        match self {
+            InterMode::Nearest | InterMode::Near => 0,
+            InterMode::Zero => 3,
+            InterMode::New => 1,
+        }
+    }
+
+    /// The bools of the inter mode tree down to this leaf: one per node
+    /// passed, the last node's taken only when this is not the deepest leaf.
+    fn bits(self) -> impl Iterator<Item = (bool, usize)> {
+        let depth = self as usize;
+        (0..(depth + 1).min(3)).map(move |node| (node < depth, node))
+    }
+
+    /// What coding this mode costs at the probabilities of a mode context,
+    /// in 256ths of a bit.
+    fn cost(self, probs: &[u8; 3]) -> u32 {
+        self.bits().map(|(b, node)| bool_writer::cost(b, probs[node])).sum()
+    }
+}
+
+/// What a decoder keeps of a coded 8×8 that the blocks after it read, and
+/// the next frame's read of its vector.
 #[derive(Clone, Copy, Default)]
-struct ModeInfo {
+pub(super) struct ModeInfo {
     skip: bool,
-    inter: bool,
-    /// An inter block coded as `ZEROMV` rather than `NEARESTMV`.
-    zeromv: bool,
+    /// How an inter block's vector was coded, and the vector; none for an
+    /// intra block.
+    inter: Option<(InterMode, Mv)>,
 }
 
 /// What a frame's tiles share: the contexts read across a tile's top edge,
-/// and the mode info of every 8×8 coded so far.
+/// and the mode info of every 8×8 coded so far, and of the frame before.
 pub(super) struct FrameContexts {
     above_partition: Vec<u8>,
     /// Per plane, per column of 4×4: whether the transform block above had
     /// a coefficient.
     above_nonzero: [Vec<u8>; 3],
     mode_info: Vec<ModeInfo>,
+    last_mode_info: Vec<ModeInfo>,
+    /// Whether a decoder predicts vectors from the frame before's too:
+    /// when that was an inter frame (libvpx's `use_prev_frame_mvs`).
+    use_last: bool,
 }
 
 impl FrameContexts {
@@ -115,16 +150,22 @@ impl FrameContexts {
             above_partition: vec![0; geometry.sb_cols * 8],
             above_nonzero: std::array::from_fn(|_| vec![0; geometry.sb_cols * 16]),
             mode_info: vec![ModeInfo::default(); geometry.mi_rows * geometry.mi_cols],
+            last_mode_info: vec![ModeInfo::default(); geometry.mi_rows * geometry.mi_cols],
+            use_last: false,
         }
     }
 
-    /// Back to how a decoder starts a frame.
-    pub(super) fn clear(&mut self) {
+    /// Back to how a decoder starts a frame, the mode info coded last kept
+    /// as the frame before's. `last_inter` says whether that frame was an
+    /// inter frame.
+    pub(super) fn start(&mut self, last_inter: bool) {
         self.above_partition.fill(0);
         for plane in &mut self.above_nonzero {
             plane.fill(0);
         }
+        std::mem::swap(&mut self.mode_info, &mut self.last_mode_info);
         self.mode_info.fill(ModeInfo::default());
+        self.use_last = last_inter;
     }
 }
 
@@ -159,9 +200,24 @@ struct Measure {
     residual: Moments,
 }
 
-/// The eight pixels of `row` from `x`, the last pixel repeated past its end.
-fn eight(row: &[u8], x: usize) -> [u8; 8] {
-    std::array::from_fn(|i| row[(x + i).min(row.len() - 1)])
+/// Fill `out` from `row` at column `x` on, as a decoder reads a reference
+/// frame: past either end of the row, the pixel at that end.
+fn read_row(out: &mut [u8], row: &[u8], x: isize) {
+    let w = row.len() as isize;
+    if x >= 0 && x + out.len() as isize <= w {
+        out.copy_from_slice(&row[x as usize..][..out.len()]);
+    } else {
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = row[(x + i as isize).clamp(0, w - 1) as usize];
+        }
+    }
+}
+
+/// The eight pixels of `row` from `x`, read as `read_row` reads them.
+fn eight(row: &[u8], x: isize) -> [u8; 8] {
+    let mut out = [0; 8];
+    read_row(&mut out, row, x);
+    out
 }
 
 /// The coder of one tile of a frame.
@@ -267,38 +323,75 @@ impl<'a> Tile<'a> {
     }
 
     /// The measures of every 8×8 of the superblock at `(mi_row, mi_col)`
-    /// that the frame holds, of the source as it is coded: past the
-    /// picture's edge, its last pixel repeated, and the previous frame's the
-    /// same way, as a decoder reads it.
+    /// that the frame holds, the residual's against the previous frame where
+    /// the 8×8 is.
     fn measure(&mut self, mi_row: usize, mi_col: usize) {
-        let src = self.source;
         let (rows, cols) = self.inside(mi_row, mi_col, SB_LOG2);
         for r in rows {
             for c in cols.clone() {
                 let (px, py) = ((mi_col + c) * 8, (mi_row + r) * 8);
-                let mut m = Measure::default();
-                for plane in 0..3 {
-                    for y in py..py + 8 {
-                        let y = y.min(src.height - 1);
-                        let s = eight(&src.planes[plane][y * src.stride..][..src.width], px);
-                        for v in s {
-                            m.source.sums[plane] += i64::from(v);
-                            m.source.squares += i64::from(v) * i64::from(v);
-                        }
-                        if let Some(previous) = &self.previous {
-                            let reference = previous.reference;
-                            let p = eight(&reference.planes[plane][y * reference.stride..][..src.width], px);
-                            for (a, b) in s.into_iter().zip(p) {
-                                let d = i64::from(a) - i64::from(b);
-                                m.residual.sums[plane] += d;
-                                m.residual.squares += d * d;
-                            }
-                        }
-                    }
-                }
-                self.measures[r * 8 + c] = m;
+                let source = self.source_moments(px, py);
+                let residual = if self.previous.is_some() { self.residual_moments(px, py, Mv::ZERO) } else { Moments::default() };
+                self.measures[r * 8 + c] = Measure { source, residual };
             }
         }
+    }
+
+    /// The row `y` of the source's `plane` as it is coded: past the
+    /// picture's bottom, its last row.
+    fn source_row(&self, plane: usize, y: usize) -> &'a [u8] {
+        let src = self.source;
+        &src.planes[plane][y.min(src.height - 1) * src.stride..][..src.width]
+    }
+
+    /// The moments of the source's 8×8 at `(px, py)` as it is coded: past
+    /// the picture's edges, its last pixels repeated.
+    fn source_moments(&self, px: usize, py: usize) -> Moments {
+        let mut m = Moments::default();
+        for plane in 0..3 {
+            for y in py..py + 8 {
+                for v in eight(self.source_row(plane, y), px as isize) {
+                    m.sums[plane] += i64::from(v);
+                    m.squares += i64::from(v) * i64::from(v);
+                }
+            }
+        }
+        m
+    }
+
+    /// The moments of the source's 8×8 at `(px, py)` less the previous frame
+    /// at `mv` from it, read as a decoder reads it.
+    fn residual_moments(&self, px: usize, py: usize, mv: Mv) -> Moments {
+        let reference = self.previous.as_ref().expect("an inter frame").reference;
+        let (width, height) = (self.source.width, self.source.height);
+        let (dy, dx) = mv.whole();
+        let mut m = Moments::default();
+        for plane in 0..3 {
+            for y in py..py + 8 {
+                let ry = (y as isize + dy).clamp(0, height as isize - 1) as usize;
+                let p = eight(&reference.planes[plane][ry * reference.stride..][..width], px as isize + dx);
+                for (a, b) in eight(self.source_row(plane, y), px as isize).into_iter().zip(p) {
+                    let d = i64::from(a) - i64::from(b);
+                    m.sums[plane] += d;
+                    m.squares += d * d;
+                }
+            }
+        }
+        m
+    }
+
+    /// The moments of the square of `1 << n` 8×8s at `(mi_row, mi_col)`, as
+    /// far as the frame holds it, less the previous frame at `mv` from it.
+    fn square_residual(&self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> Moments {
+        let (rows, cols) = self.inside(mi_row, mi_col, n);
+        let (row0, col0) = (mi_row - (mi_row & 7), mi_col - (mi_col & 7));
+        let mut total = Moments::default();
+        for r in rows {
+            for c in cols.clone() {
+                total.add(&self.residual_moments((col0 + c) * 8, (row0 + r) * 8, mv));
+            }
+        }
+        total
     }
 
     /// How the square of `1 << n` 8×8s at `(mi_row, mi_col)` is coded
@@ -324,9 +417,25 @@ impl<'a> Tile<'a> {
             }
         }
         let intra = total.source.variance(count);
-        let (mode, variance) = match &self.previous {
-            Some(_) if total.residual.variance(count) <= intra => (Mode::Zero, total.residual.variance(count)),
-            _ => (Mode::Intra, intra),
+        let (mode, variance) = match self.previous {
+            Some(_) => {
+                // The vectors a decoder predicts are tried after zero, so a
+                // tie goes to the cheaper to code.
+                let mut best = (Mv::ZERO, total.residual.variance(count));
+                let mut tried = vec![Mv::ZERO];
+                for mv in self.candidates(mi_row, mi_col, n) {
+                    if best.1 == 0 || tried.contains(&mv) {
+                        continue;
+                    }
+                    tried.push(mv);
+                    let variance = self.square_residual(mi_row, mi_col, n, mv).variance(count);
+                    if variance < best.1 {
+                        best = (mv, variance);
+                    }
+                }
+                if best.1 <= intra { (Mode::Inter(best.0), best.1) } else { (Mode::Intra, intra) }
+            }
+            None => (Mode::Intra, intra),
         };
         (n == 0 || variance <= self.split_variance * count * count).then_some(mode)
     }
@@ -385,23 +494,42 @@ impl<'a> Tile<'a> {
         usize::from(left * 2 + above) + n as usize * 4
     }
 
-    /// The mode context of an inter block (libvpx's `get_mode_context`):
-    /// what its two nearest neighbours in the tile were coded as.
-    fn mode_context(&self, mi_row: usize, mi_col: usize, n: u32) -> usize {
+    /// Of the first `count` neighbours a square block of `1 << n` 8×8s at
+    /// `(mi_row, mi_col)` predicts its vectors from, nearest first, those
+    /// that lie in the frame and the tile (libvpx's `mv_ref_blocks` and
+    /// `is_inside`).
+    fn neighbours(&self, mi_row: usize, mi_col: usize, n: u32, count: usize) -> impl Iterator<Item = ModeInfo> + '_ {
         let g = self.geometry;
-        let counter: usize = MODE_NEIGHBOURS[n as usize]
-            .iter()
-            .filter_map(|&(dr, dc)| {
-                let (r, c) = (mi_row.checked_add_signed(dr)?, mi_col.checked_add_signed(dc)?);
-                (r < g.mi_rows && (self.mi_col_start..self.mi_col_end).contains(&c)).then(|| self.contexts.mode_info[r * g.mi_cols + c])
-            })
-            .map(|m| match (m.inter, m.zeromv) {
-                (false, _) => INTRA_COUNT,
-                (true, false) => NEARESTMV_COUNT,
-                (true, true) => ZEROMV_COUNT,
-            })
+        // BLOCK_8X8 is the fourth size, and each square size the third after.
+        MV_REF_BLOCKS[3 + 3 * n as usize][..count].iter().filter_map(move |&[dr, dc]| {
+            let (r, c) = (mi_row.checked_add_signed(dr.into())?, mi_col.checked_add_signed(dc.into())?);
+            (r < g.mi_rows && (self.mi_col_start..self.mi_col_end).contains(&c)).then(|| self.contexts.mode_info[r * g.mi_cols + c])
+        })
+    }
+
+    /// The mode context of an inter block (libvpx's `get_mode_context`):
+    /// what the first two of its neighbours were coded as.
+    fn mode_context(&self, mi_row: usize, mi_col: usize, n: u32) -> usize {
+        let counter: usize = self
+            .neighbours(mi_row, mi_col, n, 2)
+            .map(|m| m.inter.map_or(INTRA_COUNT, |(mode, _)| mode.counter()))
             .sum();
         COUNTER_TO_CONTEXT[counter]
+    }
+
+    /// The two vectors a decoder predicts for a square block of `1 << n`
+    /// 8×8s at `(mi_row, mi_col)`, nearest first, coding against the
+    /// previous frame alone (libvpx's `dec_find_mv_refs`): the first two
+    /// different vectors among its inter neighbours and then the block's own
+    /// place in the frame before, if that was an inter frame; zero for each
+    /// not found; both clamped near the frame.
+    fn candidates(&self, mi_row: usize, mi_col: usize, n: u32) -> [Mv; 2] {
+        let g = self.geometry;
+        let last = self.contexts.use_last.then(|| self.contexts.last_mode_info[mi_row * g.mi_cols + mi_col]);
+        let mut found = self.neighbours(mi_row, mi_col, n, MV_REF_BLOCKS[0].len()).chain(last).filter_map(|m| m.inter.map(|(_, mv)| mv));
+        let nearest = found.next().unwrap_or(Mv::ZERO);
+        let near = found.find(|&mv| mv != nearest).unwrap_or(Mv::ZERO);
+        [nearest, near].map(|mv| mv.clamp((mi_row, mi_col), 1 << n, (g.mi_rows, g.mi_cols)))
     }
 
     /// Code the square block of `1 << n` 8×8s at `(mi_row, mi_col)` in
@@ -411,19 +539,15 @@ impl<'a> Tile<'a> {
         let g = self.geometry;
         self.reconstruct(mi_row, mi_col, n, mode);
         let skip = self.eobs.iter().flatten().all(|&eob| eob == 0);
-        let inter = mode != Mode::Intra;
+        let inter = match mode {
+            Mode::Intra => None,
+            Mode::Inter(mv) => Some(self.inter_mode(mi_row, mi_col, n, mv)),
+            Mode::Unchanged => Some(self.inter_mode(mi_row, mi_col, n, Mv::ZERO)),
+        };
         let above = (mi_row > 0).then(|| self.contexts.mode_info[(mi_row - 1) * g.mi_cols + mi_col]);
         let left = (mi_col > self.mi_col_start).then(|| self.contexts.mode_info[mi_row * g.mi_cols + mi_col - 1]);
         let skips = usize::from(above.is_some_and(|m| m.skip)) + usize::from(left.is_some_and(|m| m.skip));
-        // The zero vector, as NEARESTMV where a decoder finds it to be the
-        // nearest: while every vector in the stream is zero, so is every
-        // candidate, but a block reaching far past the frame's edge has
-        // its candidates clamped away from zero and has to say ZEROMV. The
-        // default probabilities expect NEARESTMV: beside two zero vectors
-        // ZEROMV costs 7 bits, NEARESTMV a little over half of one, and
-        // NEARESTMV is the cheaper in every context.
         let bw = 1 << n;
-        let zeromv = inter && (mi_row + bw > g.mi_rows + MV_BORDER || mi_col + bw > g.mi_cols + MV_BORDER);
         self.w.write(skip, SKIP_PROBS[skips]);
         if self.previous.is_none() {
             // The luma mode's probabilities are chosen by the modes above and
@@ -433,25 +557,28 @@ impl<'a> Tile<'a> {
             self.w.write(false, KF_UV_MODE_PROBS[DC_PRED][0]);
         } else {
             // libvpx's `get_intra_inter_context`.
+            let is_intra = |m: &ModeInfo| m.inter.is_none();
             let ctx = match (above, left) {
-                (Some(a), Some(l)) if !a.inter && !l.inter => 3,
-                (Some(a), Some(l)) => usize::from(!a.inter || !l.inter),
-                (Some(m), None) | (None, Some(m)) => 2 * usize::from(!m.inter),
+                (Some(a), Some(l)) if is_intra(&a) && is_intra(&l) => 3,
+                (Some(a), Some(l)) => usize::from(is_intra(&a) || is_intra(&l)),
+                (Some(m), None) | (None, Some(m)) => 2 * usize::from(is_intra(&m)),
                 (None, None) => 0,
             };
-            self.w.write(inter, INTRA_INTER_PROBS[ctx]);
-            if inter {
+            self.w.write(inter.is_some(), INTRA_INTER_PROBS[ctx]);
+            if let Some((mode, mv)) = inter {
                 // LAST, the reference tree's first leaf, at libvpx's
                 // `vp9_get_pred_context_single_ref_p1` when LAST is the only
                 // reference: 4 beside an inter block, 2 otherwise.
-                let ctx = if above.is_some_and(|m| m.inter) || left.is_some_and(|m| m.inter) { 4 } else { 2 };
+                let ctx = if above.is_some_and(|m| !is_intra(&m)) || left.is_some_and(|m| !is_intra(&m)) { 4 } else { 2 };
                 self.w.write(false, SINGLE_REF_PROBS[ctx][0]);
-                // ZEROMV is the inter mode tree's first leaf, NEARESTMV its
-                // second.
                 let probs = INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)];
-                self.w.write(!zeromv, probs[0]);
-                if !zeromv {
-                    self.w.write(false, probs[1]);
+                for (b, node) in mode.bits() {
+                    self.w.write(b, probs[node]);
+                }
+                if mode == InterMode::New {
+                    let nearest = self.candidates(mi_row, mi_col, n)[0];
+                    let w = &mut self.w;
+                    mv::code(mv - nearest, |b, p| w.write(b, p));
                 }
             } else {
                 // DC, at the probabilities of the block's size group.
@@ -460,7 +587,7 @@ impl<'a> Tile<'a> {
             }
         }
         for row in mi_row..(mi_row + bw).min(g.mi_rows) {
-            self.contexts.mode_info[row * g.mi_cols + mi_col..][..bw.min(g.mi_cols - mi_col)].fill(ModeInfo { skip, inter, zeromv });
+            self.contexts.mode_info[row * g.mi_cols + mi_col..][..bw.min(g.mi_cols - mi_col)].fill(ModeInfo { skip, inter });
         }
         if skip {
             // A skipped block leaves no coefficient above or left of the
@@ -471,8 +598,26 @@ impl<'a> Tile<'a> {
                 self.left_nonzero[plane][y4..y4 + 2 * bw].fill(0);
             }
         } else {
-            self.tokens(mi_row, mi_col, n, inter);
+            self.tokens(mi_row, mi_col, n, inter.is_some());
         }
+    }
+
+    /// The cheapest way to code `mv` for the square block of `1 << n` 8×8s
+    /// at `(mi_row, mi_col)`: as zero, as a vector a decoder predicts for
+    /// the block, or as a new one against the nearest of those.
+    fn inter_mode(&self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> (InterMode, Mv) {
+        let [nearest, near] = self.candidates(mi_row, mi_col, n);
+        let probs = &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)];
+        let new = (mv != nearest).then(|| (InterMode::New.cost(probs) + mv::cost(mv - nearest), InterMode::New));
+        let mode = [(InterMode::Zero, Mv::ZERO), (InterMode::Nearest, nearest), (InterMode::Near, near)]
+            .into_iter()
+            .filter(|&(_, predicted)| predicted == mv)
+            .map(|(mode, _)| (mode.cost(probs), mode))
+            .chain(new)
+            .min_by_key(|&(cost, _)| cost)
+            .expect("a new vector when no other way fits")
+            .1;
+        (mode, mv)
     }
 
     /// The transform blocks of a block at `(mi_row, mi_col)`, in the order
@@ -488,26 +633,24 @@ impl<'a> Tile<'a> {
         (tx, (0..high).step_by(tx).flat_map(move |y| (0..wide).step_by(tx).map(move |x| (x, y))))
     }
 
-    /// Predict the block from the previous frame where it is, over the part
-    /// of it inside the frame's edge rounded up to 8: as a decoder does, past
-    /// the picture's edge the previous frame's last pixel repeats.
-    fn predict_inter(&mut self, mi_row: usize, mi_col: usize, n: u32) {
+    /// Predict the block from the previous frame at `mv` from where it is,
+    /// over the part of it inside the frame's edge rounded up to 8: as a
+    /// decoder does, past the picture's edges the previous frame's edge
+    /// pixels repeat.
+    fn predict_inter(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) {
         let g = self.geometry;
         let reference = self.previous.as_ref().expect("an inter frame").reference;
         let (width, height) = (self.source.width, self.source.height);
+        let (dy, dx) = mv.whole();
         let size = 8 << n;
         let (px, py) = (mi_col * 8, mi_row * 8);
         let wide = size.min(g.mi_cols * 8 - px);
         let high = size.min(g.mi_rows * 8 - py);
-        // The picture's edge is never left of a block's corner.
-        let copied = wide.min(width - px);
         let stride = self.recon.stride;
         for (plane, recon) in self.recon.planes.iter_mut().enumerate() {
             for y in py..py + high {
-                let from = &reference.planes[plane][y.min(height - 1) * reference.stride..][..width];
-                let to = &mut recon[y * stride + px..][..wide];
-                to[..copied].copy_from_slice(&from[px..px + copied]);
-                to[copied..].fill(from[width - 1]);
+                let ry = (y as isize + dy).clamp(0, height as isize - 1) as usize;
+                read_row(&mut recon[y * stride + px..][..wide], &reference.planes[plane][ry * reference.stride..][..width], px as isize + dx);
             }
         }
     }
@@ -516,8 +659,10 @@ impl<'a> Tile<'a> {
     /// the ones before it, keeping their levels to be written.
     fn reconstruct(&mut self, mi_row: usize, mi_col: usize, n: u32, mode: Mode) {
         let g = self.geometry;
-        if mode != Mode::Intra {
-            self.predict_inter(mi_row, mi_col, n);
+        match mode {
+            Mode::Intra => {}
+            Mode::Inter(mv) => self.predict_inter(mi_row, mi_col, n, mv),
+            Mode::Unchanged => self.predict_inter(mi_row, mi_col, n, Mv::ZERO),
         }
         let (tx, blocks) = self.transform_blocks(mi_row, mi_col, n);
         let blocks: Vec<_> = blocks.collect();

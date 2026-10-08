@@ -12,6 +12,7 @@
 mod bool_writer;
 mod dct;
 mod header;
+mod mv;
 mod predict;
 mod quantize;
 mod tables;
@@ -86,6 +87,9 @@ pub(crate) struct Encoder {
     unchanged: Vec<bool>,
     /// Whether a frame has been coded, so the next can be an inter frame.
     started: bool,
+    /// Whether the frame coded last was an inter frame, whose vectors a
+    /// decoder predicts the next frame's from.
+    last_inter: bool,
     /// Whether every block is to be coded again, unchanged or not: after the
     /// quantizer moves.
     requantize: bool,
@@ -116,6 +120,7 @@ impl Encoder {
             previous: std::array::from_fn(|_| vec![0; pixels]),
             unchanged: vec![false; geometry.mi_rows * geometry.mi_cols],
             started: false,
+            last_inter: false,
             requantize: false,
             geometry,
         })
@@ -148,7 +153,7 @@ impl Encoder {
         }
         let keyframe = keyframe || !self.started;
         self.compare(picture, keyframe || self.requantize);
-        self.contexts.clear();
+        self.contexts.start(self.last_inter);
         let g = &self.geometry;
         let q_index = tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize];
         let quantizer = quantize::Quantizer::new(q_index);
@@ -181,6 +186,7 @@ impl Encoder {
         }
         std::mem::swap(&mut self.recon, &mut self.reference);
         self.started = true;
+        self.last_inter = !keyframe;
         self.requantize = false;
         Ok(keyframe)
     }

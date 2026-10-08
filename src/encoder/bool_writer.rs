@@ -83,6 +83,12 @@ impl BoolWriter {
     }
 }
 
+/// What coding `bit` at `probability` costs, in 256ths of a bit.
+pub(super) fn cost(bit: bool, probability: u8) -> u32 {
+    let p = if bit { 256 - u32::from(probability) } else { u32::from(probability) };
+    (-(f64::from(p) / 256.0).log2() * 256.0).round() as u32
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
