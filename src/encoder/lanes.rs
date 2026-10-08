@@ -4,11 +4,14 @@
 //! vector's own operations differ from the scalar ones, which the tests of
 //! each kernel hold them to.
 //!
-//! NEON is always there on arm64. AVX2 is not in amd64's baseline, and the
-//! crate is built for it: `-C target-feature=+avx2`, which this repository's
-//! `.cargo/config.toml` sets and a user's build sets the same way. The
-//! scalar lane is then only the reference.
+//! The crate is built for NEON on arm64 and AVX2 on amd64, and refuses a
+//! build without them, so there is no choosing at run time and the scalar
+//! lane is only the reference. NEON is in every arm64 server's baseline. AVX2
+//! is not in amd64's: `-C target-feature=+avx2`, which this repository's
+//! `.cargo/config.toml` sets and a user's build sets the same way.
 
+#[cfg(all(target_arch = "aarch64", not(target_feature = "neon")))]
+compile_error!("screen-vp9 needs NEON on arm64: build for a target that has it, such as aarch64-unknown-linux-gnu or aarch64-apple-darwin");
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
 compile_error!("screen-vp9 needs AVX2 on amd64: build with `-C target-feature=+avx2`, as its `.cargo/config.toml` does");
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
@@ -117,7 +120,7 @@ pub(super) mod neon {
 
     use super::Lanes;
 
-    // NEON is in every arm64 target's baseline, so the `unsafe` around an
+    // The crate is built for NEON, so the `unsafe` around an
     // intrinsic is only for that, unless a comment says what else it is for.
 
     /// Four `i32` in a NEON register.

@@ -80,9 +80,9 @@ row's second column is built only if the first fails the gate on a capture.
   frame.
 - **Scrolls and window drags:** hash-based whole-pixel motion search, which
   finds exact matches cheaply.
-- **SIMD kernels:** NEON on arm64, where it is always there, and AVX2 on
-  amd64, which the crate is built for (`-C target-feature=+avx2`; a build
-  without it is refused), each with a scalar reference it is tested
+- **SIMD kernels:** NEON on arm64 and AVX2 on amd64, which the crate is
+  built for, refusing a build without them (amd64 needs
+  `-C target-feature=+avx2`), each with a scalar reference it is tested
   against: block difference, forward and inverse transforms, quantization.
 - **Threading:** one thread per tile column, and the comparison with the
   previous source and the motion search's hashing in a band of rows per

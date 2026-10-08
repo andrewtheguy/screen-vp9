@@ -176,7 +176,7 @@ impl Width {
 #[derive(Clone, Copy)]
 struct V(#[cfg(target_arch = "aarch64")] std::arch::aarch64::int16x8_t, #[cfg(target_arch = "x86_64")] std::arch::x86_64::__m128i);
 
-// NEON is in every arm64 target's baseline; each `unsafe` here is for that.
+// The crate is built for NEON; each `unsafe` here is for that.
 #[cfg(target_arch = "aarch64")]
 impl V {
     #[inline(always)]

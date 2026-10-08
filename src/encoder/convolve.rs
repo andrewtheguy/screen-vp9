@@ -99,7 +99,7 @@ mod neon {
 
     use super::{BEFORE, SUBPEL_FILTERS};
 
-    // NEON is in every arm64 target's baseline; each `unsafe` here is for
+    // The crate is built for NEON; each `unsafe` here is for
     // that and for loads and stores inside the slices bounds-checked just
     // before them.
 

@@ -138,7 +138,7 @@ mod neon {
 
     /// `Quantizer::quantize_in` four coefficients at a time.
     pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> (usize, i64) {
-        // NEON is in every arm64 target's baseline, and every load and store
+        // The crate is built for NEON, and every load and store
         // is of four values inside slices of whole fours, `coeffs` and
         // `levels` as long as `iscan`.
         assert!(coeffs.len() == iscan.len() && levels.len() == iscan.len() && iscan.len().is_multiple_of(4));
