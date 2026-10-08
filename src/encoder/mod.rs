@@ -2,10 +2,12 @@
 //! 4:4:4, profile 1, the subset of VP9 the plan's table names and no more.
 //! Reachable only from tests until it passes the plan's gate.
 //!
-//! So far it writes keyframes and nothing else: each superblock split as far
-//! as its source varies, every block DC predicted at the largest transform
-//! that fits it, its residual coded at the dial's quantizer, and the frame
-//! reconstructed exactly as libvpx's decoder reconstructs it.
+//! So far it codes keyframes and inter frames against the frame before, each
+//! superblock split as far as its source varies, every block either DC
+//! predicted or the previous frame where it is, at the largest transform that
+//! fits it, its residual coded at the dial's quantizer, and the frame
+//! reconstructed exactly as libvpx's decoder reconstructs it. Where the source
+//! has not changed since the frame before, a block is that frame's, skipped.
 
 mod bool_writer;
 mod dct;
@@ -73,7 +75,20 @@ pub(crate) struct Encoder {
     tile_cols_log2: u32,
     quality: u8,
     contexts: tile::FrameContexts,
+    /// The frame being coded.
     recon: Reconstruction,
+    /// The frame coded last, as a decoder has it: what an inter frame is
+    /// coded against.
+    reference: Reconstruction,
+    /// The source of the frame coded last, tight at the picture's width.
+    previous: [Vec<u8>; 3],
+    /// Per 8×8 of the frame, whether the source is `previous` there.
+    unchanged: Vec<bool>,
+    /// Whether a frame has been coded, so the next can be an inter frame.
+    started: bool,
+    /// Whether every block is to be coded again, unchanged or not: after the
+    /// quantizer moves.
+    requantize: bool,
 }
 
 impl Encoder {
@@ -90,27 +105,63 @@ impl Encoder {
         let geometry = Geometry::new(width, height);
         let tile_cols_log2 = tile_columns_log2(width, threads).clamp(geometry.min_log2_tile_cols(), geometry.max_log2_tile_cols());
         let stride = geometry.sb_cols * 64;
-        let recon = Reconstruction { planes: std::array::from_fn(|_| vec![0; stride * geometry.sb_rows * 64]), stride };
-        let contexts = tile::FrameContexts::new(&geometry);
-        Ok(Self { geometry, tile_cols_log2, quality: quality.clamp(QUALITY_MIN, QUALITY_MAX), contexts, recon })
+        let reconstruction = || Reconstruction { planes: std::array::from_fn(|_| vec![0; stride * geometry.sb_rows * 64]), stride };
+        let pixels = usize::from(width) * usize::from(height);
+        Ok(Self {
+            tile_cols_log2,
+            quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
+            contexts: tile::FrameContexts::new(&geometry),
+            recon: reconstruction(),
+            reference: reconstruction(),
+            previous: std::array::from_fn(|_| vec![0; pixels]),
+            unchanged: vec![false; geometry.mi_rows * geometry.mi_cols],
+            started: false,
+            requantize: false,
+            geometry,
+        })
     }
 
-    /// Code `picture` as a keyframe and append it to `out`.
-    pub(crate) fn keyframe(&mut self, picture: &Picture, out: &mut Vec<u8>) -> Result<(), Error> {
+    /// The dial this encoder is coding at.
+    pub(crate) fn quality(&self) -> u8 {
+        self.quality
+    }
+
+    /// Move the dial (1–100, clamped) without a keyframe: the next frame
+    /// codes every block again at the new quantizer, changed or not.
+    pub(crate) fn set_quality(&mut self, quality: u8) {
+        let quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
+        if quality_to_q(quality) != quality_to_q(self.quality) {
+            self.requantize = true;
+        }
+        self.quality = quality;
+    }
+
+    /// Code `picture` and append the frame to `out`: a keyframe when
+    /// `keyframe` asks for one or nothing has been coded yet, otherwise an
+    /// inter frame against the frame before. Returns whether it is a
+    /// keyframe.
+    pub(crate) fn encode(&mut self, picture: &Picture, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
         let g = &self.geometry;
         if picture.size() != (g.width, g.height) || picture.chroma() != Chroma::Full {
             let (pw, ph) = picture.size();
             return Err(Error::Mismatch(g.width, g.height, Chroma::Full.name(), pw, ph, picture.chroma().name()));
         }
+        let keyframe = keyframe || !self.started;
+        self.compare(picture, keyframe || self.requantize);
         self.contexts.clear();
+        let g = &self.geometry;
         let q_index = tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize];
         let quantizer = quantize::Quantizer::new(q_index);
         let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
         let tiles: Vec<Vec<u8>> = (0..1 << self.tile_cols_log2)
-            .map(|i| tile::Tile::new(g, g.tile_cols(i, self.tile_cols_log2), &mut self.contexts, &mut self.recon, &source, &quantizer).code())
+            .map(|i| {
+                let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged });
+                tile::Tile::new(g, g.tile_cols(i, self.tile_cols_log2), &mut self.contexts, &mut self.recon, &source, previous, &quantizer).code()
+            })
             .collect();
-        let compressed = header::keyframe_compressed_header();
-        let uncompressed = header::Keyframe {
+        let compressed = header::compressed(keyframe);
+        let uncompressed = header::Uncompressed {
+            keyframe,
             width: g.width,
             height: g.height,
             q_index,
@@ -128,12 +179,52 @@ impl Encoder {
             }
             out.extend(tile);
         }
-        Ok(())
+        std::mem::swap(&mut self.recon, &mut self.reference);
+        self.started = true;
+        self.requantize = false;
+        Ok(keyframe)
     }
 
-    /// The reconstruction's planes and their stride.
+    /// Mark each 8×8 of the frame unchanged where `picture` is the previous
+    /// source over the part of it the picture holds, and make the previous
+    /// source `picture`. With `everything`, every 8×8 is changed.
+    fn compare(&mut self, picture: &Picture, everything: bool) {
+        let g = &self.geometry;
+        let (width, height) = (usize::from(g.width), usize::from(g.height));
+        let (planes, stride) = (picture.planes(), picture.strides()[0]);
+        if everything {
+            for (previous, plane) in self.previous.iter_mut().zip(planes) {
+                for y in 0..height {
+                    previous[y * width..][..width].copy_from_slice(&plane[y * stride..][..width]);
+                }
+            }
+            self.unchanged.fill(false);
+            return;
+        }
+        for mi_row in 0..g.mi_rows {
+            let rows = mi_row * 8..(mi_row * 8 + 8).min(height);
+            for mi_col in 0..g.mi_cols {
+                let x = mi_col * 8;
+                let wide = 8.min(width - x);
+                let same = self.previous.iter().zip(planes).all(|(previous, plane)| {
+                    rows.clone().all(|y| previous[y * width + x..][..wide] == plane[y * stride + x..][..wide])
+                });
+                self.unchanged[mi_row * g.mi_cols + mi_col] = same;
+                if !same {
+                    for (previous, plane) in self.previous.iter_mut().zip(planes) {
+                        for y in rows.clone() {
+                            previous[y * width + x..][..wide].copy_from_slice(&plane[y * stride + x..][..wide]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The last frame coded, as a decoder has it: the planes and their
+    /// stride.
     fn reconstruction(&self) -> (&[Vec<u8>; 3], usize) {
-        (&self.recon.planes, self.recon.stride)
+        (&self.reference.planes, self.reference.stride)
     }
 }
 
@@ -142,25 +233,22 @@ mod tests {
     use super::*;
     use crate::Decoder;
 
-    /// A picture of noise, so nothing in it is what the frame decodes to.
-    fn noise(w: u16, h: u16) -> Picture {
-        let mut state = 0x9e37_79b9_u32;
-        let rgb: Vec<u8> = (0..usize::from(w) * usize::from(h) * 3)
+    /// `w`×`h` RGB noise from `seed`.
+    fn noise_rgb(w: u16, h: u16, seed: u32) -> Vec<u8> {
+        let mut state = seed;
+        (0..usize::from(w) * usize::from(h) * 3)
             .map(|_| {
                 state ^= state << 13;
                 state ^= state >> 17;
                 state ^= state << 5;
                 state as u8
             })
-            .collect();
-        let mut picture = Picture::new(w, h, Chroma::Full).expect("a picture");
-        picture.read_rgb(&rgb).expect("its own picture");
-        picture
+            .collect()
     }
 
-    /// A desktop-like picture: flat panels, hard edges, a gradient, text-like
-    /// strokes of every colour and a patch of noise.
-    fn desktop(w: u16, h: u16) -> Picture {
+    /// A desktop-like `w`×`h` in RGB: flat panels, hard edges, a gradient,
+    /// text-like strokes of every colour and a patch of noise.
+    fn desktop_rgb(w: u16, h: u16) -> Vec<u8> {
         let mut state = 0x2545_f491_u32;
         let mut rgb = Vec::with_capacity(usize::from(w) * usize::from(h) * 3);
         for y in 0..usize::from(h) {
@@ -182,9 +270,36 @@ mod tests {
                 rgb.extend(pixel);
             }
         }
+        rgb
+    }
+
+    /// `rgb` with the rectangle at `(x, y)` of `rw`×`rh`, as far as the
+    /// picture holds it, painted over with noise from `seed`.
+    fn edit(mut rgb: Vec<u8>, w: u16, (x, y, rw, rh): (usize, usize, usize, usize), seed: u32) -> Vec<u8> {
+        let w = usize::from(w);
+        let h = rgb.len() / 3 / w;
+        let paint = noise_rgb(rw as u16, rh as u16, seed);
+        for r in 0..rh.min(h.saturating_sub(y)) {
+            for c in 0..rw.min(w.saturating_sub(x)) {
+                rgb[((y + r) * w + x + c) * 3..][..3].copy_from_slice(&paint[(r * rw + c) * 3..][..3]);
+            }
+        }
+        rgb
+    }
+
+    fn picture(w: u16, h: u16, rgb: &[u8]) -> Picture {
         let mut picture = Picture::new(w, h, Chroma::Full).expect("a picture");
-        picture.read_rgb(&rgb).expect("its own picture");
+        picture.read_rgb(rgb).expect("its own picture");
         picture
+    }
+
+    /// A picture of noise, so nothing in it is what the frame decodes to.
+    fn noise(w: u16, h: u16) -> Picture {
+        picture(w, h, &noise_rgb(w, h, 0x9e37_79b9))
+    }
+
+    fn desktop(w: u16, h: u16) -> Picture {
+        picture(w, h, &desktop_rgb(w, h))
     }
 
     /// The mean squared error between the planes of `picture` and those of a
@@ -203,32 +318,55 @@ mod tests {
         sum / (3 * w * h) as f64
     }
 
-    /// Encode `picture` as a keyframe at `quality` on `threads`, decode it
-    /// with libvpx, hold the decode to the encoder's own reconstruction
-    /// pixel for pixel, and give back the frame's size and the decode's
-    /// mean squared error.
-    fn round_trip(picture: &Picture, quality: u8, threads: usize) -> (usize, f64) {
-        let (w, h) = picture.size();
-        let mut encoder = Encoder::new(w, h, quality, threads).expect("an encoder");
-        let mut frame = Vec::new();
-        encoder.keyframe(picture, &mut frame).expect("a keyframe");
-        assert_eq!(crate::frame_header(&frame), Some(crate::FrameHeader { profile: 1, keyframe: true }));
-        let mut decoder = Decoder::new(1).expect("a decoder");
-        let decoded = decoder.decode(&frame).unwrap_or_else(|e| panic!("{w}x{h} on {threads} threads: {e}"));
-        assert_eq!(decoded.size(), (u32::from(w), u32::from(h)));
-        assert_eq!(decoded.chroma(), Chroma::Full);
-        assert!(decoded.declares_bt601_studio_swing());
-        let (recon, stride) = encoder.reconstruction();
-        for (p, ((plane, decoded_stride), recon)) in decoded.planes().into_iter().zip(decoded.strides()).zip(recon).enumerate() {
-            for y in 0..usize::from(h) {
-                let got = &plane[y * decoded_stride..][..usize::from(w)];
-                let want = &recon[y * stride..][..usize::from(w)];
-                if let Some(x) = got.iter().zip(want).position(|(a, b)| a != b) {
-                    panic!("{w}x{h} at quality {quality}, plane {p}: the decode is {} at ({x}, {y}), the encoder's {}", got[x], want[x]);
+    /// An encoder and a libvpx decoder following its stream.
+    struct Stream {
+        encoder: Encoder,
+        decoder: Decoder,
+        frames: usize,
+    }
+
+    impl Stream {
+        fn new(w: u16, h: u16, quality: u8, threads: usize) -> Self {
+            Self { encoder: Encoder::new(w, h, quality, threads).expect("an encoder"), decoder: Decoder::new(1).expect("a decoder"), frames: 0 }
+        }
+
+        /// Code `picture`, decode the frame, hold the decode to the
+        /// encoder's own reconstruction pixel for pixel, and give back the
+        /// frame's size, whether it is a keyframe, and the decode's mean
+        /// squared error.
+        fn frame(&mut self, picture: &Picture, keyframe: bool) -> (usize, bool, f64) {
+            let (w, h) = picture.size();
+            let quality = self.encoder.quality();
+            let n = self.frames;
+            self.frames += 1;
+            let mut frame = Vec::new();
+            let keyframe = self.encoder.encode(picture, keyframe, &mut frame).expect("a frame");
+            assert_eq!(crate::frame_header(&frame), Some(crate::FrameHeader { profile: 1, keyframe }));
+            let decoded = self.decoder.decode(&frame).unwrap_or_else(|e| panic!("{w}x{h} at quality {quality}, frame {n}: {e}"));
+            assert_eq!(decoded.size(), (u32::from(w), u32::from(h)));
+            assert_eq!(decoded.chroma(), Chroma::Full);
+            assert!(decoded.declares_bt601_studio_swing());
+            let (recon, stride) = self.encoder.reconstruction();
+            for (p, ((plane, decoded_stride), recon)) in decoded.planes().into_iter().zip(decoded.strides()).zip(recon).enumerate() {
+                for y in 0..usize::from(h) {
+                    let got = &plane[y * decoded_stride..][..usize::from(w)];
+                    let want = &recon[y * stride..][..usize::from(w)];
+                    if let Some(x) = got.iter().zip(want).position(|(a, b)| a != b) {
+                        panic!("{w}x{h} at quality {quality}, frame {n}, plane {p}: the decode is {} at ({x}, {y}), the encoder's {}", got[x], want[x]);
+                    }
                 }
             }
+            (frame.len(), keyframe, mse(picture, &decoded))
         }
-        (frame.len(), mse(picture, &decoded))
+    }
+
+    /// Code `picture` as a keyframe at `quality` on `threads` and give back
+    /// the frame's size and the decode's mean squared error.
+    fn round_trip(picture: &Picture, quality: u8, threads: usize) -> (usize, f64) {
+        let (w, h) = picture.size();
+        let (bytes, keyframe, mse) = Stream::new(w, h, quality, threads).frame(picture, true);
+        assert!(keyframe);
+        (bytes, mse)
     }
 
     #[test]
@@ -282,14 +420,100 @@ mod tests {
     }
 
     #[test]
+    fn inter_frames_decode_to_the_encoders_own_reconstruction() {
+        for (w, h) in [(1, 1), (7, 5), (8, 8), (65, 65), (130, 67), (200, 120), (40, 360), (640, 360)] {
+            let original = desktop_rgb(w, h);
+            let mut scrolled = original.clone();
+            scrolled.rotate_left(3 % usize::from(h) * usize::from(w) * 3);
+            let frames = [
+                original.clone(),
+                original.clone(),
+                edit(original.clone(), w, (5, 3, 40, 21), 1),
+                edit(original.clone(), w, (60, 30, 300, 200), 2),
+                scrolled,
+                noise_rgb(w, h, 3),
+                edit(noise_rgb(w, h, 3), w, (0, 0, 9, 9), 4),
+                original,
+            ];
+            for quality in [1, 60, 100] {
+                let mut stream = Stream::new(w, h, quality, 1);
+                for (i, rgb) in frames.iter().enumerate() {
+                    let (_, keyframe, _) = stream.frame(&picture(w, h, rgb), false);
+                    assert_eq!(keyframe, i == 0, "frame {i}");
+                }
+                // A keyframe asked for mid-stream.
+                assert!(stream.frame(&desktop(w, h), true).1);
+                assert!(!stream.frame(&noise(w, h), false).1);
+            }
+        }
+    }
+
+    #[test]
+    fn an_unchanged_picture_costs_a_few_bytes() {
+        let (w, h) = (640, 384);
+        let mut stream = Stream::new(w, h, 100, 1);
+        let (_, _, first) = stream.frame(&desktop(w, h), false);
+        let (bytes, keyframe, again) = stream.frame(&desktop(w, h), false);
+        assert!(!keyframe);
+        // The headers, and sixty superblocks each one skipped block of the
+        // previous frame.
+        assert!(bytes < 40, "{bytes} bytes");
+        assert_eq!(again, first);
+    }
+
+    #[test]
+    fn an_edit_is_coded_and_the_rest_is_skipped() {
+        let (w, h) = (640, 384);
+        let mut stream = Stream::new(w, h, 100, 1);
+        let rgb = desktop_rgb(w, h);
+        let (key_bytes, _, _) = stream.frame(&picture(w, h, &rgb), false);
+        let before = stream.encoder.reconstruction().0.clone();
+        // A pixel nudged: a change small enough that its superblock varies
+        // little against the frame before.
+        let mut nudged = rgb;
+        for v in &mut nudged[(100 * usize::from(w) + 100) * 3..][..3] {
+            *v += 6;
+        }
+        let (bytes, _, mse) = stream.frame(&picture(w, h, &nudged), false);
+        assert!(bytes * 10 < key_bytes, "{bytes} bytes against a keyframe of {key_bytes}");
+        assert!(mse < 4.0, "squared error {mse}");
+        // Outside the 8×8 the edit is in, the frame is the one before, not
+        // coded again.
+        let (after, stride) = stream.encoder.reconstruction();
+        for (p, (a, b)) in after.iter().zip(&before).enumerate() {
+            for y in 0..usize::from(h) {
+                for x in 0..usize::from(w) {
+                    let touched = (96..104).contains(&x) && (96..104).contains(&y);
+                    assert!(touched || a[y * stride + x] == b[y * stride + x], "plane {p} moved at ({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_quality_change_codes_every_block_again() {
+        let (w, h) = (256, 256);
+        let mut stream = Stream::new(w, h, 1, 1);
+        let picture = noise(w, h);
+        let (_, _, coarse) = stream.frame(&picture, false);
+        // A dial that moves less than a quantizer step changes nothing.
+        stream.encoder.set_quality(2);
+        assert_eq!(stream.encoder.quality(), 2);
+        let (bytes, _, same) = stream.frame(&picture, false);
+        assert!(bytes < 30, "{bytes} bytes");
+        assert_eq!(same, coarse);
+        stream.encoder.set_quality(100);
+        let (_, keyframe, fine) = stream.frame(&picture, false);
+        assert!(!keyframe);
+        assert!(fine < coarse / 4.0, "squared error {fine} at 100, {coarse} at 1");
+    }
+
+    #[test]
     fn keyframes_follow_each_other_through_one_decoder() {
         let (w, h) = (200, 120);
-        let mut encoder = Encoder::new(w, h, 50, 1).expect("an encoder");
-        let mut decoder = Decoder::new(1).expect("a decoder");
+        let mut stream = Stream::new(w, h, 50, 1);
         for _ in 0..3 {
-            let mut frame = Vec::new();
-            encoder.keyframe(&noise(w, h), &mut frame).expect("a keyframe");
-            decoder.decode(&frame).expect("a decode");
+            assert!(stream.frame(&noise(w, h), true).1);
         }
     }
 
@@ -304,28 +528,37 @@ mod tests {
         ("mac-recording-q90-444", 90),
     ];
 
-    /// Every `step`th frame of an IVF capture, up to `count` of them, as the
-    /// pictures a user would hand an encoder.
-    fn sample(ivf: &[u8], step: usize, count: usize) -> Vec<Picture> {
+    /// Hand `f` each frame of an IVF capture in turn, as the picture a user
+    /// would hand an encoder, until it returns false.
+    fn each_picture(ivf: &[u8], mut f: impl FnMut(usize, Picture) -> bool) {
         assert_eq!(&ivf[..4], b"DKIF", "not an IVF file");
         let mut decoder = Decoder::new(4).expect("a decoder");
-        let mut pictures = Vec::new();
-        let mut at = 32;
-        let mut n = 0;
-        while at + 12 <= ivf.len() && pictures.len() < count {
+        let (mut at, mut n) = (32, 0);
+        while at + 12 <= ivf.len() {
             let len = u32::from_le_bytes(ivf[at..at + 4].try_into().expect("four bytes")) as usize;
             let decoded = decoder.decode(&ivf[at + 12..at + 12 + len]).expect("a capture libvpx decodes");
-            if n % step == 0 {
-                let (w, h) = decoded.size();
-                let mut bgrx = vec![0; w as usize * h as usize * 4];
-                decoded.write_bgrx(&mut bgrx, w as usize * 4).expect("a buffer of the frame's size");
-                let mut picture = Picture::new(w as u16, h as u16, Chroma::Full).expect("a picture");
-                picture.read_bgrx(&bgrx, w as usize * 4).expect("a buffer of the picture's size");
-                pictures.push(picture);
+            let (w, h) = decoded.size();
+            let mut bgrx = vec![0; w as usize * h as usize * 4];
+            decoded.write_bgrx(&mut bgrx, w as usize * 4).expect("a buffer of the frame's size");
+            let mut picture = Picture::new(w as u16, h as u16, Chroma::Full).expect("a picture");
+            picture.read_bgrx(&bgrx, w as usize * 4).expect("a buffer of the picture's size");
+            if !f(n, picture) {
+                return;
             }
             at += 12 + len;
             n += 1;
         }
+    }
+
+    /// Every `step`th frame of an IVF capture, up to `count` of them.
+    fn sample(ivf: &[u8], step: usize, count: usize) -> Vec<Picture> {
+        let mut pictures = Vec::new();
+        each_picture(ivf, |n, picture| {
+            if n % step == 0 {
+                pictures.push(picture);
+            }
+            pictures.len() < count
+        });
         pictures
     }
 
@@ -364,7 +597,7 @@ mod tests {
                         if c == 0 {
                             libvpx.encode(picture, true, frame).expect("an encode").expect("a frame");
                         } else {
-                            rust.keyframe(picture, frame).expect("a keyframe");
+                            rust.encode(picture, true, frame).expect("a keyframe");
                         }
                         least = least.min(started.elapsed().as_secs_f64() * 1000.0);
                     }
@@ -384,13 +617,73 @@ mod tests {
         }
     }
 
+    /// The first frames of each capture in `tmp/`, coded as a stream by this
+    /// encoder and by libvpx, each on one thread, frame by frame, which of
+    /// them goes first alternating: bytes, time and the PSNR of libvpx's
+    /// decode of each. The per-frame time ratio's median is what the plan's
+    /// gate reads. A measurement, not a check; run it in release:
+    ///
+    /// ```text
+    /// cargo test --release streams_against_libvpx -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "reads the captures in tmp/ and wants a release build"]
+    fn streams_against_libvpx() {
+        const FRAMES: usize = 200;
+        for (name, quality) in CAPTURES {
+            let Ok(ivf) = std::fs::read(format!("tmp/{name}.ivf")) else {
+                println!("{name}: not in tmp/");
+                continue;
+            };
+            let mut encoders: Option<(crate::Encoder, Encoder)> = None;
+            let mut decoders = [Decoder::new(1).expect("a decoder"), Decoder::new(1).expect("a decoder")];
+            let (mut bytes, mut ms, mut psnrs) = ([0usize; 2], [0.0f64; 2], [0.0f64; 2]);
+            let (mut ratios, mut frames, mut size) = (Vec::new(), 0, (0, 0));
+            each_picture(&ivf, |n, picture| {
+                let picture = &picture;
+                size = picture.size();
+                let (libvpx, rust) = encoders.get_or_insert_with(|| {
+                    let (w, h) = picture.size();
+                    (crate::Encoder::new(w, h, Chroma::Full, quality, 1).expect("a libvpx encoder"), Encoder::new(w, h, quality, 1).expect("an encoder"))
+                });
+                let mut out = [Vec::new(), Vec::new()];
+                let mut times = [0.0; 2];
+                for c in if n % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let started = std::time::Instant::now();
+                    if c == 0 {
+                        libvpx.encode(picture, false, &mut out[0]).expect("an encode").expect("a frame");
+                    } else {
+                        rust.encode(picture, false, &mut out[1]).expect("a frame");
+                    }
+                    times[c] = started.elapsed().as_secs_f64() * 1000.0;
+                }
+                for c in 0..2 {
+                    let decoded = decoders[c].decode(&out[c]).expect("a frame libvpx decodes");
+                    bytes[c] += out[c].len();
+                    ms[c] += times[c];
+                    psnrs[c] += psnr(mse(picture, &decoded).max(1e-3));
+                }
+                ratios.push(times[1] / times[0]);
+                frames += 1;
+                frames < FRAMES
+            });
+            ratios.sort_unstable_by(f64::total_cmp);
+            let n = frames as f64;
+            println!(
+                "{name} {}x{} q{quality}, {frames} frames | libvpx {} B {:.2} ms {:.2} dB | rust {} B {:.2} ms {:.2} dB | bytes {:.3} time median {:.3} total {:.3}",
+                size.0, size.1, bytes[0], ms[0] / n, psnrs[0] / n, bytes[1], ms[1] / n, psnrs[1] / n,
+                bytes[1] as f64 / bytes[0] as f64, ratios[ratios.len() / 2], ms[1] / ms[0],
+            );
+        }
+    }
+
     #[test]
     fn a_picture_that_is_not_the_encoders_is_refused() {
         let mut encoder = Encoder::new(64, 64, 90, 1).expect("an encoder");
         let mut out = Vec::new();
         let subsampled = Picture::new(64, 64, Chroma::Subsampled).expect("a picture");
-        assert!(matches!(encoder.keyframe(&subsampled, &mut out), Err(Error::Mismatch(..))));
-        assert!(matches!(encoder.keyframe(&noise(64, 32), &mut out), Err(Error::Mismatch(..))));
+        assert!(matches!(encoder.encode(&subsampled, true, &mut out), Err(Error::Mismatch(..))));
+        assert!(matches!(encoder.encode(&noise(64, 32), false, &mut out), Err(Error::Mismatch(..))));
         assert!(out.is_empty());
         assert!(matches!(Encoder::new(0, 64, 90, 1), Err(Error::Empty(..))));
         assert!(matches!(Encoder::new(64, 64, 90, 0), Err(Error::Threads(0))));

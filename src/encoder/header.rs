@@ -19,6 +19,18 @@ const ALLOW_32X32: u32 = 3;
 /// The probability an update flag for a probability is coded at.
 const DIFF_UPDATE_PROB: u8 = 252;
 
+/// The probability an update flag for a motion vector probability is coded
+/// at.
+const MV_UPDATE_PROB: u8 = 252;
+
+/// The reference slot an inter frame reads and refreshes: the one the
+/// keyframe filled with the rest.
+const LAST_SLOT: u32 = 0;
+
+/// `interp_filter`'s literal for EIGHTTAP. Whole-pixel motion never filters,
+/// so which one is named does not matter; one has to be.
+const EIGHTTAP: u32 = 1;
+
 /// Bits written most significant first.
 #[derive(Default)]
 pub(super) struct BitWriter {
@@ -43,8 +55,10 @@ impl BitWriter {
     }
 }
 
-/// What the uncompressed header of a keyframe says.
-pub(super) struct Keyframe {
+/// What a frame's uncompressed header says.
+pub(super) struct Uncompressed {
+    /// A keyframe, or an inter frame reading the frame before it.
+    pub(super) keyframe: bool,
     pub(super) width: u16,
     pub(super) height: u16,
     pub(super) q_index: u8,
@@ -53,7 +67,7 @@ pub(super) struct Keyframe {
     pub(super) max_log2_tile_cols: u32,
 }
 
-impl Keyframe {
+impl Uncompressed {
     /// The uncompressed header, ending with the size of the compressed header
     /// that follows it.
     pub(super) fn write(&self, compressed_size: usize) -> Vec<u8> {
@@ -64,9 +78,20 @@ impl Keyframe {
         w.put(1, 1);
         w.put(0, 1);
         w.flag(false); // show_existing_frame
-        w.flag(false); // frame_type: a keyframe
+        w.flag(!self.keyframe); // frame_type
         w.flag(true); // show_frame
         w.flag(false); // error_resilient_mode
+        if self.keyframe {
+            self.write_keyframe(&mut w);
+        } else {
+            self.write_inter(&mut w);
+        }
+        self.write_tail(&mut w, compressed_size);
+        w.bytes
+    }
+
+    /// A keyframe's: the colour and the size, every reference slot refreshed.
+    fn write_keyframe(&self, w: &mut BitWriter) {
         w.put(0x49_83_42, 24); // frame_sync_code
         // color_config: eight bits implied by profile 1, BT.601 at studio
         // swing, no chroma subsampling.
@@ -78,8 +103,24 @@ impl Keyframe {
         w.put(u32::from(self.width) - 1, 16);
         w.put(u32::from(self.height) - 1, 16);
         w.flag(false); // render_and_frame_size_different
-        self.write_tail(&mut w, compressed_size);
-        w.bytes
+    }
+
+    /// An inter frame's: one slot refreshed and read through all three
+    /// references, the size the reference has.
+    fn write_inter(&self, w: &mut BitWriter) {
+        // intra_only is implied clear by show_frame.
+        w.put(0, 2); // reset_frame_context
+        w.put(1 << LAST_SLOT, 8); // refresh_frame_flags
+        for _ in 0..3 {
+            w.put(LAST_SLOT, 3); // ref_frame_idx
+            // Every sign bias alike, which also rules out compound prediction.
+            w.flag(false); // ref_frame_sign_bias
+        }
+        w.flag(true); // found_ref: the size of LAST
+        w.flag(false); // render_and_frame_size_different
+        w.flag(false); // allow_high_precision_mv
+        w.flag(false); // is_filter_switchable
+        w.put(EIGHTTAP, 2); // raw_interpolation_filter
     }
 
     /// From `refresh_frame_context` on, which every frame writes alike.
@@ -112,9 +153,9 @@ impl Keyframe {
     }
 }
 
-/// The compressed header of a keyframe: the transform mode and no update to
-/// any default probability.
-pub(super) fn keyframe_compressed_header() -> Vec<u8> {
+/// The compressed header: the transform mode and no update to any default
+/// probability, of which an inter frame has more.
+pub(super) fn compressed(keyframe: bool) -> Vec<u8> {
     let mut w = BoolWriter::new();
     // tx_mode: ALLOW_32X32 and, after it, tx_mode_select clear.
     w.literal(ALLOW_32X32, 2);
@@ -126,6 +167,21 @@ pub(super) fn keyframe_compressed_header() -> Vec<u8> {
     // No update to any of the three skip probabilities.
     for _ in 0..3 {
         w.write(false, DIFF_UPDATE_PROB);
+    }
+    if !keyframe {
+        // The inter modes (7 contexts of 3), intra or inter (4), the single
+        // reference (5 of 2), the luma intra modes (4 of 9) and the
+        // partitions (16 of 3). No switchable filter and no compound
+        // reference, so nothing for either.
+        for _ in 0..7 * 3 + 4 + 5 * 2 + 4 * 9 + 16 * 3 {
+            w.write(false, DIFF_UPDATE_PROB);
+        }
+        // The motion vectors: joints (3); per component sign (1), classes
+        // (10), class 0 (1) and bits (10); per component class 0's fractions
+        // (2 of 3) and the fractions (3). No high precision.
+        for _ in 0..3 + 2 * (1 + 10 + 1 + 10) + 2 * (2 * 3 + 3) {
+            w.write(false, MV_UPDATE_PROB);
+        }
     }
     w.finish()
 }
@@ -145,7 +201,7 @@ mod tests {
 
     #[test]
     fn the_keyframe_header_reads_as_profile_1_at_bt601_studio_swing() {
-        let header = Keyframe { width: 1440, height: 900, q_index: 32, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2 };
+        let header = Uncompressed { keyframe: true, width: 1440, height: 900, q_index: 32, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2 };
         let bytes = header.write(7);
         let crate::FrameHeader { profile, keyframe } = crate::frame_header(&bytes).expect("a VP9 frame");
         assert_eq!((profile, keyframe), (1, true));
@@ -171,12 +227,40 @@ mod tests {
     }
 
     #[test]
+    fn the_inter_header_reads_last_and_refreshes_it() {
+        let header = Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2 };
+        let bytes = header.write(9);
+        let crate::FrameHeader { profile, keyframe } = crate::frame_header(&bytes).expect("a VP9 frame");
+        assert_eq!((profile, keyframe), (1, false));
+        let bit = |i: usize| bytes[i / 8] >> (7 - i % 8) & 1;
+        let field = |at: usize, n: usize| (at..at + n).fold(0u32, |v, i| v << 1 | u32::from(bit(i)));
+        assert_eq!(field(4, 4), 0b0110, "shown, not error resilient");
+        assert_eq!(field(8, 2), 0, "no context reset");
+        assert_eq!(field(10, 8), 1, "slot 0 refreshed");
+        assert_eq!(field(18, 12), 0, "every reference slot 0, no sign bias");
+        assert_eq!(field(30, 2), 0b10, "the size of LAST, no render size");
+        assert_eq!(field(32, 4), 0b0001, "no high precision, EIGHTTAP");
+        assert_eq!(field(36, 2), 0b01, "no refresh, frame parallel");
+        assert_eq!(field(38, 12), 0);
+        assert_eq!(field(50, 8), 32);
+        assert_eq!(field(58, 6), 0);
+        assert_eq!(field(64, 16), 9);
+        assert_eq!(bytes.len(), 10);
+    }
+
+    #[test]
     fn the_compressed_header_asks_for_32x32_and_updates_nothing() {
-        let bytes = keyframe_compressed_header();
-        let mut r = BoolReader::new(&bytes);
-        assert_eq!(r.literal(2), ALLOW_32X32);
-        assert!(!r.read(128), "tx_mode_select");
-        assert!((0..4).all(|_| !r.read(128)), "no coefficient update");
-        assert!((0..3).all(|_| !r.read(DIFF_UPDATE_PROB)), "no skip update");
+        for keyframe in [true, false] {
+            let bytes = compressed(keyframe);
+            let mut r = BoolReader::new(&bytes);
+            assert_eq!(r.literal(2), ALLOW_32X32);
+            assert!(!r.read(128), "tx_mode_select");
+            assert!((0..4).all(|_| !r.read(128)), "no coefficient update");
+            assert!((0..3).all(|_| !r.read(DIFF_UPDATE_PROB)), "no skip update");
+            if !keyframe {
+                assert!((0..119).all(|_| !r.read(DIFF_UPDATE_PROB)), "no mode update");
+                assert!((0..65).all(|_| !r.read(MV_UPDATE_PROB)), "no vector update");
+            }
+        }
     }
 }
