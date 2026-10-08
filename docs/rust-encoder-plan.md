@@ -23,7 +23,7 @@ and nothing more. Decoding stays with libvpx permanently.
 - **No fallback:** when the Rust encoder passes the gate, the libvpx encoder
   path is deleted, not kept behind a feature. Until then the module is reachable
   only from tests and the benchmark.
-- **Acceptance gate**, on each of the six 4:4:4 captures, at the capture's own
+- **Acceptance gate**, on each of the ten 4:4:4 captures, at the capture's own
   quality and thread count:
   - median paired encode time at or below libvpx;
   - total bytes at most 15% above libvpx.
@@ -133,10 +133,11 @@ row's second column is built only if the first fails the gate on a capture.
 
 ## Test material
 
-Six 4:4:4 IVF captures, kept out of git in `tmp/`. Where a machine keeps the
+Ten 4:4:4 IVF captures, kept out of git in `tmp/`. Where a machine keeps the
 copies they come from is in that machine's `CLAUDE.local.md`, not here. The
 directory's own `README.md` describes the files; the 4:2:0 captures beside them
-are not used.
+are not used, and neither are the two made from a Mac screen recording, whose
+colour was never finer than 4:2:0 and which neither program ever sent.
 
 | Capture | Content | Size | Quality | Threads | Frames |
 |---|---|---|---|---|---|
@@ -144,15 +145,21 @@ are not used.
 | `proxmox-q100-444` | wlshare: full-frame shader animation | 1728×902 | 100 | 4 | 822 |
 | `proxmox-hidpi-q100-444` | the same at HiDPI | 3456×1804 | 100 | 4 | 212 |
 | `mac-hp-444` | remotex gateway from a Mac's HEVC | 1440×900 | 90 | 5 | 743 |
-| `mac-recording-q100-444` | a Mac screen recording, as wlshare codes it | 3456×2234 | 100 | 4 | 1874 |
-| `mac-recording-q90-444` | the same, as remotex codes it | 3456×2234 | 90 | 5 | 1874 |
+| `windows-elite-…-3456x2168-444` | remotex gateway from RDP: a shader animation, a news page scrolled, a terminal printing, a documentation page, side by side, at HiDPI | 3456×2168 | 90 | 5 | 887 |
+| `windows-elite-…-1920x1080-444` | the same desktop | 1920×1080 | 90 | 5 | 1943 |
+| `windows-elite-…-1600x1000-444` | the same desktop | 1600×1000 | 90 | 5 | 2333 |
+| `windows-elite-…-1440x900-444` | the same desktop | 1440×900 | 90 | 5 | 1797 |
+| `windows-elite-…-1280x800-444` | the same desktop | 1280×800 | 90 | 5 | 1898 |
+| `macvmhighperf-…-3840x2160-444` | remotex gateway from a virtual Mac, the same four panes, at HiDPI | 3840×2160 | 90 | 5 | 1443 |
 
 The thread counts are what each program picks on the six-core machine the
 baseline is measured on: wlshare the cores less two, remotex the cores less
 one. The frames fed to an encoder are libvpx decodes of these captures, so
-they are near the source, not the source. The two `mac-recording` streams
-were made from a Mac screen recording kept beside them, an H.264 4:2:0
-recording, so their colour is no finer than 4:2:0 either.
+they are near the source, not the source. The last six were written by the
+gateway as it coded them, each its own session; their full names carry the
+session's start, and the first frame of each is black, the desktop not yet
+painted. The 3456×2168 one's quality fell as low as 80 late in the session,
+past the frames measured.
 
 Beside each capture is a `.framemd5` of every decoded frame. That tests a
 decoder, not an encoder, and is not used here.
