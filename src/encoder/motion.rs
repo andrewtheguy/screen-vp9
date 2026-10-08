@@ -15,13 +15,14 @@
 //! is a hash the frame before has more than `MAX_REPEATS` anchors of.
 //!
 //! Hashes are kept per 8×8 of the frame and taken again only where the
-//! source changed, so a frame that changes little costs little.
+//! source changed, so a frame that changes little costs little; they are
+//! taken and looked up in a band of 8×8 rows on each thread.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
-use super::Geometry;
 use super::mv::{MAX_PIXELS, Mv};
+use super::{Geometry, on_threads};
 
 /// The vectors a superblock offers: its own anchors' best two, then the
 /// frame's best two.
@@ -75,38 +76,60 @@ impl Hasher for Identity {
 /// the first of them; more than `MAX_REPEATS` once it has too many.
 type Places = (usize, [(u16, u16); MAX_REPEATS]);
 
-/// The search's memory of the source coded last.
-pub(super) struct Search {
+type Table = HashMap<u32, Places, BuildHasherDefault<Identity>>;
+
+/// An 8×8's anchors: each one's hash and where in the 8×8 it starts,
+/// `8 * y + x`.
+type Anchors = [(u32, u8); PER_8X8];
+
+/// The frame's measures the search works in.
+struct Shape {
     width: usize,
     height: usize,
     mi_cols: usize,
     mi_rows: usize,
     sb_cols: usize,
     sb_rows: usize,
-    /// Per 8×8, the anchors whose windows start in it: each one's hash and
-    /// where in the 8×8 it starts, `8 * y + x`.
-    anchors: Vec<[(u32, u8); PER_8X8]>,
-    counts: Vec<u8>,
-    table: HashMap<u32, Places, BuildHasherDefault<Identity>>,
+}
+
+/// What one thread hashes into: the row hashes of a row of 8×8s and the
+/// window hashes taken from them.
+#[derive(Default)]
+struct Scratch {
     rows: Vec<u32>,
     windows: Vec<u32>,
 }
 
+/// The search's memory of the source coded last.
+pub(super) struct Search {
+    shape: Shape,
+    threads: usize,
+    /// Per 8×8, the anchors whose windows start in it, and how many.
+    anchors: Vec<Anchors>,
+    counts: Vec<u8>,
+    table: Table,
+    /// Per thread.
+    scratch: Vec<Scratch>,
+}
+
 impl Search {
-    pub(super) fn new(geometry: &Geometry) -> Self {
+    /// The search of a frame of `geometry` on up to `threads` threads.
+    pub(super) fn new(geometry: &Geometry, threads: usize) -> Self {
         let mis = geometry.mi_rows * geometry.mi_cols;
         Self {
-            width: usize::from(geometry.width),
-            height: usize::from(geometry.height),
-            mi_cols: geometry.mi_cols,
-            mi_rows: geometry.mi_rows,
-            sb_cols: geometry.sb_cols,
-            sb_rows: geometry.sb_rows,
+            shape: Shape {
+                width: usize::from(geometry.width),
+                height: usize::from(geometry.height),
+                mi_cols: geometry.mi_cols,
+                mi_rows: geometry.mi_rows,
+                sb_cols: geometry.sb_cols,
+                sb_rows: geometry.sb_rows,
+            },
+            threads,
             anchors: vec![[(0, 0); PER_8X8]; mis],
             counts: vec![0; mis],
             table: HashMap::default(),
-            rows: Vec::new(),
-            windows: Vec::new(),
+            scratch: (0..threads).map(|_| Scratch::default()).collect(),
         }
     }
 
@@ -116,42 +139,53 @@ impl Search {
     /// frame (`inter`), give back per superblock in raster order the vectors
     /// it offers, the zero vector where it has fewer than `VECTORS`.
     pub(super) fn update(&mut self, luma: &[u8], unchanged: Option<&[bool]>, inter: bool) -> Vec<[Mv; VECTORS]> {
-        let changed = |r: usize, c: usize| r < self.mi_rows && c < self.mi_cols && !unchanged.is_some_and(|u| u[r * self.mi_cols + c]);
+        let shape = &self.shape;
+        let mi_cols = shape.mi_cols;
+        let changed = |r: usize, c: usize| r < shape.mi_rows && c < mi_cols && !unchanged.is_some_and(|u| u[r * mi_cols + c]);
         // An 8×8's anchors are taken again when a window starting in it
         // reaches a changed pixel: one in it, or right of it, or below.
-        let stale: Vec<bool> = (0..self.mi_rows * self.mi_cols)
+        let stale: Vec<bool> = (0..shape.mi_rows * mi_cols)
             .map(|i| {
-                let (r, c) = (i / self.mi_cols, i % self.mi_cols);
+                let (r, c) = (i / mi_cols, i % mi_cols);
                 changed(r, c) || changed(r, c + 1) || changed(r + 1, c) || changed(r + 1, c + 1)
             })
             .collect();
         if inter && stale.iter().any(|&s| s) {
             self.index();
         }
-        let mut found = Vec::new();
-        let mut looked_up = 0;
-        for r in 0..self.mi_rows {
-            let mut c = 0;
-            while c < self.mi_cols {
-                if !stale[r * self.mi_cols + c] {
-                    c += 1;
-                    continue;
-                }
-                let start = c;
-                while c < self.mi_cols && stale[r * self.mi_cols + c] {
-                    c += 1;
-                }
-                self.hash_run(luma, r, start..c);
-                if inter {
-                    for i in r * self.mi_cols + start..r * self.mi_cols + c {
-                        for &a in &self.anchors[i][..usize::from(self.counts[i])] {
-                            let (x, y) = self.place(i, a);
+        let shape = &self.shape;
+        let table = inter.then_some(&self.table);
+        let band = shape.mi_rows.div_ceil(self.threads) * mi_cols;
+        let bands = self.anchors.chunks_mut(band).zip(self.counts.chunks_mut(band)).zip(stale.chunks(band)).zip(&mut self.scratch).enumerate();
+        let found = on_threads(self.threads, bands, |(b, (((anchors, counts), stale), scratch))| {
+            let mut found = Vec::new();
+            let mut looked_up = 0;
+            let first = b * band;
+            for (k, stale) in stale.chunks(mi_cols).enumerate() {
+                let r = first / mi_cols + k;
+                let row = k * mi_cols..(k + 1) * mi_cols;
+                let (anchors, counts) = (&mut anchors[row.clone()], &mut counts[row]);
+                let mut c = 0;
+                while c < mi_cols {
+                    if !stale[c] {
+                        c += 1;
+                        continue;
+                    }
+                    let start = c;
+                    while c < mi_cols && stale[c] {
+                        c += 1;
+                    }
+                    shape.hash_run(luma, r, start..c, scratch, anchors, counts);
+                    let Some(table) = table else { continue };
+                    for i in start..c {
+                        for &a in &anchors[i][..usize::from(counts[i])] {
+                            let (x, y) = shape.place(r * mi_cols + i, a);
                             looked_up += 1;
-                            if let Some(&(count, places)) = self.table.get(&a.0).filter(|p| p.0 <= MAX_REPEATS) {
+                            if let Some(&(count, places)) = table.get(&a.0).filter(|p| p.0 <= MAX_REPEATS) {
                                 for &(px, py) in &places[..count] {
                                     let mv = (i32::from(py) - y as i32, i32::from(px) - x as i32);
                                     if mv != (0, 0) && mv.0.abs() <= MAX_PIXELS && mv.1.abs() <= MAX_PIXELS {
-                                        found.push(((y / 64) * self.sb_cols + x / 64, Mv::pixels(mv.0, mv.1)));
+                                        found.push(((y / 64) * shape.sb_cols + x / 64, Mv::pixels(mv.0, mv.1)));
                                     }
                                 }
                             }
@@ -159,13 +193,16 @@ impl Search {
                     }
                 }
             }
-        }
+            (found, looked_up)
+        });
         if !inter {
             return Vec::new();
         }
+        let looked_up: usize = found.iter().map(|f| f.1).sum();
+        let mut found: Vec<(usize, Mv)> = found.into_iter().flat_map(|f| f.0).collect();
         let frame = most(found.iter().map(|&(_, mv)| mv).collect(), FRAME_VOTES.max(looked_up / FRAME_SHARE), 2);
         found.sort_unstable();
-        let mut vectors = vec![[Mv::ZERO; VECTORS]; self.sb_rows * self.sb_cols];
+        let mut vectors = vec![[Mv::ZERO; VECTORS]; shape.sb_rows * shape.sb_cols];
         for votes in found.chunk_by(|a, b| a.0 == b.0) {
             let own = most(votes.iter().map(|&(_, mv)| mv).collect(), OWN_VOTES, 2);
             vectors[votes[0].0][..own.len()].copy_from_slice(&own);
@@ -182,18 +219,12 @@ impl Search {
         vectors
     }
 
-    /// Where in the frame an anchor kept in 8×8 `i` starts.
-    fn place(&self, i: usize, (_, offset): (u32, u8)) -> (usize, usize) {
-        let offset = usize::from(offset);
-        ((i % self.mi_cols) * 8 + offset % 8, (i / self.mi_cols) * 8 + offset / 8)
-    }
-
     /// Index the anchors kept, which are the source coded last's, by hash.
     fn index(&mut self) {
         self.table.clear();
         for i in 0..self.anchors.len() {
             for &a in &self.anchors[i][..usize::from(self.counts[i])] {
-                let (x, y) = self.place(i, a);
+                let (x, y) = self.shape.place(i, a);
                 let (count, places) = self.table.entry(a.0).or_insert((0, [(0, 0); MAX_REPEATS]));
                 if *count < MAX_REPEATS {
                     places[*count] = (x as u16, y as u16);
@@ -202,13 +233,20 @@ impl Search {
             }
         }
     }
+}
 
-    /// Take again the anchors of the 8×8s `cols` of 8×8 row `r` from `luma`.
-    fn hash_run(&mut self, luma: &[u8], r: usize, cols: std::ops::Range<usize>) {
+impl Shape {
+    /// Where in the frame an anchor kept in 8×8 `i` starts.
+    fn place(&self, i: usize, (_, offset): (u32, u8)) -> (usize, usize) {
+        let offset = usize::from(offset);
+        ((i % self.mi_cols) * 8 + offset % 8, (i / self.mi_cols) * 8 + offset / 8)
+    }
+
+    /// Take again the anchors of the 8×8s `cols` of 8×8 row `r` from `luma`,
+    /// into `anchors` and `counts`, that row's.
+    fn hash_run(&self, luma: &[u8], r: usize, cols: std::ops::Range<usize>, scratch: &mut Scratch, anchors: &mut [Anchors], counts: &mut [u8]) {
         let (width, height) = (self.width, self.height);
-        for i in r * self.mi_cols + cols.start..r * self.mi_cols + cols.end {
-            self.counts[i] = 0;
-        }
+        counts[cols.clone()].fill(0);
         // Windows start where a window one pixel right and one down still
         // fits, so each can be held to its neighbours.
         let (x0, y0) = (cols.start * 8, r * 8);
@@ -220,10 +258,11 @@ impl Search {
         // Row hashes of the 8 pixels from each x in x0..=x1, rows y0..y1 + 8.
         let across = x1 + 1 - x0;
         let row_count = y1 + 8 - y0;
-        self.rows.clear();
-        self.rows.resize(across * row_count, 0);
+        let Scratch { rows, windows } = scratch;
+        rows.clear();
+        rows.resize(across * row_count, 0);
         let top = ACROSS.wrapping_pow(8);
-        for (k, row) in self.rows.chunks_exact_mut(across).enumerate() {
+        for (k, row) in rows.chunks_exact_mut(across).enumerate() {
             let pixels = &luma[(y0 + k) * width..][..width];
             let mut h = pixels[x0..x0 + 8].iter().fold(0u32, |h, &p| h.wrapping_mul(ACROSS).wrapping_add(u32::from(p)));
             row[0] = h;
@@ -236,9 +275,8 @@ impl Search {
         // Window hashes at y0..=y1 from the row hashes, rolled down each
         // column as the row hashes are rolled across.
         let down = y1 + 1 - y0;
-        self.windows.clear();
-        self.windows.resize(across * down, 0);
-        let (rows, windows) = (&self.rows, &mut self.windows);
+        windows.clear();
+        windows.resize(across * down, 0);
         for (j, w) in windows[..across].iter_mut().enumerate() {
             *w = (0..8).fold(0u32, |h, d| h.wrapping_mul(DOWN).wrapping_add(rows[d * across + j]));
         }
@@ -254,15 +292,15 @@ impl Search {
         for y in y0..y1 {
             for x in x0..x1 {
                 let (j, k) = (x - x0, y - y0);
-                let h = self.windows[k * across + j];
-                if h.wrapping_mul(SCRAMBLE) >> (32 - ANCHOR_BITS) != 0 || h == self.windows[k * across + j + 1] || h == self.windows[(k + 1) * across + j] {
+                let h = windows[k * across + j];
+                if h.wrapping_mul(SCRAMBLE) >> (32 - ANCHOR_BITS) != 0 || h == windows[k * across + j + 1] || h == windows[(k + 1) * across + j] {
                     continue;
                 }
-                let i = (y / 8) * self.mi_cols + x / 8;
-                let n = usize::from(self.counts[i]);
+                let c = x / 8;
+                let n = usize::from(counts[c]);
                 if n < PER_8X8 {
-                    self.anchors[i][n] = (h, ((y % 8) * 8 + x % 8) as u8);
-                    self.counts[i] += 1;
+                    anchors[c][n] = (h, ((y % 8) * 8 + x % 8) as u8);
+                    counts[c] += 1;
                 }
             }
         }

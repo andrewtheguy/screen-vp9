@@ -31,6 +31,28 @@ const MAX_TILE_WIDTH_B64: usize = 64;
 /// The narrowest a tile column may be, in superblocks.
 const MIN_TILE_WIDTH_B64: usize = 4;
 
+/// Run `work` on each of `jobs` on up to `threads` threads, this one among
+/// them, as many jobs to a thread as it takes to leave none over, and give
+/// back what each gives, in order.
+fn on_threads<J: Send, R: Send>(threads: usize, mut jobs: impl ExactSizeIterator<Item = J>, work: impl Fn(J) -> R + Sync) -> Vec<R> {
+    let per = jobs.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        let first: Vec<J> = jobs.by_ref().take(per).collect();
+        let work = &work;
+        let others: Vec<_> = (0..)
+            .map_while(|_| {
+                let chunk: Vec<J> = jobs.by_ref().take(per).collect();
+                (!chunk.is_empty()).then(|| scope.spawn(move || chunk.into_iter().map(work).collect::<Vec<R>>()))
+            })
+            .collect();
+        let mut done: Vec<R> = first.into_iter().map(work).collect();
+        for other in others {
+            done.extend(other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+        }
+        done
+    })
+}
+
 /// A frame's measures in the units the bitstream counts in: mode info units
 /// of 8×8 and superblocks of 64×64.
 pub(super) struct Geometry {
@@ -192,7 +214,7 @@ impl Encoder {
             reference: Reconstruction::new(&geometry, tile_cols_log2),
             previous: std::array::from_fn(|_| vec![0; pixels]),
             unchanged: vec![false; geometry.mi_rows * geometry.mi_cols],
-            search: motion::Search::new(&geometry),
+            search: motion::Search::new(&geometry, threads),
             started: false,
             last_inter: false,
             requantize: false,
@@ -237,25 +259,8 @@ impl Encoder {
         let quantizer = quantize::Quantizer::new(q_index);
         let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
         let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, vectors: &vectors });
-        let code = |(contexts, column): (&mut tile::Contexts, &mut Column)| tile::Tile::new(g, contexts, column, &source, previous, &quantizer).code();
-        let mut jobs = self.contexts.iter_mut().zip(&mut self.recon.columns);
-        // As many tile columns to a thread as it takes to leave none over,
-        // the first thread this one.
-        let per = jobs.len().div_ceil(self.threads);
-        let tiles: Vec<Vec<u8>> = std::thread::scope(|scope| {
-            let first: Vec<_> = jobs.by_ref().take(per).collect();
-            let code = &code;
-            let others: Vec<_> = (0..)
-                .map_while(|_| {
-                    let chunk: Vec<_> = jobs.by_ref().take(per).collect();
-                    (!chunk.is_empty()).then(|| scope.spawn(move || chunk.into_iter().map(code).collect::<Vec<_>>()))
-                })
-                .collect();
-            let mut tiles: Vec<_> = first.into_iter().map(code).collect();
-            for other in others {
-                tiles.extend(other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
-            }
-            tiles
+        let tiles = on_threads(self.threads, self.contexts.iter_mut().zip(&mut self.recon.columns), |(contexts, column)| {
+            tile::Tile::new(g, contexts, column, &source, previous, &quantizer).code()
         });
         let compressed = header::compressed(keyframe);
         let uncompressed = header::Uncompressed {
@@ -286,38 +291,46 @@ impl Encoder {
 
     /// Mark each 8×8 of the frame unchanged where `picture` is the previous
     /// source over the part of it the picture holds, and make the previous
-    /// source `picture`. With `everything`, every 8×8 is changed.
+    /// source `picture`, in a band of 8×8 rows on each thread. With
+    /// `everything`, every 8×8 is changed.
     fn compare(&mut self, picture: &Picture, everything: bool) {
         let g = &self.geometry;
-        let (width, height) = (usize::from(g.width), usize::from(g.height));
+        let width = usize::from(g.width);
         let (planes, stride) = (picture.planes(), picture.strides()[0]);
-        if everything {
-            for (previous, plane) in self.previous.iter_mut().zip(planes) {
-                for y in 0..height {
-                    previous[y * width..][..width].copy_from_slice(&plane[y * stride..][..width]);
+        let band = g.mi_rows.div_ceil(self.threads);
+        let [p0, p1, p2] = &mut self.previous;
+        let bands = self.unchanged.chunks_mut(band * g.mi_cols).zip(p0.chunks_mut(band * 8 * width)).zip(p1.chunks_mut(band * 8 * width)).zip(p2.chunks_mut(band * 8 * width));
+        on_threads(self.threads, bands.enumerate(), |(b, (((unchanged, p0), p1), p2))| {
+            let mut previous = [p0, p1, p2];
+            let y0 = b * band * 8;
+            let rows = previous[0].len() / width;
+            let source = |plane: usize, y: usize, x: usize, wide: usize| &planes[plane][(y0 + y) * stride + x..][..wide];
+            if everything {
+                for (plane, previous) in previous.iter_mut().enumerate() {
+                    for y in 0..rows {
+                        previous[y * width..][..width].copy_from_slice(source(plane, y, 0, width));
+                    }
                 }
+                unchanged.fill(false);
+                return;
             }
-            self.unchanged.fill(false);
-            return;
-        }
-        for mi_row in 0..g.mi_rows {
-            let rows = mi_row * 8..(mi_row * 8 + 8).min(height);
-            for mi_col in 0..g.mi_cols {
-                let x = mi_col * 8;
-                let wide = 8.min(width - x);
-                let same = self.previous.iter().zip(planes).all(|(previous, plane)| {
-                    rows.clone().all(|y| previous[y * width + x..][..wide] == plane[y * stride + x..][..wide])
-                });
-                self.unchanged[mi_row * g.mi_cols + mi_col] = same;
-                if !same {
-                    for (previous, plane) in self.previous.iter_mut().zip(planes) {
-                        for y in rows.clone() {
-                            previous[y * width + x..][..wide].copy_from_slice(&plane[y * stride + x..][..wide]);
+            for (r, unchanged) in unchanged.chunks_exact_mut(g.mi_cols).enumerate() {
+                let rows = r * 8..(r * 8 + 8).min(rows);
+                for (c, unchanged) in unchanged.iter_mut().enumerate() {
+                    let x = c * 8;
+                    let wide = 8.min(width - x);
+                    let same = previous.iter().enumerate().all(|(plane, previous)| rows.clone().all(|y| previous[y * width + x..][..wide] == *source(plane, y, x, wide)));
+                    *unchanged = same;
+                    if !same {
+                        for (plane, previous) in previous.iter_mut().enumerate() {
+                            for y in rows.clone() {
+                                previous[y * width + x..][..wide].copy_from_slice(source(plane, y, x, wide));
+                            }
                         }
                     }
                 }
             }
-        }
+        });
     }
 
     /// The last frame coded, as a decoder has it: the planes, tight at the
@@ -528,11 +541,13 @@ mod tests {
 
     #[test]
     fn threads_change_nothing_but_the_time() {
-        // Past 4096 there are two tile columns on one thread as on two.
+        // Past 4096 there are two tile columns on one thread as on two or
+        // three, while the bands the source is compared and hashed in are
+        // one per thread.
         let (w, h) = (4160, 72);
         let rgb = desktop_rgb(w, h);
         let frames = [rgb.clone(), scroll(&rgb, w, 5), drag(&rgb, w, (1900, 8, 400, 40), (300, 3)), edit(rgb, w, (2000, 30, 300, 30), 7)];
-        let [one, two] = [1, 2].map(|threads| {
+        let [one, two, three] = [1, 2, 3].map(|threads| {
             let mut encoder = Encoder::new(w, h, 90, threads).expect("an encoder");
             assert_eq!(encoder.tile_cols_log2, 1);
             let mut out = Vec::new();
@@ -541,7 +556,7 @@ mod tests {
             }
             out
         });
-        assert!(one == two, "{} bytes on one thread, {} on two", one.len(), two.len());
+        assert!(one == two && one == three, "{} bytes on one thread, {} on two, {} on three", one.len(), two.len(), three.len());
     }
 
     /// `rgb`, `w` wide, with its rectangle at `(x, y)` of `rw`×`rh` moved
