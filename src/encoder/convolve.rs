@@ -32,6 +32,28 @@ pub(super) fn predict(src: &[u8], stride: usize, (fx, fy): (usize, usize), w: us
     return scalar::predict(src, stride, (fx, fy), (w, h), out, out_stride);
 }
 
+/// The pass across of `predict` alone: fill the `w`×`h` at the start of
+/// `out` with the pixels `f` sixteenths right of those `BEFORE` columns into
+/// `src`, each row's; `w` is a multiple of 8.
+pub(super) fn across(src: &[u8], stride: usize, f: usize, (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
+    debug_assert!(w.is_multiple_of(8), "{w}×{h}");
+    #[cfg(target_arch = "aarch64")]
+    return neon::across(src, stride, f, (w, h), out, out_stride);
+    #[cfg(target_arch = "x86_64")]
+    return scalar::across(src, stride, f, w, h, out, out_stride);
+}
+
+/// The pass down of `predict` alone: fill the `w`×`h` at the start of `out`
+/// with the pixels `f` sixteenths below those `BEFORE` rows into `src`; `w`
+/// is a multiple of 8.
+pub(super) fn down(src: &[u8], stride: usize, f: usize, (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
+    debug_assert!(w.is_multiple_of(8), "{w}×{h}");
+    #[cfg(target_arch = "aarch64")]
+    return neon::down(src, stride, f, (w, h), out, out_stride);
+    #[cfg(target_arch = "x86_64")]
+    return scalar::down(src, stride, f, w, h, out, out_stride);
+}
+
 #[cfg(any(test, target_arch = "x86_64"))]
 mod scalar {
     use super::{BEFORE, SUBPEL_FILTERS, TAPS};
@@ -110,7 +132,7 @@ mod neon {
 
     /// The taps `f` across the eight pixels from `at` and the seven after.
     #[inline(always)]
-    fn across(src: &[u8], at: usize, f: int16x8_t) -> uint8x8_t {
+    fn across8(src: &[u8], at: usize, f: int16x8_t) -> uint8x8_t {
         unsafe {
             // The last seven read from `at + 7`, so as not to read past them.
             let a = eight(src, at);
@@ -132,19 +154,41 @@ mod neon {
         unsafe { vst1_u8(out.as_mut_ptr(), v) }
     }
 
+    pub(super) fn across(src: &[u8], stride: usize, f: usize, (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
+        let taps = unsafe { vld1q_s16(SUBPEL_FILTERS[f].as_ptr()) };
+        for r in 0..h {
+            for c in (0..w).step_by(8) {
+                store(out, r * out_stride + c, across8(src, r * stride + c, taps));
+            }
+        }
+    }
+
+    pub(super) fn down(src: &[u8], stride: usize, f: usize, (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
+        let f = unsafe { vld1q_s16(SUBPEL_FILTERS[f].as_ptr()) };
+        for c in (0..w).step_by(8) {
+            let row = |r: usize| eight(src, r * stride + c);
+            let (mut s0, mut s1, mut s2, mut s3, mut s4, mut s5, mut s6) = (row(0), row(1), row(2), row(3), row(4), row(5), row(6));
+            for r in 0..h {
+                let s7 = row(r + 7);
+                store(out, r * out_stride + c, taps([s0, s1, s2, s3, s4, s5, s6, s7], f));
+                (s0, s1, s2, s3, s4, s5, s6) = (s1, s2, s3, s4, s5, s6, s7);
+            }
+        }
+    }
+
     pub(super) fn predict(src: &[u8], stride: usize, (fx, fy): (usize, usize), (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
         let (x_taps, y_taps) = unsafe { (vld1q_s16(SUBPEL_FILTERS[fx].as_ptr()), vld1q_s16(SUBPEL_FILTERS[fy].as_ptr())) };
         for c in (0..w).step_by(8) {
             if fy == 0 {
                 for r in 0..h {
-                    store(out, r * out_stride + c, across(src, (r + BEFORE) * stride + c, x_taps));
+                    store(out, r * out_stride + c, across8(src, (r + BEFORE) * stride + c, x_taps));
                 }
                 continue;
             }
             // Row `r` of the eight the next pixel down is taken from, filtered
             // across first where there is a fraction across, and rounded to
             // pixels as a decoder rounds them.
-            let row = |r: usize| if fx == 0 { eight(src, r * stride + c + BEFORE) } else { wide(across(src, r * stride + c, x_taps)) };
+            let row = |r: usize| if fx == 0 { eight(src, r * stride + c + BEFORE) } else { wide(across8(src, r * stride + c, x_taps)) };
             let (mut s0, mut s1, mut s2, mut s3, mut s4, mut s5, mut s6) = (row(0), row(1), row(2), row(3), row(4), row(5), row(6));
             for r in 0..h {
                 let s7 = row(r + 7);
@@ -203,6 +247,32 @@ mod tests {
                         predict(&src, stride, (fx, fy), w, h, &mut out, w);
                         assert_eq!(out, reference(&src, stride, (fx, fy), w, h), "{w}×{h} at ({fx}, {fy}), seed {seed}");
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_pass_is_its_scalar_reference_and_both_are_predict() {
+        for seed in 1..6 {
+            for (w, h) in [(8, 8), (16, 9), (24, 17), (64, 64)] {
+                let stride = w + TAPS - 1;
+                let src = noise(stride * (h + TAPS - 1), seed);
+                for f in 0..16 {
+                    let (mut got, mut want) = (vec![0; w * h], vec![0; w * h]);
+                    across(&src, stride, f, (w, h), &mut got, w);
+                    scalar::across(&src, stride, f, w, h, &mut want, w);
+                    assert_eq!(got, want, "across {w}×{h} at {f}, seed {seed}");
+                    down(&src, stride, f, (w, h), &mut got, w);
+                    scalar::down(&src, stride, f, w, h, &mut want, w);
+                    assert_eq!(got, want, "down {w}×{h} at {f}, seed {seed}");
+                }
+                for (fx, fy) in [(4, 12), (8, 8), (12, 2)] {
+                    let mut temp = vec![0; w * (h + TAPS - 1)];
+                    across(&src, stride, fx, (w, h + TAPS - 1), &mut temp, w);
+                    let mut both = vec![0; w * h];
+                    down(&temp, w, fy, (w, h), &mut both, w);
+                    assert_eq!(both, reference(&src, stride, (fx, fy), w, h), "{w}×{h} at ({fx}, {fy}), seed {seed}");
                 }
             }
         }

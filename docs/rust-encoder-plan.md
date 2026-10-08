@@ -118,7 +118,7 @@ row's second column is built only if the first fails the gate on a capture.
    features off one at a time: forward probability updates (12–32% of the
    bytes) and per-block transform size (up to 28%), done; sub-pixel motion
    (up to 36% on video, nothing on desktop), done on NEON, its filter still
-   to come on AVX2: it cut the bytes 3–10% where it pays, for 40–55% more
+   to come on AVX2: it cut the bytes 3–10% where it pays, for 30–45% more
    time there, and is searched only on frames it has been paying on. Then
    the loop filter (6–20%), the golden frame (2–9%) and 4×4 blocks (19% on
    desktop alone). V, H and TM bought nothing.

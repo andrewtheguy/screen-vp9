@@ -67,19 +67,77 @@ fn partition_context_of(n: u32) -> u8 {
     (0xf << (n + 1)) & 0xf
 }
 
-/// The cheapest way to code `mv` for a block a decoder predicts the vectors
-/// `[nearest, near]` for, at the inter mode probabilities `probs`: as zero,
-/// as one of those, or as a new vector against the nearest; and what that
-/// costs, in 256ths of a bit.
-fn cheapest(mv: Mv, [nearest, near]: [Mv; 2], probs: &[u8; 3]) -> (u32, InterMode) {
-    let new = (mv != nearest).then(|| (InterMode::New.cost(probs) + mv::cost(mv - nearest), InterMode::New));
-    [(InterMode::Zero, Mv::ZERO), (InterMode::Nearest, nearest), (InterMode::Near, near)]
-        .into_iter()
-        .filter(|&(_, predicted)| predicted == mv)
-        .map(|(mode, _)| (mode.cost(probs), mode))
-        .chain(new)
-        .min_by_key(|&(cost, _)| cost)
-        .expect("a new vector when no other way fits")
+/// What the ways of coding a block's vector cost, in 256ths of a bit, for a
+/// block a decoder predicts `predicted`, `[nearest, near]`, for.
+struct Prices {
+    predicted: [Mv; 2],
+    /// Per inter mode, its own bits.
+    modes: [u32; 4],
+}
+
+impl Prices {
+    /// At the inter mode probabilities `probs`.
+    fn new(predicted: [Mv; 2], probs: &[u8; 3]) -> Self {
+        Self { predicted, modes: [InterMode::Zero, InterMode::Nearest, InterMode::Near, InterMode::New].map(|m| m.cost(probs)) }
+    }
+
+    /// The cheapest way to code `mv`: as zero, as one of the vectors
+    /// predicted, or as a new vector against the nearest; and its bits.
+    fn of(&self, mv: Mv) -> (u32, InterMode) {
+        let [nearest, near] = self.predicted;
+        let mut best = None;
+        for (mode, vector) in [(InterMode::Zero, Mv::ZERO), (InterMode::Nearest, nearest), (InterMode::Near, near)] {
+            let cost = self.modes[mode as usize];
+            if vector == mv && best.is_none_or(|(least, _)| cost < least) {
+                best = Some((cost, mode));
+            }
+        }
+        if mv != nearest {
+            let cost = self.modes[InterMode::New as usize] + mv::cost(mv - nearest);
+            if best.is_none_or(|(least, _)| cost < least) {
+                best = Some((cost, InterMode::New));
+            }
+        }
+        best.expect("a new vector when no other way fits")
+    }
+}
+
+/// The best so far of a search between pixels: what it costs, the vector,
+/// and its residual's squared deviation.
+type Found = (i64, Mv, i64);
+
+/// Try, by `cost`, the vector `row` and `col` eighths from `best`'s, which
+/// it becomes if it costs less; and give back what it costs.
+fn try_at(cost: &mut impl FnMut(Mv) -> (i64, i64), best: &mut Found, row: i32, col: i32) -> i64 {
+    let v = Mv { row: best.1.row + row, col: best.1.col + col };
+    let (c, deviation) = cost(v);
+    if c < best.0 {
+        *best = (c, v, deviation);
+    }
+    c
+}
+
+/// Try the vectors `step` eighths each way across and down from `best`'s,
+/// and then the corner between the better of each (libvpx's
+/// `FIRST_LEVEL_CHECKS`).
+fn around(cost: &mut impl FnMut(Mv) -> (i64, i64), best: &mut Found, step: i32) {
+    let centre = *best;
+    let mut from = |row, col| {
+        let mut there = (best.0, centre.1, 0);
+        let c = try_at(cost, &mut there, row, col);
+        if there.1 != centre.1 {
+            *best = there;
+        }
+        c
+    };
+    let (left, right, up, down) = (from(0, -step), from(0, step), from(-step, 0), from(step, 0));
+    from(if up < down { -step } else { step }, if left < right { -step } else { step });
+}
+
+/// `n / d` to the nearest whole number, halves away from zero (libvpx's
+/// `divide_and_round`).
+fn rounded(n: i64, d: i64) -> i64 {
+    if (n < 0) != (d < 0) { (n - d / 2) / d } else { (n + d / 2) / d }
 }
 
 /// The squared error and the bits of a residual whose squared deviation is
@@ -328,8 +386,10 @@ pub(super) struct Tile<'a> {
     best_levels: Vec<i32>,
     best_eobs: Vec<usize>,
     /// Scratch for a block of the previous frame copied out past its edges,
-    /// and for a prediction filtered from it.
+    /// for it filtered across at each sixteenth, and for a prediction
+    /// filtered from it.
     patch: Vec<u8>,
+    planes: [Vec<u8>; 16],
     predicted: Box<[u8; 64 * 64]>,
     /// Scratch for a transform block's residual and coefficients, and for
     /// the token coder.
@@ -372,6 +432,7 @@ impl<'a> Tile<'a> {
             best_levels: vec![0; 64 * 64],
             best_eobs: Vec::with_capacity(256),
             patch: Vec::new(),
+            planes: std::array::from_fn(|_| Vec::new()),
             predicted: Box::new([0; 64 * 64]),
             residual: Box::new([0; 1024]),
             coeffs: Box::new([0; 1024]),
@@ -867,7 +928,7 @@ impl<'a> Tile<'a> {
     /// The cheapest way to code `mv` for the square block of `1 << n` 8×8s
     /// at `(mi_row, mi_col)`.
     fn inter_mode(&self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> (InterMode, Mv) {
-        (cheapest(mv, self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]).1, mv)
+        (Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]).of(mv).1, mv)
     }
 
     /// The vector within three quarters of a pixel of `mv` that the square
@@ -876,10 +937,12 @@ impl<'a> Tile<'a> {
     /// `RATE_WEIGHT`, the variance being an error to come in the residual,
     /// and then kept only where it pays as `laplacian` models it: libvpx's
     /// pruned sub-pixel search
-    /// (`vp9_find_best_sub_pixel_tree_pruned_more`), a half pixel each way
-    /// across and down and then the corner between the better of each, and
-    /// the same a quarter pixel from the best. A block the picture does not
-    /// hold whole keeps `mv`, as does one whose luma `mv` predicts exactly.
+    /// (`vp9_find_best_sub_pixel_tree_pruned_more`), a half pixel where the
+    /// whole pixels around `mv` say, or each way, and then each way a quarter
+    /// pixel from the best. The patch around `mv` is filtered across once
+    /// per sixteenth the vectors tried ask for, so each of them is at most a
+    /// pass down. A block the picture does not hold whole keeps `mv`, as
+    /// does one whose luma `mv` predicts exactly.
     fn refine(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> Mv {
         let src = self.source;
         let size = 8 << n;
@@ -893,30 +956,53 @@ impl<'a> Tile<'a> {
         if !self.searches.is_multiple_of(previous.search_every) {
             return mv;
         }
-        let predicted = self.candidates(mi_row, mi_col, n);
-        let probs = INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)];
+        let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
         let ac = i64::from(self.quantizer.ac_step());
         let count = (size * size) as i64;
         let ((dx, dy), _) = mv.split();
         // Every vector tried is less than a pixel from `mv`, so a pixel more
-        // each way of the filter's reach holds what any of them reads.
-        let margin = 1 + convolve::BEFORE as isize;
-        let reach = size + 2 + TAPS - 1;
-        let (block, stride) = reference.block(0, (px as isize + dx - margin, py as isize + dy - margin), (reach, reach), (src.width, src.height), &mut self.patch);
-        let prediction = &mut self.predicted[..];
+        // each way of the filter's reach holds what any of them reads; and
+        // filtered across, a row of whole eights from a pixel before `mv`'s
+        // holds any of them filtered across.
+        let before = convolve::BEFORE;
+        let (wide, high) = (size + 8, size + 2 + TAPS - 1);
+        let margin = 1 + before as isize;
+        let (block, stride) = reference.block(0, (px as isize + dx - margin, py as isize + dy - margin), (wide + TAPS - 1, high), (src.width, src.height), &mut self.patch);
+        // Per sixteenth across, the patch filtered across at it, once a
+        // vector tried has asked for it.
+        let (planes, prediction) = (&mut self.planes, &mut self.predicted[..]);
+        let mut filtered = 0u16;
         let source = &src.planes[0][py * src.stride + px..];
-        let bits = |v: Mv| cheapest(v, predicted, &probs).0;
+        let bits = |v: Mv| prices.of(v).0;
         let rate = |v: Mv| RATE_WEIGHT * ac * ac * i64::from(bits(v));
         // A vector's luma residual: its squared deviation from its mean, and
         // that weighed with the vector's bits.
         let mut cost = |v: Mv| {
-            let ((vx, vy), fraction) = v.split();
-            let at = (vy - dy + 1) as usize * stride + (vx - dx + 1) as usize;
-            convolve::predict(&block[at..], stride, fraction, size, size, prediction, size);
+            let ((vx, vy), (fx, fy)) = v.split();
+            // Where the vector's whole pixels are from the patch's first.
+            let (x, y) = ((vx - dx + 1) as usize, (vy - dy + 1) as usize);
+            // What to filter down: the patch, or the patch filtered across,
+            // from `before` rows above the vector's.
+            let (across, from, x) = if fx == 0 {
+                (block, stride, x + before)
+            } else {
+                if filtered & 1 << fx == 0 {
+                    planes[fx].resize(wide * high, 0);
+                    convolve::across(block, stride, fx, (wide, high), &mut planes[fx], wide);
+                    filtered |= 1 << fx;
+                }
+                (&planes[fx][..], wide, x)
+            };
+            let (predicted, predicted_stride) = if fy == 0 {
+                (&across[(y + before) * from + x..], from)
+            } else {
+                convolve::down(&across[y * from + x..], from, fy, (size, size), prediction, size);
+                (&prediction[..], size)
+            };
             let mut m = Moments::default();
             for r in (0..size).step_by(8) {
                 for c in (0..size).step_by(8) {
-                    let (sum, squares) = pixels::difference_moments(&source[r * src.stride + c..], src.stride, &prediction[r * size + c..], size);
+                    let (sum, squares) = pixels::difference_moments(&source[r * src.stride + c..], src.stride, &predicted[r * predicted_stride + c..], predicted_stride);
                     m.sums[0] += i64::from(sum);
                     m.squares += i64::from(squares);
                 }
@@ -931,19 +1017,22 @@ impl<'a> Tile<'a> {
             return mv;
         }
         let mut best = (first.0, mv, first.1);
-        for step in [4, 2] {
-            let centre = best.1;
-            let mut at = |row: i32, col: i32| {
-                let v = Mv { row: centre.row + row, col: centre.col + col };
-                let (c, deviation) = cost(v);
-                if c < best.0 {
-                    best = (c, v, deviation);
+        // From a vector of whole pixels that predicts better than the whole
+        // pixels around it, a half pixel only where those say the least
+        // lies, fitting a parabola through them (libvpx's
+        // `get_cost_surf_min`); otherwise each way.
+        let mut whole = |row: i32, col: i32| cost(Mv { row: mv.row + row, col: mv.col + col }).0;
+        match (mv.split().1 == (0, 0)).then(|| [whole(0, -8), whole(0, 8), whole(-8, 0), whole(8, 0)]) {
+            Some([left, right, up, down]) if [left, right, up, down].iter().all(|&c| c > first.0) => {
+                let towards = |less: i64, more: i64| rounded(less - more, less - 2 * first.0 + more) as i32;
+                let (col, row) = (towards(left, right), towards(up, down));
+                if (row, col) != (0, 0) {
+                    try_at(&mut cost, &mut best, row * 4, col * 4);
                 }
-                c
-            };
-            let (left, right, up, down) = (at(0, -step), at(0, step), at(-step, 0), at(step, 0));
-            at(if up < down { -step } else { step }, if left < right { -step } else { step });
+            }
+            _ => around(&mut cost, &mut best, 4),
         }
+        around(&mut cost, &mut best, 2);
         // What the residual costs coded is no straight line in its
         // deviation: the vector found is taken only where its residual
         // modelled as coded, and its bits, do better.
