@@ -1,0 +1,4 @@
+# The encoder's kernels are AVX2 on amd64, which its baseline lacks; a user
+# building this crate for amd64 sets the same (see `src/encoder/lanes.rs`).
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-feature=+avx2"]

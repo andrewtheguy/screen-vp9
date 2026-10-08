@@ -7,9 +7,7 @@
 //! and the encoder predicts later blocks from the same pixels.
 
 use super::dct::{fdct32, idct4, idct8, idct16, idct32};
-#[cfg(target_arch = "x86_64")]
-use super::lanes::{avx2::I32x8, has_avx2};
-use super::lanes::{Lanes, Vector};
+use super::lanes::{Lanes, Vector, Vector4};
 
 /// cos(π/4) in 14 bits.
 const COSPI_16_64: i32 = 11585;
@@ -231,20 +229,10 @@ impl Scale {
 /// The forward DCT of an `n`×`n` residual, `n` 4 to 32, both raster order:
 /// `out[v * n + h]` holds vertical frequency `v` and horizontal `h`.
 pub(super) fn forward(n: usize, residual: &[i32], out: &mut [i32]) {
-    #[cfg(target_arch = "x86_64")]
-    if n >= 8 && has_avx2() {
-        // SAFETY: the machine has AVX2.
-        return unsafe { forward_avx2(n, residual, out) };
+    if n == 4 {
+        return forward_in::<Vector4>(n, residual, out);
     }
     forward_in::<Vector>(n, residual, out);
-}
-
-/// `forward` in AVX2's eight lanes, which are wider than a 4×4's rows; only
-/// the tests transform a 4×4, no block being smaller than 8×8.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-fn forward_avx2(n: usize, residual: &[i32], out: &mut [i32]) {
-    forward_in::<I32x8>(n, residual, out);
 }
 
 /// `forward` in lanes of `V`: columns, then rows, each pass scaled as
@@ -288,19 +276,10 @@ fn forward_n<V: Lanes, T: OneD<N>, const N: usize, const AREA: usize>(residual: 
 /// coefficients the scan reached; with one, only the DC is there, which
 /// libvpx's decoder takes its own path for, to the same result.
 pub(super) fn inverse_add(n: usize, coeffs: &[i32], eob: usize, dst: &mut [u8], stride: usize) {
-    #[cfg(target_arch = "x86_64")]
-    if n >= 8 && has_avx2() {
-        // SAFETY: the machine has AVX2.
-        return unsafe { inverse_add_avx2(n, coeffs, eob, dst, stride) };
+    if n == 4 {
+        return inverse_add_in::<Vector4>(n, coeffs, eob, dst, stride);
     }
     inverse_add_in::<Vector>(n, coeffs, eob, dst, stride);
-}
-
-/// `inverse_add` in AVX2's eight lanes, from 8×8 up as `forward_avx2`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-fn inverse_add_avx2(n: usize, coeffs: &[i32], eob: usize, dst: &mut [u8], stride: usize) {
-    inverse_add_in::<I32x8>(n, coeffs, eob, dst, stride);
 }
 
 /// `inverse_add` in lanes of `V`: rows, then columns, then the rounding

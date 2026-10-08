@@ -1,10 +1,7 @@
 //! A fixed quantizer: one q index for every coefficient of the frame, at
 //! libvpx's realtime rounding (`vp9_quantize_fp`). Quantizing is NEON on
-//! arm64 and AVX2 on amd64 that has it, held by its tests to the scalar
-//! reference beside it.
-
-#[cfg(target_arch = "x86_64")]
-use super::lanes::has_avx2;
+//! arm64 and AVX2 on amd64, held by its tests to the scalar reference
+//! beside it.
 use super::tables::{AC_QLOOKUP, DC_QLOOKUP, ISCAN_4X4, ISCAN_8X8, ISCAN_16X16, ISCAN_32X32};
 
 /// The steps and roundings at one q index, `[DC, AC]` each.
@@ -40,15 +37,10 @@ impl Quantizer {
             _ => &ISCAN_32X32,
         };
         let terms = self.terms(n);
-        #[cfg(target_arch = "x86_64")]
-        if n >= 8 && has_avx2() {
-            // SAFETY: the machine has AVX2.
-            return unsafe { avx2::quantize(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]) };
-        }
         #[cfg(target_arch = "aarch64")]
         return neon::quantize(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]);
-        #[cfg(not(target_arch = "aarch64"))]
-        return quantize_scalar(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]);
+        #[cfg(target_arch = "x86_64")]
+        return avx2::quantize(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]);
     }
 
     /// How a coefficient of an `n`×`n` transform is quantized. At 32×32 a
@@ -105,7 +97,7 @@ struct Terms {
 }
 
 /// `Quantizer::quantize` one coefficient at a time, in raster order.
-#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+#[cfg(test)]
 fn quantize_scalar(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> usize {
     let mut eob = 0;
     for (rc, (&coeff, out)) in coeffs.iter().zip(levels).enumerate() {
@@ -160,33 +152,36 @@ mod avx2 {
 
     use super::Terms;
 
-    /// `Quantizer::quantize` eight coefficients at a time, from 8×8 up.
-    #[target_feature(enable = "avx2")]
+    /// `Quantizer::quantize` eight coefficients at a time.
     pub(super) fn quantize(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> usize {
-        // Every load and store is of eight values inside slices of whole
-        // eights, `coeffs` and `levels` as long as `iscan`.
+        // The crate is built for AVX2, but its intrinsics are still `unsafe`
+        // to call from a function not marked for it; and every load and store
+        // is of eight values inside slices of whole eights, `coeffs` and
+        // `levels` as long as `iscan`.
         assert!(coeffs.len() == iscan.len() && levels.len() == iscan.len() && iscan.len().is_multiple_of(8));
-        // The DC's terms in the first lane of the first eight, the rest the
-        // AC's.
-        let lanes = |t: [i32; 2], first: bool| if first { _mm256_blend_epi32::<1>(_mm256_set1_epi32(t[1]), _mm256_set1_epi32(t[0])) } else { _mm256_set1_epi32(t[1]) };
-        let shift = _mm_cvtsi32_si128(terms.shift as i32);
-        let most = _mm256_set1_epi32(i32::from(i16::MAX));
-        let mut eob = _mm256_setzero_si256();
-        for at in (0..iscan.len()).step_by(8) {
-            let first = at == 0;
-            let c = unsafe { _mm256_loadu_si256(coeffs.as_ptr().add(at).cast()) };
-            let abs = _mm256_abs_epi32(c);
-            let level = _mm256_sra_epi32(_mm256_mullo_epi32(_mm256_min_epi32(_mm256_add_epi32(abs, lanes(terms.round, first)), most), lanes(terms.quant, first)), shift);
-            let level = _mm256_andnot_si256(_mm256_cmpgt_epi32(lanes(terms.least, first), abs), level);
-            // The sign put back: negated where `c` is negative.
-            let sign = _mm256_srai_epi32::<31>(c);
-            unsafe { _mm256_storeu_si256(levels.as_mut_ptr().add(at).cast(), _mm256_sub_epi32(_mm256_xor_si256(level, sign), sign)) };
-            let ends = _mm256_cvtepu16_epi32(unsafe { _mm_loadu_si128(iscan.as_ptr().add(at).cast()) });
-            eob = _mm256_max_epu32(eob, _mm256_andnot_si256(_mm256_cmpeq_epi32(level, _mm256_setzero_si256()), ends));
+        unsafe {
+            // The DC's terms in the first lane of the first eight, the rest the
+            // AC's.
+            let lanes = |t: [i32; 2], first: bool| if first { _mm256_blend_epi32::<1>(_mm256_set1_epi32(t[1]), _mm256_set1_epi32(t[0])) } else { _mm256_set1_epi32(t[1]) };
+            let shift = _mm_cvtsi32_si128(terms.shift as i32);
+            let most = _mm256_set1_epi32(i32::from(i16::MAX));
+            let mut eob = _mm256_setzero_si256();
+            for at in (0..iscan.len()).step_by(8) {
+                let first = at == 0;
+                let c = _mm256_loadu_si256(coeffs.as_ptr().add(at).cast());
+                let abs = _mm256_abs_epi32(c);
+                let level = _mm256_sra_epi32(_mm256_mullo_epi32(_mm256_min_epi32(_mm256_add_epi32(abs, lanes(terms.round, first)), most), lanes(terms.quant, first)), shift);
+                let level = _mm256_andnot_si256(_mm256_cmpgt_epi32(lanes(terms.least, first), abs), level);
+                // The sign put back: negated where `c` is negative.
+                let sign = _mm256_srai_epi32::<31>(c);
+                _mm256_storeu_si256(levels.as_mut_ptr().add(at).cast(), _mm256_sub_epi32(_mm256_xor_si256(level, sign), sign));
+                let ends = _mm256_cvtepu16_epi32(_mm_loadu_si128(iscan.as_ptr().add(at).cast()));
+                eob = _mm256_max_epu32(eob, _mm256_andnot_si256(_mm256_cmpeq_epi32(level, _mm256_setzero_si256()), ends));
+            }
+            let eob = _mm_max_epu32(_mm256_castsi256_si128(eob), _mm256_extracti128_si256::<1>(eob));
+            let eob = _mm_max_epu32(eob, _mm_shuffle_epi32::<0b01_00_11_10>(eob));
+            _mm_cvtsi128_si32(_mm_max_epu32(eob, _mm_shuffle_epi32::<0b10_11_00_01>(eob))) as usize
         }
-        let eob = _mm_max_epu32(_mm256_castsi256_si128(eob), _mm256_extracti128_si256::<1>(eob));
-        let eob = _mm_max_epu32(eob, _mm_shuffle_epi32::<0b01_00_11_10>(eob));
-        _mm_cvtsi128_si32(_mm_max_epu32(eob, _mm_shuffle_epi32::<0b10_11_00_01>(eob))) as usize
     }
 }
 

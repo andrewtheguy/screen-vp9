@@ -4,10 +4,15 @@
 //! vector's own operations differ from the scalar ones, which the tests of
 //! each kernel hold them to.
 //!
-//! NEON is always there on arm64, so it is used without asking; AVX2 on
-//! amd64 is asked about at run time, by `has_avx2`, and the code that uses it
-//! is compiled for it in a function of its own, entered only once it is
-//! known to be there.
+//! NEON is always there on arm64. AVX2 is not in amd64's baseline, and the
+//! crate is built for it: `-C target-feature=+avx2`, which this repository's
+//! `.cargo/config.toml` sets and a user's build sets the same way. The
+//! scalar lane is then only the reference.
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+compile_error!("screen-vp9 needs AVX2 on amd64: build with `-C target-feature=+avx2`, as its `.cargo/config.toml` does");
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("screen-vp9 is for arm64 and amd64");
 
 use std::ops::{Add, Mul, Neg, Sub};
 
@@ -53,18 +58,17 @@ pub(super) trait Lanes: Copy + Add<Output = Self> + Sub<Output = Self> + Neg<Out
     }
 }
 
-/// The widest lanes every machine of this architecture has: NEON's on
-/// arm64; on amd64 one lane, AVX2's eight being asked for at run time.
+/// The widest lanes: NEON's four on arm64, AVX2's eight on amd64.
 #[cfg(target_arch = "aarch64")]
 pub(super) type Vector = neon::I32x4;
-#[cfg(not(target_arch = "aarch64"))]
-pub(super) type Vector = i32;
-
-/// Whether this machine has AVX2.
 #[cfg(target_arch = "x86_64")]
-pub(super) fn has_avx2() -> bool {
-    std::arch::is_x86_feature_detected!("avx2")
-}
+pub(super) type Vector = avx2::I32x8;
+
+/// Four lanes, for a 4×4, whose rows are narrower than AVX2's eight.
+#[cfg(target_arch = "aarch64")]
+pub(super) type Vector4 = neon::I32x4;
+#[cfg(target_arch = "x86_64")]
+pub(super) type Vector4 = avx2::I32x4;
 
 impl Lanes for i32 {
     const WIDTH: usize = 1;
@@ -253,10 +257,10 @@ pub(super) mod avx2 {
 
     use super::Lanes;
 
-    // An `I32x8` is only made inside a function compiled for AVX2 and
-    // entered once `has_avx2()` has said it is there, where these are inlined;
-    // that is what the `unsafe` around an intrinsic is for, unless a comment
-    // says what else it is for.
+    // The intrinsics are `#[target_feature]` functions, `unsafe` to call from
+    // one without it even where the crate is built for AVX2, so that is what
+    // the `unsafe` around one is for, unless a comment says what else it is
+    // for.
 
     /// Eight `i32` in an AVX2 register.
     #[derive(Clone, Copy)]
@@ -396,6 +400,132 @@ pub(super) mod avx2 {
             }
             }
             let done = eights.len() * 8;
+            <i32 as Lanes>::add_shifted(&values[done..], shift, rest);
+        }
+    }
+
+    /// Four `i32` in the low half of an AVX2 register.
+    #[derive(Clone, Copy)]
+    pub(in super::super) struct I32x4(__m128i);
+
+    impl Add for I32x4 {
+        type Output = Self;
+        #[inline(always)]
+        fn add(self, other: Self) -> Self {
+            unsafe { Self(_mm_add_epi32(self.0, other.0)) }
+        }
+    }
+
+    impl Sub for I32x4 {
+        type Output = Self;
+        #[inline(always)]
+        fn sub(self, other: Self) -> Self {
+            unsafe { Self(_mm_sub_epi32(self.0, other.0)) }
+        }
+    }
+
+    impl Neg for I32x4 {
+        type Output = Self;
+        #[inline(always)]
+        fn neg(self) -> Self {
+            unsafe { Self(_mm_sub_epi32(_mm_setzero_si128(), self.0)) }
+        }
+    }
+
+    impl Mul<i32> for I32x4 {
+        type Output = Self;
+        #[inline(always)]
+        fn mul(self, k: i32) -> Self {
+            unsafe { Self(_mm_mullo_epi32(self.0, _mm_set1_epi32(k))) }
+        }
+    }
+
+    impl Lanes for I32x4 {
+        const WIDTH: usize = 4;
+
+        #[inline(always)]
+        fn splat(v: i32) -> Self {
+            unsafe { Self(_mm_set1_epi32(v)) }
+        }
+
+        #[inline(always)]
+        fn load(src: &[i32]) -> Self {
+            let src = &src[..4];
+            // SAFETY: `src` holds the four values read.
+            Self(unsafe { _mm_loadu_si128(src.as_ptr().cast()) })
+        }
+
+        #[inline(always)]
+        fn store(self, dst: &mut [i32]) {
+            let dst = &mut dst[..4];
+            // SAFETY: `dst` holds the four values written.
+            unsafe { _mm_storeu_si128(dst.as_mut_ptr().cast(), self.0) }
+        }
+
+        #[inline(always)]
+        fn round14(self) -> Self {
+            unsafe { Self(_mm_srai_epi32::<14>(_mm_add_epi32(self.0, _mm_set1_epi32(1 << 13)))) }
+        }
+
+        #[inline(always)]
+        fn wrap16(self) -> Self {
+            unsafe { Self(_mm_srai_epi32::<16>(_mm_slli_epi32::<16>(self.0))) }
+        }
+
+        #[inline(always)]
+        fn shr(self, n: u32) -> Self {
+            unsafe { Self(_mm_sra_epi32(self.0, _mm_cvtsi32_si128(n as i32))) }
+        }
+
+        #[inline(always)]
+        fn positive(self) -> Self {
+            unsafe { Self(_mm_srli_epi32::<31>(_mm_cmpgt_epi32(self.0, _mm_setzero_si128()))) }
+        }
+
+        #[inline(always)]
+        fn negative(self) -> Self {
+            unsafe { Self(_mm_srli_epi32::<31>(self.0)) }
+        }
+
+        #[inline(always)]
+        fn is_zero(self) -> bool {
+            unsafe { _mm_testz_si128(self.0, self.0) != 0 }
+        }
+
+        #[inline(always)]
+        fn transpose(n: usize, src: &[i32], dst: &mut [i32]) {
+            // A 4×4 at a time, its rows interleaved across 32 and then 64
+            // bits.
+            unsafe {
+            for r in (0..n).step_by(4) {
+                for c in (0..n).step_by(4) {
+                    let row = |k: usize| Self::load(&src[(r + k) * n + c..]).0;
+                    let (t0, t1) = (_mm_unpacklo_epi32(row(0), row(1)), _mm_unpackhi_epi32(row(0), row(1)));
+                    let (t2, t3) = (_mm_unpacklo_epi32(row(2), row(3)), _mm_unpackhi_epi32(row(2), row(3)));
+                    Self(_mm_unpacklo_epi64(t0, t2)).store(&mut dst[c * n + r..]);
+                    Self(_mm_unpackhi_epi64(t0, t2)).store(&mut dst[(c + 1) * n + r..]);
+                    Self(_mm_unpacklo_epi64(t1, t3)).store(&mut dst[(c + 2) * n + r..]);
+                    Self(_mm_unpackhi_epi64(t1, t3)).store(&mut dst[(c + 3) * n + r..]);
+                }
+            }
+            }
+        }
+
+        #[inline(always)]
+        fn add_shifted(values: &[i32], shift: u32, dst: &mut [u8]) {
+            let (fours, rest) = dst.as_chunks_mut::<4>();
+            unsafe {
+            let (round, count) = (_mm_set1_epi32(1 << (shift - 1)), _mm_cvtsi32_si128(shift as i32));
+            for (i, dst) in fours.iter_mut().enumerate() {
+                // As `I32x8::add_shifted`, four pixels at a time.
+                let v = _mm_sra_epi32(_mm_add_epi32(Self::load(&values[i * 4..]).0, round), count);
+                let v = _mm_packs_epi32(v, v);
+                let pixels = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(i32::from_le_bytes(*dst)));
+                let sum = _mm_adds_epi16(pixels, v);
+                *dst = _mm_cvtsi128_si32(_mm_packus_epi16(sum, sum)).to_le_bytes();
+            }
+            }
+            let done = fours.len() * 4;
             <i32 as Lanes>::add_shifted(&values[done..], shift, rest);
         }
     }

@@ -81,7 +81,8 @@ row's second column is built only if the first fails the gate on a capture.
 - **Scrolls and window drags:** hash-based whole-pixel motion search, which
   finds exact matches cheaply.
 - **SIMD kernels:** NEON on arm64, where it is always there, and AVX2 on
-  amd64, chosen at run time, each with a scalar reference it is tested
+  amd64, which the crate is built for (`-C target-feature=+avx2`; a build
+  without it is refused), each with a scalar reference it is tested
   against: block difference, forward and inverse transforms, quantization.
 - **Threading:** one thread per tile column, and the comparison with the
   previous source and the motion search's hashing in a band of rows per
@@ -107,10 +108,10 @@ row's second column is built only if the first fails the gate on a capture.
       moments the partition decision reads, each tested against its scalar
       reference. DC prediction and block copy are not hot and stay scalar.
    3. **AVX2.** Done, on an amd64 machine, since Rosetta does not translate
-      AVX2: the same kernels, chosen at run time, and the motion search's
-      hashing compiled for AVX2 beside the baseline. Scalar, NEON and AVX2
-      code the same streams to the byte, and the whole test suite passes on
-      amd64.
+      AVX2: the same kernels, a 4×4's in AVX2's lower half, with the crate
+      built for AVX2 rather than choosing it at run time, so there is no
+      scalar path on amd64. Scalar, NEON and AVX2 code the same streams to
+      the byte, and the whole test suite passes on amd64.
 5. **The second column**, row by row, only where a capture still fails the
    gate, and each kept only if it pays there. In the order of what each is
    worth to libvpx held to this subset, measured by switching libvpx's

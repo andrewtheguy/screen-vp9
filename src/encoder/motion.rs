@@ -22,8 +22,6 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 use super::mv::{MAX_PIXELS, Mv};
-#[cfg(target_arch = "x86_64")]
-use super::lanes::has_avx2;
 use super::{Geometry, on_threads};
 
 /// The vectors a superblock offers: its own anchors' best two, then the
@@ -247,25 +245,6 @@ impl Shape {
     /// Take again the anchors of the 8×8s `cols` of 8×8 row `r` from `luma`,
     /// into `anchors` and `counts`, that row's.
     fn hash_run(&self, luma: &[u8], r: usize, cols: std::ops::Range<usize>, scratch: &mut Scratch, anchors: &mut [Anchors], counts: &mut [u8]) {
-        #[cfg(target_arch = "x86_64")]
-        if has_avx2() {
-            // SAFETY: the machine has AVX2.
-            return unsafe { self.hash_run_avx2(luma, r, cols, scratch, anchors, counts) };
-        }
-        self.hash_run_in(luma, r, cols, scratch, anchors, counts);
-    }
-
-    /// `hash_run` compiled for AVX2, whose multiplies of eight lanes the
-    /// row hashes are vectorized to; amd64's baseline has no multiply of
-    /// 32-bit lanes.
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx2")]
-    fn hash_run_avx2(&self, luma: &[u8], r: usize, cols: std::ops::Range<usize>, scratch: &mut Scratch, anchors: &mut [Anchors], counts: &mut [u8]) {
-        self.hash_run_in(luma, r, cols, scratch, anchors, counts);
-    }
-
-    #[inline(always)]
-    fn hash_run_in(&self, luma: &[u8], r: usize, cols: std::ops::Range<usize>, scratch: &mut Scratch, anchors: &mut [Anchors], counts: &mut [u8]) {
         let (width, height) = (self.width, self.height);
         counts[cols.clone()].fill(0);
         // Windows start where a window one pixel right and one down still
