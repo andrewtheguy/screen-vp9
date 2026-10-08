@@ -25,7 +25,7 @@ use super::tables::{
     INTER_MODE_PROBS, INTRA_INTER_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, MV_REF_BLOCKS, PARTITION_PROBS, SINGLE_REF_PROBS,
     UV_MODE_PROBS, Y_MODE_PROBS,
 };
-use super::{Column, Geometry, Reconstruction, pixels, tokens, transform};
+use super::{Column, Geometry, Reconstruction, loopfilter, pixels, tokens, transform};
 
 /// `DC_PRED`'s index among the intra modes.
 const DC_PRED: usize = 0;
@@ -247,6 +247,8 @@ pub(super) struct ModeInfo {
     inter: Option<(InterMode, Mv)>,
     /// The transform size, as log2 less 2.
     tx: usize,
+    /// The side of the block it is in, in 8×8s as log2.
+    n: u32,
 }
 
 /// What a decoder keeps while it reads a tile column, which nothing outside
@@ -261,6 +263,8 @@ pub(super) struct Contexts {
     above_nonzero: [Vec<u8>; 3],
     mode_info: Vec<ModeInfo>,
     last_mode_info: Vec<ModeInfo>,
+    /// The column's width in 8×8s.
+    width: usize,
     /// Whether a decoder predicts vectors from the frame before's too:
     /// when that was an inter frame (libvpx's `use_prev_frame_mvs`).
     use_last: bool,
@@ -282,6 +286,7 @@ impl Contexts {
             above_nonzero: std::array::from_fn(|_| vec![0; sbs * 16]),
             mode_info: vec![ModeInfo::default(); geometry.mi_rows * cols.len()],
             last_mode_info: vec![ModeInfo::default(); geometry.mi_rows * cols.len()],
+            width: cols.len(),
             use_last: false,
             searched: [0.0; 2],
             tape: Tape::new(),
@@ -292,6 +297,13 @@ impl Contexts {
     #[cfg(test)]
     pub(super) fn vectors(&self) -> impl Iterator<Item = Mv> + '_ {
         self.mode_info.iter().filter_map(|m| m.inter.map(|(_, mv)| mv))
+    }
+
+    /// What the loop filter reads of the block coded last at the 8×8 in row
+    /// `mi_row` and the column's 8×8 column `col`.
+    pub(super) fn filtered(&self, mi_row: usize, col: usize) -> loopfilter::Block {
+        let m = self.mode_info[mi_row * self.width + col];
+        loopfilter::Block { n: m.n, tx: m.tx, intra: m.inter.is_none(), skip: m.skip }
     }
 
     /// Back to how a decoder starts a frame, the mode info coded last kept
@@ -910,7 +922,7 @@ impl<'a> Tile<'a> {
         }
         for row in mi_row..(mi_row + bw).min(g.mi_rows) {
             let at = self.at(row, mi_col);
-            self.contexts.mode_info[at..][..bw.min(self.mi_col_end - mi_col)].fill(ModeInfo { skip, inter, tx });
+            self.contexts.mode_info[at..][..bw.min(self.mi_col_end - mi_col)].fill(ModeInfo { skip, inter, tx, n });
         }
         if skip {
             // A skipped block leaves no coefficient above or left of the

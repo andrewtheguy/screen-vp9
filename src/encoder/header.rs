@@ -61,6 +61,8 @@ pub(super) struct Uncompressed {
     pub(super) width: u16,
     pub(super) height: u16,
     pub(super) q_index: u8,
+    /// The loop filter's level, 0 for none.
+    pub(super) filter_level: u8,
     pub(super) tile_cols_log2: u32,
     pub(super) min_log2_tile_cols: u32,
     pub(super) max_log2_tile_cols: u32,
@@ -129,10 +131,12 @@ impl Uncompressed {
         w.flag(true); // refresh_frame_context
         w.flag(true); // frame_parallel_decoding_mode
         w.put(0, 2); // frame_context_idx
-        // loop_filter_params: level 0, so no filter runs.
-        w.put(0, 6); // loop_filter_level
+        // loop_filter_params: the deltas enabled at the values a decoder
+        // starts each keyframe with, an intra block's level one more.
+        w.put(u32::from(self.filter_level), 6); // loop_filter_level
         w.put(0, 3); // loop_filter_sharpness
-        w.flag(false); // loop_filter_delta_enabled
+        w.flag(true); // loop_filter_delta_enabled
+        w.flag(false); // loop_filter_delta_update
         // quantization_params: one q index for every coefficient.
         w.put(u32::from(self.q_index), 8);
         w.flag(false); // delta_coded, luma DC
@@ -203,7 +207,7 @@ mod tests {
 
     #[test]
     fn the_keyframe_header_reads_as_profile_1_at_bt601_studio_swing() {
-        let header = Uncompressed { keyframe: true, width: 1440, height: 900, q_index: 32, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2 };
+        let header = Uncompressed { keyframe: true, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2 };
         let bytes = header.write(7);
         let crate::FrameHeader { profile, keyframe } = crate::frame_header(&bytes).expect("a VP9 frame");
         assert_eq!((profile, keyframe), (1, true));
@@ -219,18 +223,20 @@ mod tests {
         // filter, then the q index.
         assert_eq!(field(71, 1), 0);
         assert_eq!(field(72, 2), 0b11, "refreshed, frame parallel");
-        assert_eq!(field(74, 12), 0, "context 0, loop filter level, sharpness and deltas off");
-        assert_eq!(field(86, 8), 32);
+        assert_eq!(field(74, 2), 0, "context 0");
+        assert_eq!(field(76, 6), 10, "loop filter level");
+        assert_eq!(field(82, 5), 0b00010, "sharpness 0, deltas on and not updated");
+        assert_eq!(field(87, 8), 32);
         // Three deltas and segmentation off, a 0 that stops the tile columns
-        // at one, one tile row, then the size: 116 bits in 15 bytes.
-        assert_eq!(field(94, 6), 0);
-        assert_eq!(field(100, 16), 7);
+        // at one, one tile row, then the size: 117 bits in 15 bytes.
+        assert_eq!(field(95, 6), 0);
+        assert_eq!(field(101, 16), 7);
         assert_eq!(bytes.len(), 15);
     }
 
     #[test]
     fn the_inter_header_reads_last_and_refreshes_it() {
-        let header = Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2 };
+        let header = Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2 };
         let bytes = header.write(9);
         let crate::FrameHeader { profile, keyframe } = crate::frame_header(&bytes).expect("a VP9 frame");
         assert_eq!((profile, keyframe), (1, false));
@@ -243,11 +249,12 @@ mod tests {
         assert_eq!(field(30, 2), 0b10, "the size of LAST, no render size");
         assert_eq!(field(32, 4), 0b0001, "no high precision, EIGHTTAP");
         assert_eq!(field(36, 2), 0b11, "refreshed, frame parallel");
-        assert_eq!(field(38, 12), 0);
-        assert_eq!(field(50, 8), 32);
-        assert_eq!(field(58, 6), 0);
-        assert_eq!(field(64, 16), 9);
-        assert_eq!(bytes.len(), 10);
+        assert_eq!(field(38, 2), 0, "context 0");
+        assert_eq!(field(40, 11), 10 << 5 | 0b00010, "loop filter level, sharpness, deltas");
+        assert_eq!(field(51, 8), 32);
+        assert_eq!(field(59, 6), 0);
+        assert_eq!(field(65, 16), 9);
+        assert_eq!(bytes.len(), 11);
     }
 
     /// The transform size probabilities' part of a compressed header as a

@@ -6,19 +6,21 @@
 //! superblock split as far as its source varies, every block either DC
 //! predicted or the previous frame at a whole-pixel vector, at a transform
 //! size of its own, its residual coded at the dial's quantizer, and the frame
-//! reconstructed exactly as libvpx's decoder reconstructs it. Where the source
-//! has not changed since the frame before, a block is that frame's, skipped;
-//! where it moved, a hash search finds where it came from. A frame's bools
-//! are recorded as its blocks are decided and coded once its header has
-//! updated the probabilities to what they count, which a decoder keeps for
-//! the next frame. Tile columns, which a decoder reads independently of each
-//! other, are decided and coded on threads of their own.
+//! reconstructed exactly as libvpx's decoder reconstructs it, its loop filter
+//! run over it before it is kept. Where the source has not changed since the
+//! frame before, a block is that frame's, skipped; where it moved, a hash
+//! search finds where it came from. A frame's bools are recorded as its
+//! blocks are decided and coded once its header has updated the
+//! probabilities to what they count, which a decoder keeps for the next
+//! frame. Tile columns, which a decoder reads independently of each other,
+//! are decided and coded on threads of their own.
 
 mod bool_writer;
 mod convolve;
 mod dct;
 mod header;
 mod lanes;
+mod loopfilter;
 mod motion;
 mod mv;
 mod pixels;
@@ -331,6 +333,7 @@ impl Encoder {
         if came > 0.0 {
             self.search_every = if saved < came * SEARCH_PAYS { SEARCH_PROBE } else { 1 };
         }
+        let filter_level = loopfilter::level(quantizer.ac_step(), keyframe);
         let table = probs.table();
         let tiles = on_threads(self.threads, self.contexts.iter(), |contexts| contexts.tape.code(&table));
         let uncompressed = header::Uncompressed {
@@ -338,6 +341,7 @@ impl Encoder {
             width: g.width,
             height: g.height,
             q_index,
+            filter_level,
             tile_cols_log2: self.tile_cols_log2,
             min_log2_tile_cols: g.min_log2_tile_cols(),
             max_log2_tile_cols: g.max_log2_tile_cols(),
@@ -352,12 +356,71 @@ impl Encoder {
             }
             out.extend(tile);
         }
+        if filter_level > 0 {
+            self.filter(filter_level);
+        }
         std::mem::swap(&mut self.recon, &mut self.reference);
         self.probs = probs;
         self.started = true;
         self.last_inter = !keyframe;
         self.requantize = false;
         Ok(keyframe)
+    }
+
+    /// Run the loop filter at `level` over the frame just coded, as a
+    /// decoder does before it keeps the frame: each plane on a thread of its
+    /// own, as far as there are threads.
+    fn filter(&mut self, level: u8) {
+        let g = &self.geometry;
+        let log2 = self.tile_cols_log2;
+        let tiles: Vec<_> = (0..1 << log2).map(|i| g.tile_cols(i, log2).start).zip(&self.contexts).collect();
+        let masks: Vec<loopfilter::Masks> = (0..g.sb_rows * g.sb_cols)
+            .map(|i| {
+                let (mi_row, mi_col) = (i / g.sb_cols * 8, i % g.sb_cols * 8);
+                let &(start, contexts) = &tiles[tiles.partition_point(|&(start, _)| start <= mi_col) - 1];
+                loopfilter::Masks::new(g, mi_row, mi_col, level, |r, c| contexts.filtered(r, c - start))
+            })
+            .collect();
+        let mut planes: [Vec<(usize, usize, &mut Vec<u8>)>; 3] = Default::default();
+        for column in &mut self.recon.columns {
+            for (p, plane) in column.planes.iter_mut().enumerate() {
+                planes[p].push((column.x, column.stride, plane));
+            }
+        }
+        on_threads(self.threads.min(3), planes.into_iter(), |mut columns| {
+            // A superblock that starts a tile column has its vertical pass
+            // run on a copy of it with the eight pixels left of it, which
+            // lie in the column before.
+            let mut copy = vec![0u8; 72 * 64];
+            for sb_row in 0..g.sb_rows {
+                let mi_row = sb_row * 8;
+                let rows = (g.mi_rows - mi_row).min(8);
+                for sb_col in 0..g.sb_cols {
+                    let m = &masks[sb_row * g.sb_cols + sb_col];
+                    let x = sb_col * 64;
+                    let t = columns.partition_point(|&(start, ..)| start <= x) - 1;
+                    let (start, stride) = (columns[t].0, columns[t].1);
+                    let at = mi_row * 8 * stride + x - start;
+                    if x == start && t > 0 {
+                        let (before, after) = columns.split_at_mut(t);
+                        let (left, left_stride) = (&mut *before[t - 1].2, before[t - 1].1);
+                        let this = &mut *after[0].2;
+                        for y in 0..rows * 8 {
+                            copy[y * 72..][..8].copy_from_slice(&left[(mi_row * 8 + y + 1) * left_stride - 8..][..8]);
+                            copy[y * 72 + 8..][..64].copy_from_slice(&this[at + y * stride..][..64]);
+                        }
+                        loopfilter::vertical(&mut copy, 8, 72, rows, m);
+                        for y in 0..rows * 8 {
+                            left[(mi_row * 8 + y + 1) * left_stride - 8..][..8].copy_from_slice(&copy[y * 72..][..8]);
+                            this[at + y * stride..][..64].copy_from_slice(&copy[y * 72 + 8..][..64]);
+                        }
+                    } else {
+                        loopfilter::vertical(columns[t].2, at, stride, rows, m);
+                    }
+                    loopfilter::horizontal(columns[t].2, at, stride, rows, m);
+                }
+            }
+        });
     }
 
     /// Mark each 8×8 of the frame unchanged where `picture` is the previous
@@ -785,9 +848,9 @@ mod tests {
         let (bytes, keyframe, again) = stream.frame(&desktop(w, h), false);
         assert!(!keyframe);
         // The headers, and sixty superblocks each one skipped block of the
-        // previous frame.
+        // previous frame, whose edges the loop filter runs over again.
         assert!(bytes < 40, "{bytes} bytes");
-        assert_eq!(again, first);
+        assert!((again - first).abs() < first / 100.0, "squared error {again} against {first}");
     }
 
     #[test]
@@ -806,14 +869,16 @@ mod tests {
         let (bytes, _, mse) = stream.frame(&picture(w, h, &nudged), false);
         assert!(bytes * 10 < key_bytes, "{bytes} bytes against a keyframe of {key_bytes}");
         assert!(mse < 4.0, "squared error {mse}");
-        // Outside the 8×8 the edit is in, the frame is the one before, not
-        // coded again.
+        // Outside the superblock the edit is in, the frame is the one before,
+        // not coded again, but for the seven pixels each side of the
+        // superblocks' edges that the loop filter runs over again.
         let after = stream.encoder.reconstruction();
         let stride = usize::from(w);
+        let edge = |v: usize| !(7..57).contains(&(v % 64));
         for (p, (a, b)) in after.iter().zip(&before).enumerate() {
             for y in 0..usize::from(h) {
                 for x in 0..usize::from(w) {
-                    let touched = (96..104).contains(&x) && (96..104).contains(&y);
+                    let touched = (64..128).contains(&x) && (64..128).contains(&y) || edge(x) || edge(y);
                     assert!(touched || a[y * stride + x] == b[y * stride + x], "plane {p} moved at ({x}, {y})");
                 }
             }
@@ -876,7 +941,8 @@ mod tests {
         assert_eq!(stream.encoder.quality(), 2);
         let (bytes, _, same) = stream.frame(&picture, false);
         assert!(bytes < 30, "{bytes} bytes");
-        assert_eq!(same, coarse);
+        // But for the loop filter run over the skipped blocks' edges again.
+        assert!((same - coarse).abs() < coarse / 100.0, "squared error {same} against {coarse}");
         stream.encoder.set_quality(100);
         let (_, keyframe, fine) = stream.frame(&picture, false);
         assert!(!keyframe);

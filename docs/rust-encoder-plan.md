@@ -68,7 +68,7 @@ row's second column is built only if the first fails the gate on a capture.
 | Intra modes | DC only, which keeps every transform a DCT | V, H and TM, which bring ADST with them |
 | Inter modes | Zero, nearest, near and new motion vectors to a quarter pixel, at EIGHTTAP, the frame's one filter; the skip flag for a block that did not change | Eighth-pixel vectors, a filter per block |
 | Transforms | A size per block, which it signals: an inter block's the one whose luma costs least in error and bits, quantized at each; an intra block's 4×4 where it varies, otherwise the largest up to 16×16 | — |
-| Loop filter | Level 0, so the encoder needs none | A real filter, at low quality |
+| Loop filter | libvpx's filter at the level its real-time encoder takes from the quantizer, an intra block's one more by the deltas a decoder starts with | — |
 | Probabilities | The coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools, and kept for the next; no backward adaptation, which libvpx's real-time encoder does not use either | Updates to the other probabilities |
 | Tiles and threads | Tile columns by the width rule the crate has now, one thread per tile column; the source compared and hashed in a band of rows per thread | A wavefront over superblock rows |
 | Segmentation, resizing, altref, lossless, high bit depth, error-resilient mode | Never | — |
@@ -120,8 +120,13 @@ row's second column is built only if the first fails the gate on a capture.
    (up to 36% on video, nothing on desktop), done, its filter in NEON and
    AVX2: it cut the bytes 3–10% where it pays, for 30–45% more
    time there, and is searched only on frames it has been paying on. Then
-   the loop filter (6–20%), the golden frame (2–9%) and 4×4 blocks (19% on
-   desktop alone). V, H and TM bought nothing. Besides these, motion the
+   the loop filter (6–20%), done, eight lines at a time in NEON and SSE:
+   it cut the bytes 4–15% on eleven of the twelve captures and 2% on
+   desktop, and raised PSNR 0.6–1.8 dB, for 5–19% more time, each plane
+   filtered on a thread of its own. Leaving a block at the zero vector
+   unfiltered, so that an unchanged block is not filtered again frame after
+   frame, moved nothing. Then the golden frame (2–9%) and 4×4 blocks (19%
+   on desktop alone). V, H and TM bought nothing. Besides these, motion the
    hash search cannot match, because the captures are decodes and what
    moves in them never arrives exactly: each changed superblock's row and
    column sums matched against the frame before, 64 pixels each way, done.
