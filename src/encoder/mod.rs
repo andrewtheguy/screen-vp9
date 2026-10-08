@@ -8,7 +8,9 @@
 //! transform that fits it, its residual coded at the dial's quantizer, and the
 //! frame reconstructed exactly as libvpx's decoder reconstructs it. Where the
 //! source has not changed since the frame before, a block is that frame's,
-//! skipped; where it moved, a hash search finds where it came from.
+//! skipped; where it moved, a hash search finds where it came from. Tile
+//! columns, which a decoder reads independently of each other, are coded on
+//! threads of their own.
 
 mod bool_writer;
 mod dct;
@@ -64,20 +66,89 @@ impl Geometry {
     }
 }
 
-/// The frame as a decoder reconstructs it, three planes at the frame's size
-/// rounded up to whole superblocks, so a transform block that reaches past
-/// the frame's edge has somewhere to go.
+/// The frame as a decoder reconstructs it, a tile column at a time so the
+/// columns can be coded at once.
 pub(super) struct Reconstruction {
+    columns: Vec<Column>,
+}
+
+/// One tile column of a `Reconstruction`, from pixel column `x` of the
+/// frame: three planes at its width and the frame's height rounded up to
+/// whole superblocks, so a transform block that reaches past the frame's edge
+/// has somewhere to go.
+pub(super) struct Column {
+    x: usize,
     planes: [Vec<u8>; 3],
     stride: usize,
+}
+
+impl Column {
+    /// `len` pixels of row `y` of `plane` from pixel column `x` of the frame.
+    fn row(&self, plane: usize, y: usize, x: usize, len: usize) -> &[u8] {
+        &self.planes[plane][y * self.stride + x - self.x..][..len]
+    }
+}
+
+impl Reconstruction {
+    /// A blank frame in the `1 << log2` tile columns of `geometry`.
+    fn new(geometry: &Geometry, log2: u32) -> Self {
+        let rows = geometry.sb_rows * 64;
+        let columns = (0..1 << log2)
+            .map(|i| {
+                let cols = geometry.tile_cols(i, log2);
+                let stride = (cols.len() * 8).next_multiple_of(64);
+                Column { x: cols.start * 8, planes: std::array::from_fn(|_| vec![0; stride * rows]), stride }
+            })
+            .collect();
+        Self { columns }
+    }
+
+    /// The column that pixel column `x` of the frame is in.
+    fn column(&self, x: usize) -> &Column {
+        &self.columns[self.columns.partition_point(|c| c.x <= x) - 1]
+    }
+
+    /// The column that holds pixel columns `x..x + len` of the frame, if one
+    /// holds them all.
+    pub(super) fn holding(&self, x: usize, len: usize) -> Option<&Column> {
+        let column = self.column(x);
+        (x + len <= column.x + column.stride).then_some(column)
+    }
+
+    /// Fill `out` from row `y` of `plane` at pixel column `x` on, as a
+    /// decoder reads a reference frame `width` wide: past either end of the
+    /// picture, the pixel at that end.
+    pub(super) fn read_row(&self, plane: usize, y: usize, x: isize, width: usize, out: &mut [u8]) {
+        let len = out.len() as isize;
+        // Before `first`, left of the picture; from `end`, right of it.
+        let first = (-x).clamp(0, len) as usize;
+        let end = (width as isize - x).clamp(0, len) as usize;
+        if first > 0 {
+            out[..first].fill(self.column(0).row(plane, y, 0, 1)[0]);
+        }
+        let mut i = first;
+        while i < end {
+            let px = (x + i as isize) as usize;
+            let column = self.column(px);
+            let n = (column.x + column.stride - px).min(end - i);
+            out[i..i + n].copy_from_slice(column.row(plane, y, px, n));
+            i += n;
+        }
+        if end < out.len() {
+            out[end..].fill(self.column(width - 1).row(plane, y, width - 1, 1)[0]);
+        }
+    }
 }
 
 /// One 4:4:4 VP9 stream at one picture size.
 pub(crate) struct Encoder {
     geometry: Geometry,
     tile_cols_log2: u32,
+    /// The most threads the tile columns are coded on.
+    threads: usize,
     quality: u8,
-    contexts: tile::FrameContexts,
+    /// Per tile column, what a decoder keeps while it reads it.
+    contexts: Vec<tile::Contexts>,
     /// The frame being coded.
     recon: Reconstruction,
     /// The frame coded last, as a decoder has it: what an inter frame is
@@ -111,15 +182,14 @@ impl Encoder {
         }
         let geometry = Geometry::new(width, height);
         let tile_cols_log2 = tile_columns_log2(width, threads).clamp(geometry.min_log2_tile_cols(), geometry.max_log2_tile_cols());
-        let stride = geometry.sb_cols * 64;
-        let reconstruction = || Reconstruction { planes: std::array::from_fn(|_| vec![0; stride * geometry.sb_rows * 64]), stride };
         let pixels = usize::from(width) * usize::from(height);
         Ok(Self {
             tile_cols_log2,
+            threads,
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
-            contexts: tile::FrameContexts::new(&geometry),
-            recon: reconstruction(),
-            reference: reconstruction(),
+            contexts: (0..1 << tile_cols_log2).map(|i| tile::Contexts::new(&geometry, geometry.tile_cols(i, tile_cols_log2))).collect(),
+            recon: Reconstruction::new(&geometry, tile_cols_log2),
+            reference: Reconstruction::new(&geometry, tile_cols_log2),
             previous: std::array::from_fn(|_| vec![0; pixels]),
             unchanged: vec![false; geometry.mi_rows * geometry.mi_cols],
             search: motion::Search::new(&geometry),
@@ -159,17 +229,34 @@ impl Encoder {
         let everything = keyframe || self.requantize;
         self.compare(picture, everything);
         let vectors = self.search.update(&self.previous[0], (!everything).then_some(&self.unchanged[..]), !keyframe);
-        self.contexts.start(self.last_inter);
+        for contexts in &mut self.contexts {
+            contexts.start(self.last_inter);
+        }
         let g = &self.geometry;
         let q_index = tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize];
         let quantizer = quantize::Quantizer::new(q_index);
         let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
-        let tiles: Vec<Vec<u8>> = (0..1 << self.tile_cols_log2)
-            .map(|i| {
-                let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, vectors: &vectors });
-                tile::Tile::new(g, g.tile_cols(i, self.tile_cols_log2), &mut self.contexts, &mut self.recon, &source, previous, &quantizer).code()
-            })
-            .collect();
+        let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, vectors: &vectors });
+        let code = |(contexts, column): (&mut tile::Contexts, &mut Column)| tile::Tile::new(g, contexts, column, &source, previous, &quantizer).code();
+        let mut jobs = self.contexts.iter_mut().zip(&mut self.recon.columns);
+        // As many tile columns to a thread as it takes to leave none over,
+        // the first thread this one.
+        let per = jobs.len().div_ceil(self.threads);
+        let tiles: Vec<Vec<u8>> = std::thread::scope(|scope| {
+            let first: Vec<_> = jobs.by_ref().take(per).collect();
+            let code = &code;
+            let others: Vec<_> = (0..)
+                .map_while(|_| {
+                    let chunk: Vec<_> = jobs.by_ref().take(per).collect();
+                    (!chunk.is_empty()).then(|| scope.spawn(move || chunk.into_iter().map(code).collect::<Vec<_>>()))
+                })
+                .collect();
+            let mut tiles: Vec<_> = first.into_iter().map(code).collect();
+            for other in others {
+                tiles.extend(other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+            }
+            tiles
+        });
         let compressed = header::compressed(keyframe);
         let uncompressed = header::Uncompressed {
             keyframe,
@@ -233,10 +320,17 @@ impl Encoder {
         }
     }
 
-    /// The last frame coded, as a decoder has it: the planes and their
-    /// stride.
-    fn reconstruction(&self) -> (&[Vec<u8>; 3], usize) {
-        (&self.reference.planes, self.reference.stride)
+    /// The last frame coded, as a decoder has it: the planes, tight at the
+    /// picture's width.
+    fn reconstruction(&self) -> [Vec<u8>; 3] {
+        let (width, height) = (usize::from(self.geometry.width), usize::from(self.geometry.height));
+        std::array::from_fn(|plane| {
+            let mut out = vec![0; width * height];
+            for (y, row) in out.chunks_exact_mut(width).enumerate() {
+                self.reference.read_row(plane, y, 0, width, row);
+            }
+            out
+        })
     }
 }
 
@@ -358,7 +452,8 @@ mod tests {
             assert_eq!(decoded.size(), (u32::from(w), u32::from(h)));
             assert_eq!(decoded.chroma(), Chroma::Full);
             assert!(decoded.declares_bt601_studio_swing());
-            let (recon, stride) = self.encoder.reconstruction();
+            let recon = self.encoder.reconstruction();
+            let stride = usize::from(w);
             for (p, ((plane, decoded_stride), recon)) in decoded.planes().into_iter().zip(decoded.strides()).zip(recon).enumerate() {
                 for y in 0..usize::from(h) {
                     let got = &plane[y * decoded_stride..][..usize::from(w)];
@@ -429,6 +524,24 @@ mod tests {
         round_trip(&desktop(4160, 8), 90, 1);
         // Too narrow for two columns, however many threads.
         assert_eq!(Encoder::new(255, 8, 90, 64).expect("an encoder").tile_cols_log2, 0);
+    }
+
+    #[test]
+    fn threads_change_nothing_but_the_time() {
+        // Past 4096 there are two tile columns on one thread as on two.
+        let (w, h) = (4160, 72);
+        let rgb = desktop_rgb(w, h);
+        let frames = [rgb.clone(), scroll(&rgb, w, 5), drag(&rgb, w, (1900, 8, 400, 40), (300, 3)), edit(rgb, w, (2000, 30, 300, 30), 7)];
+        let [one, two] = [1, 2].map(|threads| {
+            let mut encoder = Encoder::new(w, h, 90, threads).expect("an encoder");
+            assert_eq!(encoder.tile_cols_log2, 1);
+            let mut out = Vec::new();
+            for rgb in &frames {
+                encoder.encode(&picture(w, h, rgb), false, &mut out).expect("a frame");
+            }
+            out
+        });
+        assert!(one == two, "{} bytes on one thread, {} on two", one.len(), two.len());
     }
 
     /// `rgb`, `w` wide, with its rectangle at `(x, y)` of `rw`×`rh` moved
@@ -556,7 +669,7 @@ mod tests {
         let mut stream = Stream::new(w, h, 100, 1);
         let rgb = desktop_rgb(w, h);
         let (key_bytes, _, _) = stream.frame(&picture(w, h, &rgb), false);
-        let before = stream.encoder.reconstruction().0.clone();
+        let before = stream.encoder.reconstruction();
         // A pixel nudged: a change small enough that its superblock varies
         // little against the frame before.
         let mut nudged = rgb;
@@ -568,7 +681,8 @@ mod tests {
         assert!(mse < 4.0, "squared error {mse}");
         // Outside the 8×8 the edit is in, the frame is the one before, not
         // coded again.
-        let (after, stride) = stream.encoder.reconstruction();
+        let after = stream.encoder.reconstruction();
+        let stride = usize::from(w);
         for (p, (a, b)) in after.iter().zip(&before).enumerate() {
             for y in 0..usize::from(h) {
                 for x in 0..usize::from(w) {
@@ -632,14 +746,14 @@ mod tests {
     }
 
     /// The 4:4:4 captures `docs/rust-encoder-plan.md` measures on, each
-    /// with the quality it was made at.
-    const CAPTURES: [(&str, u8); 6] = [
-        ("desktop-q100-444", 100),
-        ("proxmox-q100-444", 100),
-        ("proxmox-hidpi-q100-444", 100),
-        ("mac-hp-444", 90),
-        ("mac-recording-q100-444", 100),
-        ("mac-recording-q90-444", 90),
+    /// with the quality it was made at and the threads its program codes on.
+    const CAPTURES: [(&str, u8, usize); 6] = [
+        ("desktop-q100-444", 100, 4),
+        ("proxmox-q100-444", 100, 4),
+        ("proxmox-hidpi-q100-444", 100, 4),
+        ("mac-hp-444", 90, 5),
+        ("mac-recording-q100-444", 100, 4),
+        ("mac-recording-q90-444", 90, 5),
     ];
 
     /// Hand `f` each frame of an IVF capture in turn, as the picture a user
@@ -691,15 +805,15 @@ mod tests {
     #[test]
     #[ignore = "reads the captures in tmp/ and wants a release build"]
     fn keyframes_against_libvpx() {
-        for (name, quality) in CAPTURES {
+        for (name, quality, threads) in CAPTURES {
             let Ok(ivf) = std::fs::read(format!("tmp/{name}.ivf")) else {
                 println!("{name}: not in tmp/");
                 continue;
             };
             let pictures = sample(&ivf, 60, 8);
             let (w, h) = pictures[0].size();
-            let mut libvpx = crate::Encoder::new(w, h, Chroma::Full, quality, 1).expect("a libvpx encoder");
-            let mut rust = Encoder::new(w, h, quality, 1).expect("an encoder");
+            let mut libvpx = crate::Encoder::new(w, h, Chroma::Full, quality, threads).expect("a libvpx encoder");
+            let mut rust = Encoder::new(w, h, quality, threads).expect("an encoder");
             let mut totals = [(0usize, 0.0f64, 0.0f64); 2];
             for picture in &pictures {
                 let mut frames = [Vec::new(), Vec::new()];
@@ -744,7 +858,7 @@ mod tests {
     #[ignore = "reads the captures in tmp/ and wants a release build"]
     fn streams_against_libvpx() {
         const FRAMES: usize = 200;
-        for (name, quality) in CAPTURES {
+        for (name, quality, threads) in CAPTURES {
             let Ok(ivf) = std::fs::read(format!("tmp/{name}.ivf")) else {
                 println!("{name}: not in tmp/");
                 continue;
@@ -758,7 +872,7 @@ mod tests {
                 size = picture.size();
                 let (libvpx, rust) = encoders.get_or_insert_with(|| {
                     let (w, h) = picture.size();
-                    (crate::Encoder::new(w, h, Chroma::Full, quality, 1).expect("a libvpx encoder"), Encoder::new(w, h, quality, 1).expect("an encoder"))
+                    (crate::Encoder::new(w, h, Chroma::Full, quality, threads).expect("a libvpx encoder"), Encoder::new(w, h, quality, threads).expect("an encoder"))
                 });
                 let mut out = [Vec::new(), Vec::new()];
                 let mut times = [0.0; 2];
@@ -784,7 +898,7 @@ mod tests {
             ratios.sort_unstable_by(f64::total_cmp);
             let n = frames as f64;
             println!(
-                "{name} {}x{} q{quality}, {frames} frames | libvpx {} B {:.2} ms {:.2} dB | rust {} B {:.2} ms {:.2} dB | bytes {:.3} time median {:.3} total {:.3}",
+                "{name} {}x{} q{quality} on {threads}, {frames} frames | libvpx {} B {:.2} ms {:.2} dB | rust {} B {:.2} ms {:.2} dB | bytes {:.3} time median {:.3} total {:.3}",
                 size.0, size.1, bytes[0], ms[0] / n, psnrs[0] / n, bytes[1], ms[1] / n, psnrs[1] / n,
                 bytes[1] as f64 / bytes[0] as f64, ratios[ratios.len() / 2], ms[1] / ms[0],
             );

@@ -22,7 +22,7 @@ use super::tables::{
     INTER_MODE_PROBS, INTRA_INTER_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, MV_REF_BLOCKS, PARTITION_PROBS, SINGLE_REF_PROBS,
     SKIP_PROBS, UV_MODE_PROBS, Y_MODE_PROBS,
 };
-use super::{Geometry, Reconstruction, tokens, transform};
+use super::{Column, Geometry, Reconstruction, tokens, transform};
 
 /// `DC_PRED`'s index among the intra modes.
 const DC_PRED: usize = 0;
@@ -68,6 +68,7 @@ pub(super) struct Source<'a> {
 /// What an inter frame is coded against: the previous frame as a decoder
 /// has it, per 8×8 of the frame whether the source there is the previous
 /// frame's, and per superblock the vectors the motion search offers it.
+#[derive(Clone, Copy)]
 pub(super) struct Previous<'a> {
     pub(super) reference: &'a Reconstruction,
     pub(super) unchanged: &'a [bool],
@@ -136,9 +137,12 @@ pub(super) struct ModeInfo {
     inter: Option<(InterMode, Mv)>,
 }
 
-/// What a frame's tiles share: the contexts read across a tile's top edge,
-/// and the mode info of every 8×8 coded so far, and of the frame before.
-pub(super) struct FrameContexts {
+/// What a decoder keeps while it reads a tile column, which nothing outside
+/// the column reads: the contexts read across a block's top edge, and the
+/// mode info of every 8×8 of the column coded so far, and of the frame
+/// before. Each is the column's alone, from its first 8×8 column.
+pub(super) struct Contexts {
+    /// Per column of 8×8.
     above_partition: Vec<u8>,
     /// Per plane, per column of 4×4: whether the transform block above had
     /// a coefficient.
@@ -150,13 +154,15 @@ pub(super) struct FrameContexts {
     use_last: bool,
 }
 
-impl FrameContexts {
-    pub(super) fn new(geometry: &Geometry) -> Self {
+impl Contexts {
+    /// The contexts of the tile column of the 8×8 columns `cols`.
+    pub(super) fn new(geometry: &Geometry, cols: std::ops::Range<usize>) -> Self {
+        let sbs = cols.len().div_ceil(8);
         Self {
-            above_partition: vec![0; geometry.sb_cols * 8],
-            above_nonzero: std::array::from_fn(|_| vec![0; geometry.sb_cols * 16]),
-            mode_info: vec![ModeInfo::default(); geometry.mi_rows * geometry.mi_cols],
-            last_mode_info: vec![ModeInfo::default(); geometry.mi_rows * geometry.mi_cols],
+            above_partition: vec![0; sbs * 8],
+            above_nonzero: std::array::from_fn(|_| vec![0; sbs * 16]),
+            mode_info: vec![ModeInfo::default(); geometry.mi_rows * cols.len()],
+            last_mode_info: vec![ModeInfo::default(); geometry.mi_rows * cols.len()],
             use_last: false,
         }
     }
@@ -206,24 +212,13 @@ struct Measure {
     residual: Moments,
 }
 
-/// Fill `out` from `row` at column `x` on, as a decoder reads a reference
-/// frame: past either end of the row, the pixel at that end.
-fn read_row(out: &mut [u8], row: &[u8], x: isize) {
-    let w = row.len() as isize;
-    if x >= 0 && x + out.len() as isize <= w {
-        out.copy_from_slice(&row[x as usize..][..out.len()]);
-    } else {
-        for (i, o) in out.iter_mut().enumerate() {
-            *o = row[(x + i as isize).clamp(0, w - 1) as usize];
-        }
+/// The eight pixels of a row of the source from `x`, as it is coded: past
+/// the row's end, its last pixel.
+fn eight(row: &[u8], x: usize) -> [u8; 8] {
+    match row.get(x..x + 8) {
+        Some(eight) => eight.try_into().expect("eight pixels"),
+        None => std::array::from_fn(|i| row[(x + i).min(row.len() - 1)]),
     }
-}
-
-/// The eight pixels of `row` from `x`, read as `read_row` reads them.
-fn eight(row: &[u8], x: isize) -> [u8; 8] {
-    let mut out = [0; 8];
-    read_row(&mut out, row, x);
-    out
 }
 
 /// The coder of one tile of a frame.
@@ -231,11 +226,12 @@ pub(super) struct Tile<'a> {
     geometry: &'a Geometry,
     mi_col_start: usize,
     mi_col_end: usize,
-    contexts: &'a mut FrameContexts,
+    contexts: &'a mut Contexts,
     left_partition: [u8; 8],
     /// Per plane, per row of 4×4 in the superblock row.
     left_nonzero: [[u8; 16]; 3],
-    recon: &'a mut Reconstruction,
+    /// The tile's column of the frame being coded.
+    recon: &'a mut Column,
     source: &'a Source<'a>,
     /// What an inter frame is coded against; none in a keyframe.
     previous: Option<Previous<'a>>,
@@ -256,19 +252,21 @@ pub(super) struct Tile<'a> {
 }
 
 impl<'a> Tile<'a> {
+    /// The coder of the tile whose column of the frame being coded is
+    /// `recon`, as far as the frame reaches into it.
     pub(super) fn new(
         geometry: &'a Geometry,
-        cols: std::ops::Range<usize>,
-        contexts: &'a mut FrameContexts,
-        recon: &'a mut Reconstruction,
+        contexts: &'a mut Contexts,
+        recon: &'a mut Column,
         source: &'a Source<'a>,
         previous: Option<Previous<'a>>,
         quantizer: &'a Quantizer,
     ) -> Self {
+        let mi_col_start = recon.x / 8;
         Self {
             geometry,
-            mi_col_start: cols.start,
-            mi_col_end: cols.end,
+            mi_col_start,
+            mi_col_end: (mi_col_start + recon.stride / 8).min(geometry.mi_cols),
             contexts,
             left_partition: [0; 8],
             left_nonzero: [[0; 16]; 3],
@@ -299,6 +297,11 @@ impl<'a> Tile<'a> {
             }
         }
         self.w.finish()
+    }
+
+    /// Where the tile keeps the mode info of the 8×8 at `(mi_row, mi_col)`.
+    fn at(&self, mi_row: usize, mi_col: usize) -> usize {
+        mi_row * (self.mi_col_end - self.mi_col_start) + mi_col - self.mi_col_start
     }
 
     /// The 8×8s of the square of `1 << n` at `(mi_row, mi_col)` that the
@@ -362,7 +365,7 @@ impl<'a> Tile<'a> {
         let mut m = Moments::default();
         for plane in 0..3 {
             for y in py..py + 8 {
-                for v in eight(self.source_row(plane, y), px as isize) {
+                for v in eight(self.source_row(plane, y), px) {
                     m.sums[plane] += i64::from(v);
                     m.squares += i64::from(v) * i64::from(v);
                 }
@@ -379,15 +382,17 @@ impl<'a> Tile<'a> {
         let (dy, dx) = mv.whole();
         let mut m = Moments::default();
         let (rx, ry) = (px as isize + dx, py as isize + dy);
-        if px + 8 <= width && py + 8 <= height && rx >= 0 && ry >= 0 && rx as usize + 8 <= width && ry as usize + 8 <= height {
-            // Both wholly inside the picture: read as they are.
+        let inside = px + 8 <= width && py + 8 <= height && rx >= 0 && ry >= 0 && rx as usize + 8 <= width && ry as usize + 8 <= height;
+        if let Some(column) = inside.then(|| reference.holding(rx as usize, 8)).flatten() {
+            // Both wholly inside the picture, the reference in one column:
+            // read as they are.
             let (rx, ry) = (rx as usize, ry as usize);
             let src = self.source;
             for plane in 0..3 {
                 let (mut sum, mut squares) = (0i32, 0i32);
                 for k in 0..8 {
                     let a = &src.planes[plane][(py + k) * src.stride + px..][..8];
-                    let b = &reference.planes[plane][(ry + k) * reference.stride + rx..][..8];
+                    let b = column.row(plane, ry + k, rx, 8);
                     for (&a, &b) in a.iter().zip(b) {
                         let d = i32::from(a) - i32::from(b);
                         sum += d;
@@ -402,8 +407,9 @@ impl<'a> Tile<'a> {
         for plane in 0..3 {
             for y in py..py + 8 {
                 let ry = (y as isize + dy).clamp(0, height as isize - 1) as usize;
-                let p = eight(&reference.planes[plane][ry * reference.stride..][..width], px as isize + dx);
-                for (a, b) in eight(self.source_row(plane, y), px as isize).into_iter().zip(p) {
+                let mut p = [0; 8];
+                reference.read_row(plane, ry, px as isize + dx, width, &mut p);
+                for (a, b) in eight(self.source_row(plane, y), px).into_iter().zip(p) {
                     let d = i64::from(a) - i64::from(b);
                     m.sums[plane] += d;
                     m.squares += d * d;
@@ -539,7 +545,8 @@ impl<'a> Tile<'a> {
                 self.block(mi_row, mi_col, n, mode);
                 let bw = 1 << n;
                 let ctx = partition_context_of(n);
-                self.contexts.above_partition[mi_col..mi_col + bw].fill(ctx);
+                let x = mi_col - self.mi_col_start;
+                self.contexts.above_partition[x..x + bw].fill(ctx);
                 self.left_partition[mi_row & 7..(mi_row & 7) + bw].fill(ctx);
             }
         }
@@ -547,7 +554,7 @@ impl<'a> Tile<'a> {
 
     /// libvpx's `partition_plane_context`.
     fn partition_context(&self, mi_row: usize, mi_col: usize, n: u32) -> usize {
-        let above = (self.contexts.above_partition[mi_col] >> n) & 1;
+        let above = (self.contexts.above_partition[mi_col - self.mi_col_start] >> n) & 1;
         let left = (self.left_partition[mi_row & 7] >> n) & 1;
         usize::from(left * 2 + above) + n as usize * 4
     }
@@ -561,7 +568,7 @@ impl<'a> Tile<'a> {
         // BLOCK_8X8 is the fourth size, and each square size the third after.
         MV_REF_BLOCKS[3 + 3 * n as usize][..count].iter().filter_map(move |&[dr, dc]| {
             let (r, c) = (mi_row.checked_add_signed(dr.into())?, mi_col.checked_add_signed(dc.into())?);
-            (r < g.mi_rows && (self.mi_col_start..self.mi_col_end).contains(&c)).then(|| self.contexts.mode_info[r * g.mi_cols + c])
+            (r < g.mi_rows && (self.mi_col_start..self.mi_col_end).contains(&c)).then(|| self.contexts.mode_info[self.at(r, c)])
         })
     }
 
@@ -583,7 +590,7 @@ impl<'a> Tile<'a> {
     /// not found; both clamped near the frame.
     fn candidates(&self, mi_row: usize, mi_col: usize, n: u32) -> [Mv; 2] {
         let g = self.geometry;
-        let last = self.contexts.use_last.then(|| self.contexts.last_mode_info[mi_row * g.mi_cols + mi_col]);
+        let last = self.contexts.use_last.then(|| self.contexts.last_mode_info[self.at(mi_row, mi_col)]);
         let mut found = self.neighbours(mi_row, mi_col, n, MV_REF_BLOCKS[0].len()).chain(last).filter_map(|m| m.inter.map(|(_, mv)| mv));
         let nearest = found.next().unwrap_or(Mv::ZERO);
         let near = found.find(|&mv| mv != nearest).unwrap_or(Mv::ZERO);
@@ -602,8 +609,8 @@ impl<'a> Tile<'a> {
             Mode::Inter(mv) => Some(self.inter_mode(mi_row, mi_col, n, mv)),
             Mode::Unchanged => Some(self.inter_mode(mi_row, mi_col, n, Mv::ZERO)),
         };
-        let above = (mi_row > 0).then(|| self.contexts.mode_info[(mi_row - 1) * g.mi_cols + mi_col]);
-        let left = (mi_col > self.mi_col_start).then(|| self.contexts.mode_info[mi_row * g.mi_cols + mi_col - 1]);
+        let above = (mi_row > 0).then(|| self.contexts.mode_info[self.at(mi_row - 1, mi_col)]);
+        let left = (mi_col > self.mi_col_start).then(|| self.contexts.mode_info[self.at(mi_row, mi_col - 1)]);
         let skips = usize::from(above.is_some_and(|m| m.skip)) + usize::from(left.is_some_and(|m| m.skip));
         let bw = 1 << n;
         self.w.write(skip, SKIP_PROBS[skips]);
@@ -645,12 +652,13 @@ impl<'a> Tile<'a> {
             }
         }
         for row in mi_row..(mi_row + bw).min(g.mi_rows) {
-            self.contexts.mode_info[row * g.mi_cols + mi_col..][..bw.min(g.mi_cols - mi_col)].fill(ModeInfo { skip, inter });
+            let at = self.at(row, mi_col);
+            self.contexts.mode_info[at..][..bw.min(self.mi_col_end - mi_col)].fill(ModeInfo { skip, inter });
         }
         if skip {
             // A skipped block leaves no coefficient above or left of the
             // blocks after it, over its whole size.
-            let (x4, y4) = (mi_col * 2, (mi_row * 2) & 15);
+            let (x4, y4) = ((mi_col - self.mi_col_start) * 2, (mi_row * 2) & 15);
             for plane in 0..3 {
                 self.contexts.above_nonzero[plane][x4..x4 + 2 * bw].fill(0);
                 self.left_nonzero[plane][y4..y4 + 2 * bw].fill(0);
@@ -704,11 +712,11 @@ impl<'a> Tile<'a> {
         let (px, py) = (mi_col * 8, mi_row * 8);
         let wide = size.min(g.mi_cols * 8 - px);
         let high = size.min(g.mi_rows * 8 - py);
-        let stride = self.recon.stride;
+        let (stride, x) = (self.recon.stride, px - self.recon.x);
         for (plane, recon) in self.recon.planes.iter_mut().enumerate() {
             for y in py..py + high {
                 let ry = (y as isize + dy).clamp(0, height as isize - 1) as usize;
-                read_row(&mut recon[y * stride + px..][..wide], &reference.planes[plane][ry * reference.stride..][..width], px as isize + dx);
+                reference.read_row(plane, ry, px as isize + dx, width, &mut recon[y * stride + x..][..wide]);
             }
         }
     }
@@ -725,7 +733,7 @@ impl<'a> Tile<'a> {
         let (tx, blocks) = self.transform_blocks(mi_row, mi_col, n);
         let blocks: Vec<_> = blocks.collect();
         let (scan, _) = tokens::scan(tx.ilog2() as usize - 2);
-        let stride = self.recon.stride;
+        let (stride, x0) = (self.recon.stride, self.recon.x);
         let src = self.source;
         let mut residual = [0i32; 1024];
         let mut coeffs = [0i32; 1024];
@@ -738,15 +746,17 @@ impl<'a> Tile<'a> {
             }
             for (i, &(x, y)) in blocks.iter().enumerate() {
                 let (px, py) = (mi_col * 8 + x, mi_row * 8 + y);
+                // Where it is in the tile's column.
+                let lx = px - x0;
                 let recon = &mut self.recon.planes[plane];
                 if mode == Mode::Intra {
-                    let edges = Edges { width: g.mi_cols * 8, height: g.mi_rows * 8, above: y > 0 || mi_row > 0, left: x > 0 || mi_col > self.mi_col_start };
-                    predict::dc(recon, stride, px, py, tx, &edges);
+                    let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8, above: y > 0 || mi_row > 0, left: x > 0 || mi_col > self.mi_col_start };
+                    predict::dc(recon, stride, lx, py, tx, &edges);
                 }
                 // Past the picture's edge the source repeats its last pixel.
                 for r in 0..tx {
                     let srow = &src.planes[plane][(py + r).min(src.height - 1) * src.stride..][..src.width];
-                    let prow = &recon[(py + r) * stride + px..][..tx];
+                    let prow = &recon[(py + r) * stride + lx..][..tx];
                     for c in 0..tx {
                         residual[r * tx + c] = i32::from(srow[(px + c).min(src.width - 1)]) - i32::from(prow[c]);
                     }
@@ -756,7 +766,7 @@ impl<'a> Tile<'a> {
                 let eob = self.quantizer.quantize(tx, &coeffs[..area], scan, levels);
                 if eob > 0 {
                     self.quantizer.dequantize(tx, levels, scan, eob, &mut coeffs[..area]);
-                    transform::inverse_add(tx, &coeffs[..area], eob, &mut recon[py * stride + px..], stride);
+                    transform::inverse_add(tx, &coeffs[..area], eob, &mut recon[py * stride + lx..], stride);
                 }
                 self.eobs[plane].push(eob);
             }
@@ -782,7 +792,7 @@ impl<'a> Tile<'a> {
         for plane in 0..3 {
             for (i, &(x, y)) in blocks.iter().enumerate() {
                 let (col4, row4) = (x / 4, y / 4);
-                let ax = mi_col * 2 + col4;
+                let ax = (mi_col - self.mi_col_start) * 2 + col4;
                 let ly = ((mi_row * 2) & 15) + row4;
                 let above = self.contexts.above_nonzero[plane][ax..ax + n4].iter().any(|&a| a != 0);
                 let left = self.left_nonzero[plane][ly..ly + n4].iter().any(|&l| l != 0);
