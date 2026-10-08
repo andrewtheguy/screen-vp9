@@ -2,17 +2,20 @@
 //! 4:4:4, profile 1, the subset of VP9 the plan's table names and no more.
 //! Reachable only from tests until it passes the plan's gate.
 //!
-//! So far it writes keyframes and nothing else, and codes every block as DC
-//! predicted and skipped: the frame decodes to the right size and the right
-//! colour declaration, flat grey whatever the picture. That proves every
-//! header bit and the partition and mode syntax against libvpx's decoder
-//! before a coefficient is coded.
+//! So far it writes keyframes and nothing else: every block DC predicted at
+//! the largest transform that fits it, its residual coded at the dial's
+//! quantizer, and the frame reconstructed exactly as libvpx's decoder
+//! reconstructs it.
 
 mod bool_writer;
+mod dct;
 mod header;
 mod predict;
+mod quantize;
 mod tables;
 mod tile;
+mod tokens;
+mod transform;
 
 use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, quality_to_q, tile_columns_log2};
 
@@ -100,14 +103,17 @@ impl Encoder {
             return Err(Error::Mismatch(g.width, g.height, Chroma::Full.name(), pw, ph, picture.chroma().name()));
         }
         self.contexts.clear();
+        let q_index = tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize];
+        let quantizer = quantize::Quantizer::new(q_index);
+        let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
         let tiles: Vec<Vec<u8>> = (0..1 << self.tile_cols_log2)
-            .map(|i| tile::Tile::new(g, g.tile_cols(i, self.tile_cols_log2), &mut self.contexts, &mut self.recon).code())
+            .map(|i| tile::Tile::new(g, g.tile_cols(i, self.tile_cols_log2), &mut self.contexts, &mut self.recon, &source, &quantizer).code())
             .collect();
         let compressed = header::keyframe_compressed_header();
         let uncompressed = header::Keyframe {
             width: g.width,
             height: g.height,
-            q_index: tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize],
+            q_index,
             tile_cols_log2: self.tile_cols_log2,
             min_log2_tile_cols: g.min_log2_tile_cols(),
             max_log2_tile_cols: g.max_log2_tile_cols(),
@@ -152,13 +158,60 @@ mod tests {
         picture
     }
 
-    /// Encode a keyframe of `w`×`h` on `threads`, decode it with libvpx, and
-    /// hold the decode to the encoder's own reconstruction.
-    fn round_trip(w: u16, h: u16, threads: usize) -> Vec<u8> {
-        let mut encoder = Encoder::new(w, h, 90, threads).expect("an encoder");
-        let picture = noise(w, h);
+    /// A desktop-like picture: flat panels, hard edges, a gradient, text-like
+    /// strokes of every colour and a patch of noise.
+    fn desktop(w: u16, h: u16) -> Picture {
+        let mut state = 0x2545_f491_u32;
+        let mut rgb = Vec::with_capacity(usize::from(w) * usize::from(h) * 3);
+        for y in 0..usize::from(h) {
+            for x in 0..usize::from(w) {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let pixel = if x % 97 < 3 || y % 61 == 0 {
+                    [20, 20, 30]
+                } else if (x / 5 + y / 9) % 7 == 0 && x % 2 == 0 {
+                    [(x * 7) as u8, (y * 3) as u8, 200]
+                } else if x * 3 < usize::from(w) {
+                    [(x % 256) as u8, (y % 256) as u8, 128]
+                } else if y * 2 > usize::from(h) && x * 3 > usize::from(w) * 2 {
+                    [state as u8, (state >> 8) as u8, (state >> 16) as u8]
+                } else {
+                    [235, 235, 240]
+                };
+                rgb.extend(pixel);
+            }
+        }
+        let mut picture = Picture::new(w, h, Chroma::Full).expect("a picture");
+        picture.read_rgb(&rgb).expect("its own picture");
+        picture
+    }
+
+    /// The mean squared error between the planes of `picture` and those of a
+    /// decode, over the picture.
+    fn mse(picture: &Picture, decoded: &crate::Decoded<'_>) -> f64 {
+        let (w, h) = picture.size();
+        let (w, h) = (usize::from(w), usize::from(h));
+        let mut sum = 0.0;
+        for ((source, plane), stride) in picture.planes().into_iter().zip(decoded.planes()).zip(decoded.strides()) {
+            for y in 0..h {
+                for x in 0..w {
+                    sum += (f64::from(source[y * w + x]) - f64::from(plane[y * stride + x])).powi(2);
+                }
+            }
+        }
+        sum / (3 * w * h) as f64
+    }
+
+    /// Encode `picture` as a keyframe at `quality` on `threads`, decode it
+    /// with libvpx, hold the decode to the encoder's own reconstruction
+    /// pixel for pixel, and give back the frame's size and the decode's
+    /// mean squared error.
+    fn round_trip(picture: &Picture, quality: u8, threads: usize) -> (usize, f64) {
+        let (w, h) = picture.size();
+        let mut encoder = Encoder::new(w, h, quality, threads).expect("an encoder");
         let mut frame = Vec::new();
-        encoder.keyframe(&picture, &mut frame).expect("a keyframe");
+        encoder.keyframe(picture, &mut frame).expect("a keyframe");
         assert_eq!(crate::frame_header(&frame), Some(crate::FrameHeader { profile: 1, keyframe: true }));
         let mut decoder = Decoder::new(1).expect("a decoder");
         let decoded = decoder.decode(&frame).unwrap_or_else(|e| panic!("{w}x{h} on {threads} threads: {e}"));
@@ -166,21 +219,37 @@ mod tests {
         assert_eq!(decoded.chroma(), Chroma::Full);
         assert!(decoded.declares_bt601_studio_swing());
         let (recon, stride) = encoder.reconstruction();
-        for ((plane, decoded_stride), recon) in decoded.planes().into_iter().zip(decoded.strides()).zip(recon) {
+        for (p, ((plane, decoded_stride), recon)) in decoded.planes().into_iter().zip(decoded.strides()).zip(recon).enumerate() {
             for y in 0..usize::from(h) {
                 let got = &plane[y * decoded_stride..][..usize::from(w)];
-                assert_eq!(got, &recon[y * stride..][..usize::from(w)], "{w}x{h}, row {y}");
-                assert!(got.iter().all(|&p| p == 128), "{w}x{h}, row {y} is not flat grey");
+                let want = &recon[y * stride..][..usize::from(w)];
+                if let Some(x) = got.iter().zip(want).position(|(a, b)| a != b) {
+                    panic!("{w}x{h} at quality {quality}, plane {p}: the decode is {} at ({x}, {y}), the encoder's {}", got[x], want[x]);
+                }
             }
         }
-        frame
+        (frame.len(), mse(picture, &decoded))
     }
 
     #[test]
-    fn a_skipped_keyframe_decodes_flat_grey_at_its_own_size() {
-        for (w, h) in [(1, 1), (7, 5), (8, 8), (64, 64), (65, 65), (130, 67), (1440, 900), (1728, 902)] {
-            round_trip(w, h, 1);
+    fn a_keyframe_decodes_to_the_encoders_own_reconstruction() {
+        for (w, h) in [(1, 1), (7, 5), (8, 8), (64, 64), (65, 65), (130, 67), (1440, 900)] {
+            for quality in [1, 60, 100] {
+                round_trip(&desktop(w, h), quality, 1);
+                round_trip(&noise(w, h), quality, 1);
+            }
         }
+    }
+
+    #[test]
+    fn a_finer_quality_costs_bytes_and_buys_fidelity() {
+        let picture = desktop(640, 360);
+        let (coarse_bytes, coarse_mse) = round_trip(&picture, 1, 1);
+        let (fine_bytes, fine_mse) = round_trip(&picture, 100, 1);
+        assert!(fine_bytes > coarse_bytes, "{fine_bytes} bytes at 100, {coarse_bytes} at 1");
+        assert!(fine_mse < coarse_mse / 4.0, "squared error {fine_mse} at 100, {coarse_mse} at 1");
+        // Quality 100 is a quantizer of 8: close to the picture, not equal.
+        assert!(fine_mse < 4.0, "squared error {fine_mse} at 100");
     }
 
     #[test]
@@ -190,11 +259,11 @@ mod tests {
         let one = Encoder::new(3456, 8, 90, 1).expect("an encoder");
         assert_eq!((two.tile_cols_log2, one.tile_cols_log2), (1, 0));
         assert_eq!(two.geometry.tile_cols(1, 1), 216..432);
-        round_trip(3456, 8, 4);
+        round_trip(&desktop(3456, 8), 90, 4);
         // Past 4096 the format itself asks for a second column.
         let wide = Encoder::new(4160, 8, 90, 1).expect("an encoder");
         assert_eq!(wide.tile_cols_log2, 1);
-        round_trip(4160, 8, 1);
+        round_trip(&desktop(4160, 8), 90, 1);
         // Too narrow for two columns, however many threads.
         assert_eq!(Encoder::new(255, 8, 90, 64).expect("an encoder").tile_cols_log2, 0);
     }
