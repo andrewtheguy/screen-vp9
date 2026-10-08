@@ -66,7 +66,7 @@ row's second column is built only if the first fails the gate on a capture.
 | Reference frames | The previous frame only: the keyframe refreshes every slot, an inter frame refreshes one and reads it as `LAST` | Golden frame, compound |
 | Block sizes | 64×64 down to 8×8, partition chosen by the encoder | 4×4 blocks |
 | Intra modes | DC only, which keeps every transform a DCT | V, H and TM, which bring ADST with them |
-| Inter modes | Zero, nearest, near and new motion vectors, whole-pixel only; the skip flag for a block that did not change | Sub-pixel motion and its filters |
+| Inter modes | Zero, nearest, near and new motion vectors to a quarter pixel, at EIGHTTAP, the frame's one filter; the skip flag for a block that did not change | Eighth-pixel vectors, a filter per block |
 | Transforms | A size per block, which it signals: an inter block's the one whose luma costs least in error and bits, quantized at each; an intra block's 4×4 where it varies, otherwise the largest up to 16×16 | — |
 | Loop filter | Level 0, so the encoder needs none | A real filter, at low quality |
 | Probabilities | The coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools, and kept for the next; no backward adaptation, which libvpx's real-time encoder does not use either | Updates to the other probabilities |
@@ -116,10 +116,12 @@ row's second column is built only if the first fails the gate on a capture.
    gate, and each kept only if it pays there. In the order of what each is
    worth to libvpx held to this subset, measured by switching libvpx's
    features off one at a time: forward probability updates (12–32% of the
-   bytes) and per-block transform size (up to 28%), done; then sub-pixel
-   motion (up to 36% on video, nothing on desktop), the loop filter
-   (6–20%), the golden frame (2–9%) and 4×4 blocks (19% on desktop alone).
-   V, H and TM bought nothing.
+   bytes) and per-block transform size (up to 28%), done; sub-pixel motion
+   (up to 36% on video, nothing on desktop), done on NEON, its filter still
+   to come on AVX2: it cut the bytes 3–10% where it pays, for 40–55% more
+   time there, and is searched only on frames it has been paying on. Then
+   the loop filter (6–20%), the golden frame (2–9%) and 4×4 blocks (19% on
+   desktop alone). V, H and TM bought nothing.
 6. **Switch over.** The libvpx encoder, `Chroma::Subsampled` and `Speed`
    removed behind the same API, a release tagged, the pins bumped in wlshare
    and remotex as they drop 4:2:0, and `AGENTS.md` reworded: the crate then

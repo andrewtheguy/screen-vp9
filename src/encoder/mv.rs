@@ -1,8 +1,10 @@
-//! Motion vectors, all of them whole pixels: the vectors a decoder predicts
+//! Motion vectors, to a quarter of a pixel: the vectors a decoder predicts
 //! for a block are clamped as libvpx clamps them (`clamp_mv_ref`), and a new
 //! vector is coded against the nearest of them as libvpx reads it
 //! (`read_mv`), at the default probabilities and, high precision being off
-//! in the frame header, without the eighth-pixel bit.
+//! in the frame header, without the eighth-pixel bit. With every vector in
+//! quarters, so is every vector a decoder predicts, and libvpx's rounding of
+//! a predicted vector to quarters (`lower_mv_precision`) leaves it as it is.
 
 use super::tables::{MV_BITS_PROBS, MV_CLASS_PROBS, MV_CLASS0_FP_PROBS, MV_CLASS0_PROBS, MV_FP_PROBS, MV_JOINT_PROBS, MV_SIGN_PROBS};
 
@@ -36,9 +38,15 @@ impl Mv {
         Self { row: rows * 8, col: cols * 8 }
     }
 
-    /// The whole pixels down and across.
-    pub(super) fn whole(self) -> (isize, isize) {
-        ((self.row >> 3) as isize, (self.col >> 3) as isize)
+    /// The nearest vector of whole pixels, halves rounded up.
+    pub(super) fn round(self) -> Self {
+        Self { row: (self.row + 4) & !7, col: (self.col + 4) & !7 }
+    }
+
+    /// The whole pixels across and down, rounded down, and the sixteenths
+    /// past them across and down that a 4:4:4 plane is filtered at.
+    pub(super) fn split(self) -> ((isize, isize), (usize, usize)) {
+        (((self.col >> 3) as isize, (self.row >> 3) as isize), (((self.col & 7) * 2) as usize, ((self.row & 7) * 2) as usize))
     }
 
     /// The vector a decoder predicts from this one for the square of `bw`
@@ -94,9 +102,9 @@ fn tree(tree: &[i8], probs: &[u8], leaf: i8, bit: &mut impl FnMut(bool, u8)) {
 
 /// Code one non-zero component of a difference, `comp` 0 down and 1
 /// across: its sign, its class, the whole pixels within the class and the
-/// fraction, which is always the last quarter with the eighth bit implied.
+/// quarters, the eighth bit implied.
 fn component(v: i32, comp: usize, bit: &mut impl FnMut(bool, u8)) {
-    debug_assert!(v != 0 && v % 8 == 0, "a whole-pixel component, {v}");
+    debug_assert!(v != 0 && v % 2 == 0, "a component in quarters, {v}");
     bit(v < 0, MV_SIGN_PROBS[comp]);
     let z = v.unsigned_abs() - 1;
     let class = if z >= 8192 { 10 } else { (z >> 3).checked_ilog2().unwrap_or(0) };
@@ -129,9 +137,30 @@ pub(super) fn code(diff: Mv, mut bit: impl FnMut(bool, u8)) {
 
 /// What coding `diff` costs, in 256ths of a bit.
 pub(super) fn cost(diff: Mv) -> u32 {
-    let mut total = 0;
-    code(diff, |b, p| total += super::bool_writer::cost(b, p));
-    total
+    /// What each joint costs, and per component what each value it can take
+    /// costs, from `-LIMIT`, in quarters.
+    struct Costs {
+        joints: [u32; 4],
+        components: [Vec<u32>; 2],
+    }
+    /// The longest a component of a difference can be, in eighths: 2048
+    /// pixels.
+    const LIMIT: i32 = 2048 * 8;
+    static COSTS: std::sync::LazyLock<Costs> = std::sync::LazyLock::new(|| {
+        /// What the bools `code` codes cost.
+        fn priced(code: impl FnOnce(&mut dyn FnMut(bool, u8))) -> u32 {
+            let mut total = 0;
+            code(&mut |b, p| total += super::bool_writer::cost(b, p));
+            total
+        }
+        Costs {
+            joints: std::array::from_fn(|joint| priced(|mut bit| tree(&JOINT_TREE, &MV_JOINT_PROBS, joint as i8, &mut bit))),
+            components: std::array::from_fn(|comp| (-LIMIT..=LIMIT).step_by(2).map(|v| if v == 0 { 0 } else { priced(|mut bit| component(v, comp, &mut bit)) }).collect()),
+        }
+    });
+    let joint = 2 * usize::from(diff.row != 0) + usize::from(diff.col != 0);
+    let at = |v: i32| ((v + LIMIT) / 2) as usize;
+    COSTS.joints[joint] + COSTS.components[0][at(diff.row)] + COSTS.components[1][at(diff.col)]
 }
 
 #[cfg(test)]
@@ -174,7 +203,12 @@ mod tests {
             for (row, col) in [(v, 0), (0, -v), (-v, v), (v, 1)] {
                 diffs.push(Mv::pixels(row, col));
             }
+            // A quarter, a half and three quarters past, and short of.
+            for q in [2, 4, 6] {
+                diffs.push(Mv { row: v * 8 + q, col: -(v * 8 - q) });
+            }
         }
+        diffs.extend([Mv { row: 2, col: 0 }, Mv { row: 0, col: -6 }]);
         let mut w = BoolWriter::new();
         for &d in &diffs {
             code(d, |b, p| w.write(b, p));
@@ -186,6 +220,15 @@ mod tests {
             let row = if joint >= 2 { read_component(&mut r, 0) } else { 0 };
             let col = if joint & 1 == 1 { read_component(&mut r, 1) } else { 0 };
             assert_eq!(Mv { row, col }, d);
+        }
+    }
+
+    #[test]
+    fn a_difference_costs_its_bools() {
+        for d in [Mv::ZERO, Mv::pixels(0, 1), Mv { row: -6, col: 0 }, Mv { row: 2046 * 8 + 6, col: -16384 }, Mv { row: 16384, col: 30 }] {
+            let mut total = 0;
+            code(d, |b, p| total += super::super::bool_writer::cost(b, p));
+            assert_eq!(cost(d), total, "{d:?}");
         }
     }
 

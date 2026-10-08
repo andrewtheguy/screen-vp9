@@ -15,6 +15,7 @@
 //! other, are decided and coded on threads of their own.
 
 mod bool_writer;
+mod convolve;
 mod dct;
 mod header;
 mod lanes;
@@ -31,6 +32,17 @@ mod tokens;
 mod transform;
 
 use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, quality_to_q, tile_columns_log2};
+
+/// The share of what the blocks it refines would cost that the search
+/// between pixels has to save, as `tile::laplacian` models it, for it to
+/// refine every block of the next frame; where it saves less, it refines one
+/// block in `SEARCH_PROBE`, to see whether it pays again. On the plan's
+/// captures it saved a median of 3% a frame on proxmox and mac-hp, whose
+/// bytes it barely moved for half again the time, and 11–14% on hidpi and
+/// the mac recordings, whose bytes it cut by 3–10%. Probing one block in 8
+/// cost proxmox and mac-hp 7% of their time, one in 32 cost 2–3%.
+const SEARCH_PAYS: f64 = 1.0 / 16.0;
+const SEARCH_PROBE: usize = 32;
 
 /// The widest a tile column may be, in superblocks.
 const MAX_TILE_WIDTH_B64: usize = 64;
@@ -148,6 +160,23 @@ impl Reconstruction {
         (x + len <= column.x + column.stride).then_some(column)
     }
 
+    /// The `w`×`h` of `plane` whose corner is at `(x, y)`, as a decoder reads
+    /// a reference frame `width`×`height`, past the picture's edges the pixel
+    /// at the edge, and how far apart its rows are: as it is where it is
+    /// inside the picture and in one column, and otherwise copied into
+    /// `scratch`.
+    pub(super) fn block<'s>(&'s self, plane: usize, (x, y): (isize, isize), (w, h): (usize, usize), (width, height): (usize, usize), scratch: &'s mut Vec<u8>) -> (&'s [u8], usize) {
+        let inside = x >= 0 && y >= 0 && x as usize + w <= width && y as usize + h <= height;
+        if let Some(column) = inside.then(|| self.holding(x as usize, w)).flatten() {
+            return (column.from(plane, y as usize, x as usize), column.stride);
+        }
+        scratch.resize(w * h, 0);
+        for (r, row) in scratch.chunks_exact_mut(w).enumerate() {
+            self.read_row(plane, (y + r as isize).clamp(0, height as isize - 1) as usize, x, width, row);
+        }
+        (&scratch[..w * h], w)
+    }
+
     /// Fill `out` from row `y` of `plane` at pixel column `x` on, as a
     /// decoder reads a reference frame `width` wide: past either end of the
     /// picture, the pixel at that end.
@@ -202,6 +231,12 @@ pub(crate) struct Encoder {
     /// Whether every block is to be coded again, unchanged or not: after the
     /// quantizer moves.
     requantize: bool,
+    /// Of the blocks the search between pixels could refine in the next
+    /// frame, the one in this many it does, and what the blocks it refined
+    /// would cost and what it saved (`tile::Contexts::searched`), summed over
+    /// the frames so far, each frame's half again of the one after.
+    search_every: usize,
+    searched: [f64; 2],
 }
 
 impl Encoder {
@@ -232,6 +267,8 @@ impl Encoder {
             started: false,
             last_inter: false,
             requantize: false,
+            search_every: 1,
+            searched: [0.0; 2],
             geometry,
         })
     }
@@ -272,7 +309,7 @@ impl Encoder {
         let q_index = tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize];
         let quantizer = quantize::Quantizer::new(q_index);
         let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
-        let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, vectors: &vectors });
+        let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, vectors: &vectors, search_every: self.search_every });
         // A keyframe starts a decoder's probabilities over from the defaults;
         // an inter frame takes the ones the frame before left.
         let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
@@ -287,6 +324,13 @@ impl Encoder {
             counts.add(&contexts.tape.counts);
         }
         let compressed = header::compressed(keyframe, &mut probs, &counts);
+        // Each frame's half again of what came before, so that a frame with
+        // little to search says little.
+        self.searched = self.contexts.iter().fold(self.searched.map(|v| v / 2.0), |[c, s], contexts| [c + contexts.searched[0], s + contexts.searched[1]]);
+        let [came, saved] = self.searched;
+        if came > 0.0 {
+            self.search_every = if saved < came * SEARCH_PAYS { SEARCH_PROBE } else { 1 };
+        }
         let table = probs.table();
         let tiles = on_threads(self.threads, self.contexts.iter(), |contexts| contexts.tape.code(&table));
         let uncompressed = header::Uncompressed {
@@ -702,6 +746,37 @@ mod tests {
         }
     }
 
+    /// A `w`×`h` in RGB of soft waves, as video is and a desktop is not,
+    /// moved `shift` pixels right and down: what only a vector between
+    /// pixels predicts well.
+    fn waves_rgb(w: u16, h: u16, (sx, sy): (f64, f64)) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity(usize::from(w) * usize::from(h) * 3);
+        for y in 0..h {
+            for x in 0..w {
+                let (x, y) = (f64::from(x) - sx, f64::from(y) - sy);
+                let wave = |a: f64, b: f64, c: f64| (128.0 + 90.0 * (x * a + y * b + c).sin()).round() as u8;
+                rgb.extend([wave(0.21, 0.07, 0.0), wave(-0.05, 0.17, 1.0), wave(0.13, -0.11, 2.0)]);
+            }
+        }
+        rgb
+    }
+
+    #[test]
+    fn motion_between_pixels_decodes() {
+        // Small pictures and their edges, and four tile columns.
+        for (w, h, threads) in [(130, 67, 1), (200, 120, 1), (3840, 136, 4)] {
+            let mut stream = Stream::new(w, h, 90, threads);
+            let mut fractions = 0;
+            for (i, shift) in [(0.0, 0.0), (0.5, 0.0), (0.75, 0.25), (1.5, 1.0), (-2.25, 0.5), (-2.25, 0.5)].into_iter().enumerate() {
+                let (bytes, keyframe, _) = stream.frame(&picture(w, h, &waves_rgb(w, h, shift)), false);
+                assert_eq!(keyframe, i == 0, "{w}x{h}, frame {i}, {bytes} bytes");
+                fractions += stream.encoder.contexts.iter().flat_map(|c| c.vectors()).filter(|mv| mv.row % 8 != 0 || mv.col % 8 != 0).count();
+            }
+            assert!(fractions > 0, "{w}x{h}: no vector between pixels");
+            assert_eq!(stream.encoder.search_every, 1, "{w}x{h}: the search pays on waves that move");
+        }
+    }
+
     #[test]
     fn an_unchanged_picture_costs_a_few_bytes() {
         let (w, h) = (640, 384);
@@ -861,15 +936,18 @@ mod tests {
         let pictures = sample(&ivf, 1, 60);
         let (w, h) = pictures[0].size();
         let mut out = Vec::new();
+        let mut bytes = 0;
         let started = std::time::Instant::now();
         for _ in 0..passes {
             let mut encoder = Encoder::new(w, h, quality, threads).expect("an encoder");
+            bytes = 0;
             for picture in &pictures {
                 out.clear();
                 encoder.encode(picture, false, &mut out).expect("a frame");
+                bytes += out.len();
             }
         }
-        println!("{name} on {threads}: {:.2} ms per frame", started.elapsed().as_secs_f64() * 1000.0 / (passes * pictures.len()) as f64);
+        println!("{name} on {threads}: {:.2} ms per frame, {bytes} bytes", started.elapsed().as_secs_f64() * 1000.0 / (passes * pictures.len()) as f64);
     }
 
     fn psnr(mse: f64) -> f64 {
