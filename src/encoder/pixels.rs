@@ -1,10 +1,18 @@
 //! Kernels over 8-bit pixels: the moments the partition decision reads, and
-//! a residual. Each is NEON on arm64 and held by its tests to the scalar
-//! reference beside it.
+//! a residual. Each is NEON on arm64 and AVX2 on amd64 that has it, and
+//! held by its tests to the scalar reference beside it.
+
+#[cfg(target_arch = "x86_64")]
+use super::lanes::has_avx2;
 
 /// The sum and the sum of squares of the 8×8 at the start of `a`, rows
 /// `stride` apart.
 pub(super) fn moments(a: &[u8], stride: usize) -> (i32, i32) {
+    #[cfg(target_arch = "x86_64")]
+    if has_avx2() {
+        // SAFETY: the machine has AVX2.
+        return unsafe { avx2::moments(a, stride) };
+    }
     #[cfg(target_arch = "aarch64")]
     return neon::moments(a, stride);
     #[cfg(not(target_arch = "aarch64"))]
@@ -14,6 +22,11 @@ pub(super) fn moments(a: &[u8], stride: usize) -> (i32, i32) {
 /// The sum and the sum of squares of the 8×8 at the start of `a` less the
 /// one at the start of `b`.
 pub(super) fn difference_moments(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> (i32, i32) {
+    #[cfg(target_arch = "x86_64")]
+    if has_avx2() {
+        // SAFETY: the machine has AVX2.
+        return unsafe { avx2::difference_moments(a, a_stride, b, b_stride) };
+    }
     #[cfg(target_arch = "aarch64")]
     return neon::difference_moments(a, a_stride, b, b_stride);
     #[cfg(not(target_arch = "aarch64"))]
@@ -23,6 +36,11 @@ pub(super) fn difference_moments(a: &[u8], a_stride: usize, b: &[u8], b_stride: 
 /// The `n`×`n` at the start of `a` less the one at the start of `b`, into
 /// `out` in raster order; `n` is 4 to 32.
 pub(super) fn subtract(n: usize, a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, out: &mut [i32]) {
+    #[cfg(target_arch = "x86_64")]
+    if has_avx2() {
+        // SAFETY: the machine has AVX2.
+        return unsafe { avx2::subtract(n, a, a_stride, b, b_stride, out) };
+    }
     #[cfg(target_arch = "aarch64")]
     return neon::subtract(n, a, a_stride, b, b_stride, out);
     #[cfg(not(target_arch = "aarch64"))]
@@ -115,6 +133,73 @@ mod neon {
                     vst1q_s32(o.as_mut_ptr(), vmovl_s16(vget_low_s16(d)));
                     vst1q_s32(o.as_mut_ptr().add(4), vmovl_high_s16(d));
                 }
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+mod avx2 {
+    use std::arch::x86_64::*;
+
+    // Each load and store is inside a slice bounds-checked just before it.
+
+    /// Eight pixels of `a` from `at`, in the low half.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn eight(a: &[u8], at: usize) -> __m128i {
+        let a = &a[at..][..8];
+        unsafe { _mm_loadl_epi64(a.as_ptr().cast()) }
+    }
+
+    /// Rows `r` and `r + 1` of the 8×8 at the start of `a`, widened to 16 bits.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn two_rows(a: &[u8], stride: usize, r: usize) -> __m256i {
+        _mm256_cvtepu8_epi16(_mm_unpacklo_epi64(eight(a, r * stride), eight(a, (r + 1) * stride)))
+    }
+
+    /// The sum of the eight `i32` of `v`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn total(v: __m256i) -> i32 {
+        let v = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+        let v = _mm_add_epi32(v, _mm_shuffle_epi32::<0b01_00_11_10>(v));
+        _mm_cvtsi128_si32(_mm_add_epi32(v, _mm_shuffle_epi32::<0b10_11_00_01>(v)))
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(super) fn moments(a: &[u8], stride: usize) -> (i32, i32) {
+        let (mut sum, mut squares) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+        for r in (0..8).step_by(2) {
+            let v = two_rows(a, stride, r);
+            sum = _mm256_add_epi16(sum, v);
+            squares = _mm256_add_epi32(squares, _mm256_madd_epi16(v, v));
+        }
+        (total(_mm256_madd_epi16(sum, _mm256_set1_epi16(1))), total(squares))
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(super) fn difference_moments(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> (i32, i32) {
+        let (mut sum, mut squares) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+        for r in (0..8).step_by(2) {
+            let d = _mm256_sub_epi16(two_rows(a, a_stride, r), two_rows(b, b_stride, r));
+            sum = _mm256_add_epi16(sum, d);
+            squares = _mm256_add_epi32(squares, _mm256_madd_epi16(d, d));
+        }
+        (total(_mm256_madd_epi16(sum, _mm256_set1_epi16(1))), total(squares))
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(super) fn subtract(n: usize, a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, out: &mut [i32]) {
+        if n == 4 {
+            return super::scalar::subtract(n, a, a_stride, b, b_stride, out);
+        }
+        for r in 0..n {
+            for c in (0..n).step_by(8) {
+                let o = &mut out[r * n + c..][..8];
+                let d = _mm256_sub_epi32(_mm256_cvtepu8_epi32(eight(a, r * a_stride + c)), _mm256_cvtepu8_epi32(eight(b, r * b_stride + c)));
+                unsafe { _mm256_storeu_si256(o.as_mut_ptr().cast(), d) };
             }
         }
     }

@@ -82,8 +82,7 @@ row's second column is built only if the first fails the gate on a capture.
   finds exact matches cheaply.
 - **SIMD kernels:** NEON on arm64, where it is always there, and AVX2 on
   amd64, chosen at run time, each with a scalar reference it is tested
-  against: block difference, forward and inverse transforms, quantization,
-  DC prediction, block copy.
+  against: block difference, forward and inverse transforms, quantization.
 - **Threading:** one thread per tile column, and the comparison with the
   previous source and the motion search's hashing in a band of rows per
   thread.
@@ -104,12 +103,14 @@ row's second column is built only if the first fails the gate on a capture.
 4. **SIMD and threading**, in three parts, each measured on the six captures:
    1. **Threading.** Done: tile columns, and the comparison and hashing in
       bands of rows.
-   2. **NEON**, built, tested and measured on arm64. The scalar references,
-      their tests and the way a kernel is chosen are set up here, so the next
-      part only adds kernels.
-   3. **AVX2**, built, tested and measured on an amd64 machine: an arm64 Mac
-      cannot run AVX2, which Rosetta does not translate. That machine also
-      runs the whole test suite and the gate on amd64.
+   2. **NEON.** Done: transforms, quantization, block difference and the
+      moments the partition decision reads, each tested against its scalar
+      reference. DC prediction and block copy are not hot and stay scalar.
+   3. **AVX2.** Done, on an amd64 machine, since Rosetta does not translate
+      AVX2: the same kernels, chosen at run time, and the motion search's
+      hashing compiled for AVX2 beside the baseline. Scalar, NEON and AVX2
+      code the same streams to the byte, and the whole test suite passes on
+      amd64.
 5. **The second column**, row by row, only where a capture still fails the
    gate, and each kept only if it pays there.
 6. **Switch over.** The libvpx encoder, `Chroma::Subsampled` and `Speed`

@@ -4,7 +4,10 @@
 //! vector's own operations differ from the scalar ones, which the tests of
 //! each kernel hold them to.
 //!
-//! NEON is always there on arm64, so it is used without asking.
+//! NEON is always there on arm64, so it is used without asking; AVX2 on
+//! amd64 is asked about at run time, by `has_avx2`, and the code that uses it
+//! is compiled for it in a function of its own, entered only once it is
+//! known to be there.
 
 use std::ops::{Add, Mul, Neg, Sub};
 
@@ -50,11 +53,18 @@ pub(super) trait Lanes: Copy + Add<Output = Self> + Sub<Output = Self> + Neg<Out
     }
 }
 
-/// The widest lanes this machine has.
+/// The widest lanes every machine of this architecture has: NEON's on
+/// arm64; on amd64 one lane, AVX2's eight being asked for at run time.
 #[cfg(target_arch = "aarch64")]
 pub(super) type Vector = neon::I32x4;
 #[cfg(not(target_arch = "aarch64"))]
 pub(super) type Vector = i32;
+
+/// Whether this machine has AVX2.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn has_avx2() -> bool {
+    std::arch::is_x86_feature_detected!("avx2")
+}
 
 impl Lanes for i32 {
     const WIDTH: usize = 1;
@@ -228,6 +238,161 @@ pub(super) mod neon {
                     let sum = vaddq_s16(pixels, vcombine_s16(vmovn_s32(lo), vmovn_s32(hi)));
                     vst1_u8(dst.as_mut_ptr(), vqmovun_s16(sum));
                 }
+            }
+            let done = eights.len() * 8;
+            <i32 as Lanes>::add_shifted(&values[done..], shift, rest);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) mod avx2 {
+    use std::arch::x86_64::*;
+    use std::ops::{Add, Mul, Neg, Sub};
+
+    use super::Lanes;
+
+    // An `I32x8` is only made inside a function compiled for AVX2 and
+    // entered once `has_avx2()` has said it is there, where these are inlined;
+    // that is what the `unsafe` around an intrinsic is for, unless a comment
+    // says what else it is for.
+
+    /// Eight `i32` in an AVX2 register.
+    #[derive(Clone, Copy)]
+    pub(in super::super) struct I32x8(__m256i);
+
+    impl Add for I32x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn add(self, other: Self) -> Self {
+            unsafe { Self(_mm256_add_epi32(self.0, other.0)) }
+        }
+    }
+
+    impl Sub for I32x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn sub(self, other: Self) -> Self {
+            unsafe { Self(_mm256_sub_epi32(self.0, other.0)) }
+        }
+    }
+
+    impl Neg for I32x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn neg(self) -> Self {
+            unsafe { Self(_mm256_sub_epi32(_mm256_setzero_si256(), self.0)) }
+        }
+    }
+
+    impl Mul<i32> for I32x8 {
+        type Output = Self;
+        #[inline(always)]
+        fn mul(self, k: i32) -> Self {
+            unsafe { Self(_mm256_mullo_epi32(self.0, _mm256_set1_epi32(k))) }
+        }
+    }
+
+    impl Lanes for I32x8 {
+        const WIDTH: usize = 8;
+
+        #[inline(always)]
+        fn splat(v: i32) -> Self {
+            unsafe { Self(_mm256_set1_epi32(v)) }
+        }
+
+        #[inline(always)]
+        fn load(src: &[i32]) -> Self {
+            let src = &src[..8];
+            // SAFETY: `src` holds the eight values read.
+            Self(unsafe { _mm256_loadu_si256(src.as_ptr().cast()) })
+        }
+
+        #[inline(always)]
+        fn store(self, dst: &mut [i32]) {
+            let dst = &mut dst[..8];
+            // SAFETY: `dst` holds the eight values written.
+            unsafe { _mm256_storeu_si256(dst.as_mut_ptr().cast(), self.0) }
+        }
+
+        #[inline(always)]
+        fn round14(self) -> Self {
+            unsafe { Self(_mm256_srai_epi32::<14>(_mm256_add_epi32(self.0, _mm256_set1_epi32(1 << 13)))) }
+        }
+
+        #[inline(always)]
+        fn wrap16(self) -> Self {
+            unsafe { Self(_mm256_srai_epi32::<16>(_mm256_slli_epi32::<16>(self.0))) }
+        }
+
+        #[inline(always)]
+        fn shr(self, n: u32) -> Self {
+            unsafe { Self(_mm256_sra_epi32(self.0, _mm_cvtsi32_si128(n as i32))) }
+        }
+
+        #[inline(always)]
+        fn positive(self) -> Self {
+            unsafe { Self(_mm256_srli_epi32::<31>(_mm256_cmpgt_epi32(self.0, _mm256_setzero_si256()))) }
+        }
+
+        #[inline(always)]
+        fn negative(self) -> Self {
+            unsafe { Self(_mm256_srli_epi32::<31>(self.0)) }
+        }
+
+        #[inline(always)]
+        fn is_zero(self) -> bool {
+            unsafe { _mm256_testz_si256(self.0, self.0) != 0 }
+        }
+
+        #[inline(always)]
+        fn transpose(n: usize, src: &[i32], dst: &mut [i32]) {
+            // An 8×8 at a time: its rows interleaved across 32 and then 64
+            // bits within each half, and the halves swapped across. Loops,
+            // not closures, so that all of it is inlined (see `transform`).
+            unsafe {
+            let (mut rows, mut t, mut u) = ([_mm256_setzero_si256(); 8], [_mm256_setzero_si256(); 8], [_mm256_setzero_si256(); 8]);
+            for r in (0..n).step_by(8) {
+                for c in (0..n).step_by(8) {
+                    for (k, row) in rows.iter_mut().enumerate() {
+                        *row = Self::load(&src[(r + k) * n + c..]).0;
+                    }
+                    for k in (0..8).step_by(2) {
+                        t[k] = _mm256_unpacklo_epi32(rows[k], rows[k + 1]);
+                        t[k + 1] = _mm256_unpackhi_epi32(rows[k], rows[k + 1]);
+                    }
+                    // Columns 0 and 4, 1 and 5, 2 and 6, 3 and 7, of the top
+                    // four rows and then of the bottom four.
+                    for half in [0, 4] {
+                        u[half] = _mm256_unpacklo_epi64(t[half], t[half + 2]);
+                        u[half + 1] = _mm256_unpackhi_epi64(t[half], t[half + 2]);
+                        u[half + 2] = _mm256_unpacklo_epi64(t[half + 1], t[half + 3]);
+                        u[half + 3] = _mm256_unpackhi_epi64(t[half + 1], t[half + 3]);
+                    }
+                    for j in 0..4 {
+                        Self(_mm256_permute2x128_si256::<0x20>(u[j], u[j + 4])).store(&mut dst[(c + j) * n + r..]);
+                        Self(_mm256_permute2x128_si256::<0x31>(u[j], u[j + 4])).store(&mut dst[(c + j + 4) * n + r..]);
+                    }
+                }
+            }
+            }
+        }
+
+        #[inline(always)]
+        fn add_shifted(values: &[i32], shift: u32, dst: &mut [u8]) {
+            let (eights, rest) = dst.as_chunks_mut::<8>();
+            unsafe {
+            let (round, count) = (_mm256_set1_epi32(1 << (shift - 1)), _mm_cvtsi32_si128(shift as i32));
+            for (i, dst) in eights.iter_mut().enumerate() {
+                // A rounding shift, then the pixels widened, added and
+                // narrowed back, saturating at each step as the clamp would.
+                let v = _mm256_sra_epi32(_mm256_add_epi32(Self::load(&values[i * 8..]).0, round), count);
+                let v = _mm_packs_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+                // SAFETY: `dst` is eight pixels.
+                let pixels = _mm_cvtepu8_epi16(_mm_loadl_epi64(dst.as_ptr().cast()));
+                let sum = _mm_adds_epi16(pixels, v);
+                _mm_storel_epi64(dst.as_mut_ptr().cast(), _mm_packus_epi16(sum, sum));
+            }
             }
             let done = eights.len() * 8;
             <i32 as Lanes>::add_shifted(&values[done..], shift, rest);
