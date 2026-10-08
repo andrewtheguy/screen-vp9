@@ -115,6 +115,29 @@ fn tile_columns_log2(width: u16, threads: usize) -> u32 {
     (usize::from(width) / TILE_WIDTH).max(1).ilog2().min(threads.max(1).ilog2())
 }
 
+/// Whether libvpx is left to loop filter a stream's frames: all but 4:4:4 in
+/// four tile columns or more. libvpx at these speeds takes the filter's level
+/// from the quantizer, 7 to 9 at the fine end of the dial, a light filter that
+/// still visits every block edge of every frame, and it is a quarter to two
+/// fifths of what vp9-wasm spends on a frame. Measured on vp9-wasm 0.0.5 with
+/// six 4:4:4 captures coded both ways: without the filter one thread decodes
+/// in 26% to 40% fewer cycles, and the stream is 2% to 8% larger and 0.5 to
+/// 0.9 dB of luma further from its source, since every later frame predicts
+/// from what the filter smoothed. What four threads gain is what the tiles
+/// leave: with two columns a frame waits on their parsing, and a 1440-wide
+/// desktop decoded in 3.1 ms for 3.7, a busy Mac screen and a 1728-wide
+/// animation in the same time as before; with four, a 3456-wide desktop
+/// decoded in 19.0 ms for 27.9 and a 3456×2234 recording in 11.3 for 17.5.
+/// That desktop coded in two columns: 27.4 for 29.0. So the filter goes where
+/// the columns have left it as what a decoder's threads wait on, which is
+/// also where a frame is slowest to decode, and stays where it would be bytes
+/// and picture given for no time. A 4:2:0 stream keeps it whatever its size:
+/// that is the profile a browser decodes itself, often in hardware, and
+/// nothing here was measured on one.
+fn loop_filtered(chroma: Chroma, width: u16, threads: usize) -> bool {
+    chroma != Chroma::Full || tile_columns_log2(width, threads) < 2
+}
+
 /// How much colour a stream carries per pixel: the VP9 profile at eight bits,
 /// and nothing else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -519,6 +542,9 @@ impl Encoder {
             // allows, which one thread would code one after another for the
             // bytes and nothing else.
             encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_TILE_COLUMNS, tile_columns_log2(width, threads) as c_int, "tile_columns")?;
+            // libvpx's 2 is no loop filter on any frame, 0 its own choice of level
+            // on every one.
+            encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_DISABLE_LOOPFILTER, if loop_filtered(chroma, width, threads) { 0 } else { 2 }, "disable_loopfilter")?;
             if threads > 1 {
                 // What turns `g_threads` into actual parallelism inside a tile:
                 // row-based multithreading. Inert at one thread.
@@ -1063,6 +1089,64 @@ mod tests {
         assert_eq!(tile_columns_log2(3840, 2), 1);
         assert_eq!(tile_columns_log2(3840, 1), 0);
         assert_eq!(tile_columns_log2(3840, 0), 0);
+    }
+
+    /// The loop filter level a frame's uncompressed header carries (VP9
+    /// bitstream §6.2), for a frame of this crate's encoder: eight bits, shown,
+    /// and after a keyframe predicted from frames of its own size.
+    fn filter_level(frame: &[u8]) -> u32 {
+        let mut bits = frame.iter().flat_map(|byte| (0..8).rev().map(move |i| u32::from(byte >> i & 1)));
+        let mut read = |n: usize| (0..n).fold(0, |value, _| value << 1 | bits.next().expect("a whole header"));
+        assert_eq!(read(2), 2, "frame_marker");
+        let profile = read(1) | read(1) << 1;
+        assert!(profile < 2, "an eight-bit profile");
+        assert_eq!(read(1), 0, "show_existing_frame");
+        let keyframe = read(1) == 0;
+        assert_eq!((read(1), read(1)), (1, 0), "show_frame, error_resilient_mode");
+        if keyframe {
+            assert_eq!(read(24), 0x49_83_42, "frame_sync_code");
+            assert_ne!(read(3), 7, "color_space is not sRGB");
+            // color_range, and on profile 1 the subsampling and a reserved bit.
+            read(if profile == 1 { 4 } else { 1 });
+            read(32);
+            assert_eq!(read(1), 0, "render_and_frame_size_different");
+        } else {
+            // reset_frame_context, refresh_frame_flags, and a reference and its
+            // sign bias three times.
+            read(2 + 8 + 12);
+            assert_eq!(read(1), 1, "found_ref");
+            // allow_high_precision_mv, then the interpolation filter: one bit
+            // if a block chooses its own, two more if the frame does.
+            read(1);
+            if read(1) == 0 {
+                read(2);
+            }
+        }
+        // refresh_frame_context, frame_parallel_decoding_mode, frame_context_idx.
+        read(4);
+        read(6)
+    }
+
+    /// A stream is filtered unless it is 4:4:4 in four tile columns, and one
+    /// that is not says so in every frame's header and decodes as any other.
+    #[test]
+    fn the_loop_filter_is_left_out_of_444_in_four_tile_columns() {
+        assert!(loop_filtered(Chroma::Full, 2879, 8));
+        assert!(!loop_filtered(Chroma::Full, 2880, 8));
+        assert!(!loop_filtered(Chroma::Full, 3840, 4));
+        assert!(loop_filtered(Chroma::Full, 3840, 3));
+        assert!(loop_filtered(Chroma::Subsampled, 3840, 8));
+
+        for (w, chroma, threads, filtered) in [(1440, Chroma::Full, 4, true), (2880, Chroma::Full, 4, false), (2880, Chroma::Full, 2, true), (2880, Chroma::Subsampled, 4, true)] {
+            let mut encoder = Encoder::new(w, 64, chroma, 50, threads).expect("an encoder");
+            let frames: Vec<Vec<u8>> = [[30, 60, 90], [200, 30, 30], [40, 180, 70]].iter().map(|colour| encode(&mut encoder, &picture(w, 64, chroma, &flat(w, 64, *colour)), false).0).collect();
+            for (n, frame) in frames.iter().enumerate() {
+                assert_eq!(filter_level(frame) > 0, filtered, "frame {n} of {w} wide, {chroma:?}, {threads} threads");
+            }
+            let decoded = decode_chain(&frames, usize::from(w), 64);
+            let last = rgb_at(&decoded, usize::from(w), usize::from(w) - 1, 63);
+            assert!(last.iter().zip([40u8, 180, 70]).all(|(c, want)| c.abs_diff(want) <= 8), "{w} wide, {chroma:?}, {threads} threads decoded as {last:?}");
+        }
     }
 
     #[test]
