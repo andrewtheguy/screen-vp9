@@ -70,7 +70,7 @@ row's second column is built only if the first fails the gate on a capture.
 | Transforms | One size per block, the largest that fits up to 32×32; no per-block size choice is signalled | Per-block size choice |
 | Loop filter | Level 0, so the encoder needs none | A real filter, at low quality |
 | Probabilities | Defaults every frame, no adaptation and no forward updates; the header says the decoder is not to adapt either | Backward adaptation |
-| Tiles and threads | Tile columns by the width rule the crate has now, one thread per tile column | A wavefront over superblock rows |
+| Tiles and threads | Tile columns by the width rule the crate has now, one thread per tile column; the source compared and hashed in a band of rows per thread | A wavefront over superblock rows |
 | Segmentation, resizing, altref, lossless, high bit depth, error-resilient mode | Never | — |
 
 ## Where the speed should come from
@@ -80,24 +80,36 @@ row's second column is built only if the first fails the gate on a capture.
   frame.
 - **Scrolls and window drags:** hash-based whole-pixel motion search, which
   finds exact matches cheaply.
-- **SIMD kernels:** AVX2 and NEON chosen at run time, each with a scalar
-  reference it is tested against: block difference, forward and inverse
-  transforms, quantization, DC prediction, block copy.
-- **Threading:** one thread per tile column.
+- **SIMD kernels:** NEON on arm64, where it is always there, and AVX2 on
+  amd64, chosen at run time, each with a scalar reference it is tested
+  against: block difference, forward and inverse transforms, quantization,
+  DC prediction, block copy.
+- **Threading:** one thread per tile column, and the comparison with the
+  previous source and the motion search's hashing in a band of rows per
+  thread.
 
 ## Phases
 
 1. **Harness.** Done: `examples/bench.rs`, interleaved timing of two
    candidates on a capture, with bytes and PSNR from a libvpx decode. Measured
    against itself first for its noise floor.
-2. **Spike, scalar.** Keyframes and inter frames with skip, zero motion and DC
+2. **Spike, scalar.** Done. Keyframes and inter frames with skip, zero motion and DC
    intra. Every frame decoded by libvpx, the encoder's own reconstruction
    matching it bit for bit; checked in Chrome, Firefox and Safari. Measured on
    the six captures. Here is where to decide whether to go on: a scalar
    encoder that is not within about three times libvpx on the animation
    captures is unlikely to be brought under it by SIMD.
-3. **Motion.** Motion vector prediction, hash search, partition decisions.
-4. **SIMD and threading.**
+3. **Motion.** Done: motion vector prediction, hash search, partition
+   decisions.
+4. **SIMD and threading**, in three parts, each measured on the six captures:
+   1. **Threading.** Done: tile columns, and the comparison and hashing in
+      bands of rows.
+   2. **NEON**, built, tested and measured on arm64. The scalar references,
+      their tests and the way a kernel is chosen are set up here, so the next
+      part only adds kernels.
+   3. **AVX2**, built, tested and measured on an amd64 machine: an arm64 Mac
+      cannot run AVX2, which Rosetta does not translate. That machine also
+      runs the whole test suite and the gate on amd64.
 5. **The second column**, row by row, only where a capture still fails the
    gate, and each kept only if it pays there.
 6. **Switch over.** The libvpx encoder, `Chroma::Subsampled` and `Speed`
