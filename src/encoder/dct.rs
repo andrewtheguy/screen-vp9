@@ -3,26 +3,32 @@
 //! Project authors, under the BSD licence in `LICENSE-libvpx`.
 //!
 //! The inverse ones are what a decoder runs, so they are exact to the bit:
-//! every value libvpx keeps in 16 bits is wrapped to 16 bits here.
+//! every value libvpx keeps in 16 bits is wrapped to 16 bits here. Each is
+//! written over `Lanes`, so it runs on one value or on a vector of them.
+
+use super::lanes::Lanes;
 
 /// cos(kπ/64) in 14 bits, `COSPI[k]`.
 const COSPI: [i32; 32] = [0, 16364, 16305, 16207, 16069, 15893, 15679, 15426, 15137, 14811, 14449, 14053, 13623, 13160, 12665, 12140, 11585, 11003, 10394, 9760, 9102, 8423, 7723, 7005, 6270, 5520, 4756, 3981, 3196, 2404, 1606, 804];
 
 /// libvpx's `dct_const_round_shift`: a product of a `COSPI` back to scale.
-fn round14(x: i32) -> i32 {
-    (x + (1 << 13)) >> 14
+#[inline(always)]
+fn round14<V: Lanes>(x: V) -> V {
+    x.round14()
 }
 
 /// A store into a 16-bit value.
-fn w(x: i32) -> i32 {
-    x as i16 as i32
+#[inline(always)]
+fn w<V: Lanes>(x: V) -> V {
+    x.wrap16()
 }
 
 /// libvpx's `idct4_c`.
-pub(super) fn idct4(input: &[i32; 4], output: &mut [i32; 4]) {
-    let mut step = [0i32; 4];
-    let mut temp1: i32;
-    let mut temp2: i32;
+#[inline(always)]
+pub(super) fn idct4<V: Lanes>(input: &[V; 4], output: &mut [V; 4]) {
+    let mut step = [V::splat(0); 4];
+    let mut temp1: V;
+    let mut temp2: V;
     // stage 1
     temp1 = (input[0] + input[2]) * COSPI[16];
     temp2 = (input[0] - input[2]) * COSPI[16];
@@ -40,11 +46,12 @@ pub(super) fn idct4(input: &[i32; 4], output: &mut [i32; 4]) {
 }
 
 /// libvpx's `idct8_c`.
-pub(super) fn idct8(input: &[i32; 8], output: &mut [i32; 8]) {
-    let mut step1 = [0i32; 8];
-    let mut step2 = [0i32; 8];
-    let mut temp1: i32;
-    let mut temp2: i32;
+#[inline(always)]
+pub(super) fn idct8<V: Lanes>(input: &[V; 8], output: &mut [V; 8]) {
+    let mut step1 = [V::splat(0); 8];
+    let mut step2 = [V::splat(0); 8];
+    let mut temp1: V;
+    let mut temp2: V;
     // stage 1
     step1[0] = w(input[0]);
     step1[2] = w(input[4]);
@@ -94,11 +101,12 @@ pub(super) fn idct8(input: &[i32; 8], output: &mut [i32; 8]) {
 }
 
 /// libvpx's `idct16_c`.
-pub(super) fn idct16(input: &[i32; 16], output: &mut [i32; 16]) {
-    let mut step1 = [0i32; 16];
-    let mut step2 = [0i32; 16];
-    let mut temp1: i32;
-    let mut temp2: i32;
+#[inline(always)]
+pub(super) fn idct16<V: Lanes>(input: &[V; 16], output: &mut [V; 16]) {
+    let mut step1 = [V::splat(0); 16];
+    let mut step2 = [V::splat(0); 16];
+    let mut temp1: V;
+    let mut temp2: V;
     // stage 1
     step1[0] = w(input[0]);
     step1[1] = w(input[8]);
@@ -247,11 +255,12 @@ pub(super) fn idct16(input: &[i32; 16], output: &mut [i32; 16]) {
 }
 
 /// libvpx's `idct32_c`.
-pub(super) fn idct32(input: &[i32; 32], output: &mut [i32; 32]) {
-    let mut step1 = [0i32; 32];
-    let mut step2 = [0i32; 32];
-    let mut temp1: i32;
-    let mut temp2: i32;
+#[inline(always)]
+pub(super) fn idct32<V: Lanes>(input: &[V; 32], output: &mut [V; 32]) {
+    let mut step1 = [V::splat(0); 32];
+    let mut step2 = [V::splat(0); 32];
+    let mut temp1: V;
+    let mut temp2: V;
     // stage 1
     step1[0] = w(input[0]);
     step1[1] = w(input[16]);
@@ -586,8 +595,9 @@ pub(super) fn idct32(input: &[i32; 32], output: &mut [i32; 32]) {
 
 /// libvpx's `vpx_fdct32`, without the rounding its rate-distortion
 /// variant asks for.
-pub(super) fn fdct32(input: &[i32; 32], output: &mut [i32; 32]) {
-    let mut step = [0i32; 32];
+#[inline(always)]
+pub(super) fn fdct32<V: Lanes>(input: &[V; 32], output: &mut [V; 32]) {
+    let mut step = [V::splat(0); 32];
     // Stage 1
     step[0] = input[0] + input[31];
     step[1] = input[1] + input[30];

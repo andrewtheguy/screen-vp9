@@ -15,8 +15,10 @@
 mod bool_writer;
 mod dct;
 mod header;
+mod lanes;
 mod motion;
 mod mv;
+mod pixels;
 mod predict;
 mod quantize;
 mod tables;
@@ -105,9 +107,14 @@ pub(super) struct Column {
 }
 
 impl Column {
+    /// `plane` from pixel column `x` of the frame in row `y` on.
+    fn from(&self, plane: usize, y: usize, x: usize) -> &[u8] {
+        &self.planes[plane][y * self.stride + x - self.x..]
+    }
+
     /// `len` pixels of row `y` of `plane` from pixel column `x` of the frame.
     fn row(&self, plane: usize, y: usize, x: usize, len: usize) -> &[u8] {
-        &self.planes[plane][y * self.stride + x - self.x..][..len]
+        &self.from(plane, y, x)[..len]
     }
 }
 
@@ -304,11 +311,11 @@ impl Encoder {
             let mut previous = [p0, p1, p2];
             let y0 = b * band * 8;
             let rows = previous[0].len() / width;
-            let source = |plane: usize, y: usize, x: usize, wide: usize| &planes[plane][(y0 + y) * stride + x..][..wide];
+            let source = |plane: usize, y: usize| &planes[plane][(y0 + y) * stride..][..width];
             if everything {
                 for (plane, previous) in previous.iter_mut().enumerate() {
                     for y in 0..rows {
-                        previous[y * width..][..width].copy_from_slice(source(plane, y, 0, width));
+                        previous[y * width..][..width].copy_from_slice(source(plane, y));
                     }
                 }
                 unchanged.fill(false);
@@ -316,16 +323,26 @@ impl Encoder {
             }
             for (r, unchanged) in unchanged.chunks_exact_mut(g.mi_cols).enumerate() {
                 let rows = r * 8..(r * 8 + 8).min(rows);
-                for (c, unchanged) in unchanged.iter_mut().enumerate() {
-                    let x = c * 8;
-                    let wide = 8.min(width - x);
-                    let same = previous.iter().enumerate().all(|(plane, previous)| rows.clone().all(|y| previous[y * width + x..][..wide] == *source(plane, y, x, wide)));
-                    *unchanged = same;
-                    if !same {
-                        for (plane, previous) in previous.iter_mut().enumerate() {
-                            for y in rows.clone() {
-                                previous[y * width + x..][..wide].copy_from_slice(source(plane, y, x, wide));
-                            }
+                // Eight pixels at a time, each run of them an 8×8's row.
+                unchanged.fill(true);
+                for (plane, previous) in previous.iter().enumerate() {
+                    for y in rows.clone() {
+                        let (old, old_rest) = previous[y * width..][..width].as_chunks::<8>();
+                        let (new, new_rest) = source(plane, y).as_chunks::<8>();
+                        for (same, (a, b)) in unchanged.iter_mut().zip(old.iter().zip(new)) {
+                            *same &= u64::from_ne_bytes(*a) == u64::from_ne_bytes(*b);
+                        }
+                        if !old_rest.is_empty() {
+                            unchanged[g.mi_cols - 1] &= old_rest == new_rest;
+                        }
+                    }
+                }
+                // Where the source is unchanged it is the previous source
+                // already, so a row with a change is taken whole.
+                if unchanged.contains(&false) {
+                    for (plane, previous) in previous.iter_mut().enumerate() {
+                        for y in rows.clone() {
+                            previous[y * width..][..width].copy_from_slice(source(plane, y));
                         }
                     }
                 }
@@ -803,6 +820,36 @@ mod tests {
             pictures.len() < count
         });
         pictures
+    }
+
+    /// The first 60 frames of the capture `CAPTURE` names in `tmp/`, coded
+    /// by this encoder alone, `PASSES` times over (3 if unset), on `THREADS`
+    /// threads (the capture's if unset): its milliseconds per frame. For a
+    /// profiler to watch; run it in release:
+    ///
+    /// ```text
+    /// CAPTURE=desktop-q100-444 cargo test --release rust_alone -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "reads a capture in tmp/ and wants a release build"]
+    fn rust_alone() {
+        let name = std::env::var("CAPTURE").expect("CAPTURE naming a capture");
+        let &(_, quality, threads) = CAPTURES.iter().find(|c| c.0 == name).expect("one of the captures");
+        let threads = std::env::var("THREADS").map_or(threads, |t| t.parse().expect("a thread count"));
+        let passes: usize = std::env::var("PASSES").map_or(3, |p| p.parse().expect("a pass count"));
+        let ivf = std::fs::read(format!("tmp/{name}.ivf")).expect("the capture in tmp/");
+        let pictures = sample(&ivf, 1, 60);
+        let (w, h) = pictures[0].size();
+        let mut out = Vec::new();
+        let started = std::time::Instant::now();
+        for _ in 0..passes {
+            let mut encoder = Encoder::new(w, h, quality, threads).expect("an encoder");
+            for picture in &pictures {
+                out.clear();
+                encoder.encode(picture, false, &mut out).expect("a frame");
+            }
+        }
+        println!("{name} on {threads}: {:.2} ms per frame", started.elapsed().as_secs_f64() * 1000.0 / (passes * pictures.len()) as f64);
     }
 
     fn psnr(mse: f64) -> f64 {

@@ -261,15 +261,13 @@ impl Shape {
         let Scratch { rows, windows } = scratch;
         rows.clear();
         rows.resize(across * row_count, 0);
-        let top = ACROSS.wrapping_pow(8);
+        // Each the polynomial of its eight pixels, taken whole rather than
+        // rolled, so that neighbouring ones are taken at once.
+        let powers: [u32; 8] = std::array::from_fn(|i| ACROSS.wrapping_pow(7 - i as u32));
         for (k, row) in rows.chunks_exact_mut(across).enumerate() {
-            let pixels = &luma[(y0 + k) * width..][..width];
-            let mut h = pixels[x0..x0 + 8].iter().fold(0u32, |h, &p| h.wrapping_mul(ACROSS).wrapping_add(u32::from(p)));
-            row[0] = h;
-            for (j, out) in row.iter_mut().enumerate().skip(1) {
-                let x = x0 + j - 1;
-                h = h.wrapping_mul(ACROSS).wrapping_add(u32::from(pixels[x + 8])).wrapping_sub(top.wrapping_mul(u32::from(pixels[x])));
-                *out = h;
+            let pixels = &luma[(y0 + k) * width + x0..][..across + 7];
+            for (j, out) in row.iter_mut().enumerate() {
+                *out = powers.iter().zip(&pixels[j..j + 8]).fold(0u32, |h, (&p, &v)| h.wrapping_add(p.wrapping_mul(u32::from(v))));
             }
         }
         // Window hashes at y0..=y1 from the row hashes, rolled down each

@@ -6,7 +6,8 @@ The one-dimensional inverse DCTs a decoder runs, and the 32-point forward DCT,
 are long straight-line C. They are translated statement by statement rather
 than retyped: casts dropped, the rounding helpers renamed, constant indices
 folded, and every store into what libvpx holds as 16 bits wrapped to 16 bits,
-as libvpx built without high bit depth does.
+as libvpx built without high bit depth does. The translation is generic over
+`Lanes`, so one value or a vector of them goes through the same statements.
 """
 
 import re
@@ -79,13 +80,14 @@ def emit(source, c_name, rust_name, n, wrap, doc):
     print()
     for line in doc.strip().splitlines():
         print(f"/// {line}".rstrip())
-    print(f"pub(super) fn {rust_name}(input: &[i32; {n}], output: &mut [i32; {n}]) {{")
+    print("#[inline(always)]")
+    print(f"pub(super) fn {rust_name}<V: Lanes>(input: &[V; {n}], output: &mut [V; {n}]) {{")
     for array in ("step", "step1", "step2", "step3"):
         if re.search(rf"\b{array}\[", text):
-            print(f"    let mut {array} = [0i32; {n}];")
+            print(f"    let mut {array} = [V::splat(0); {n}];")
     for temp in ("temp1", "temp2"):
         if re.search(rf"\b{temp}\b", text):
-            print(f"    let mut {temp}: i32;")
+            print(f"    let mut {temp}: V;")
     print(text)
     print("}")
 
@@ -103,19 +105,24 @@ def main():
     print("//! Project authors, under the BSD licence in `LICENSE-libvpx`.")
     print("//!")
     print("//! The inverse ones are what a decoder runs, so they are exact to the bit:")
-    print("//! every value libvpx keeps in 16 bits is wrapped to 16 bits here.")
+    print("//! every value libvpx keeps in 16 bits is wrapped to 16 bits here. Each is")
+    print("//! written over `Lanes`, so it runs on one value or on a vector of them.")
+    print()
+    print("use super::lanes::Lanes;")
     print()
     print("/// cos(kπ/64) in 14 bits, `COSPI[k]`.")
     print("const COSPI: [i32; 32] = [0, " + ", ".join(str(cospi[k]) for k in range(1, 32)) + "];")
     print()
     print("/// libvpx's `dct_const_round_shift`: a product of a `COSPI` back to scale.")
-    print("fn round14(x: i32) -> i32 {")
-    print("    (x + (1 << 13)) >> 14")
+    print("#[inline(always)]")
+    print("fn round14<V: Lanes>(x: V) -> V {")
+    print("    x.round14()")
     print("}")
     print()
     print("/// A store into a 16-bit value.")
-    print("fn w(x: i32) -> i32 {")
-    print("    x as i16 as i32")
+    print("#[inline(always)]")
+    print("fn w<V: Lanes>(x: V) -> V {")
+    print("    x.wrap16()")
     print("}")
     for n in (4, 8, 16, 32):
         emit(inv, f"void idct{n}_c", f"idct{n}", n, True, f"libvpx's `idct{n}_c`.")

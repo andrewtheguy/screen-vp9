@@ -22,7 +22,7 @@ use super::tables::{
     INTER_MODE_PROBS, INTRA_INTER_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, MV_REF_BLOCKS, PARTITION_PROBS, SINGLE_REF_PROBS,
     SKIP_PROBS, UV_MODE_PROBS, Y_MODE_PROBS,
 };
-use super::{Column, Geometry, Reconstruction, tokens, transform};
+use super::{Column, Geometry, Reconstruction, pixels, tokens, transform};
 
 /// `DC_PRED`'s index among the intra modes.
 const DC_PRED: usize = 0;
@@ -249,6 +249,11 @@ pub(super) struct Tile<'a> {
     /// one after another, each in raster order, and their ends of block.
     levels: [Vec<i32>; 3],
     eobs: [Vec<usize>; 3],
+    /// Scratch for a transform block's residual and coefficients, and for
+    /// the token coder.
+    residual: Box<[i32; 1024]>,
+    coeffs: Box<[i32; 1024]>,
+    energy: Box<[u8; 1024]>,
 }
 
 impl<'a> Tile<'a> {
@@ -280,6 +285,9 @@ impl<'a> Tile<'a> {
             w: BoolWriter::new(),
             levels: std::array::from_fn(|_| vec![0; 64 * 64]),
             eobs: std::array::from_fn(|_| Vec::with_capacity(16)),
+            residual: Box::new([0; 1024]),
+            coeffs: Box::new([0; 1024]),
+            energy: Box::new([0; 1024]),
         }
     }
 
@@ -363,6 +371,15 @@ impl<'a> Tile<'a> {
     /// the picture's edges, its last pixels repeated.
     fn source_moments(&self, px: usize, py: usize) -> Moments {
         let mut m = Moments::default();
+        let src = self.source;
+        if px + 8 <= src.width && py + 8 <= src.height {
+            for plane in 0..3 {
+                let (sum, squares) = pixels::moments(&src.planes[plane][py * src.stride + px..], src.stride);
+                m.sums[plane] = i64::from(sum);
+                m.squares += i64::from(squares);
+            }
+            return m;
+        }
         for plane in 0..3 {
             for y in py..py + 8 {
                 for v in eight(self.source_row(plane, y), px) {
@@ -389,16 +406,7 @@ impl<'a> Tile<'a> {
             let (rx, ry) = (rx as usize, ry as usize);
             let src = self.source;
             for plane in 0..3 {
-                let (mut sum, mut squares) = (0i32, 0i32);
-                for k in 0..8 {
-                    let a = &src.planes[plane][(py + k) * src.stride + px..][..8];
-                    let b = column.row(plane, ry + k, rx, 8);
-                    for (&a, &b) in a.iter().zip(b) {
-                        let d = i32::from(a) - i32::from(b);
-                        sum += d;
-                        squares += d * d;
-                    }
-                }
+                let (sum, squares) = pixels::difference_moments(&src.planes[plane][py * src.stride + px..], src.stride, column.from(plane, ry, rx), column.stride);
                 m.sums[plane] = i64::from(sum);
                 m.squares += i64::from(squares);
             }
@@ -713,10 +721,18 @@ impl<'a> Tile<'a> {
         let wide = size.min(g.mi_cols * 8 - px);
         let high = size.min(g.mi_rows * 8 - py);
         let (stride, x) = (self.recon.stride, px - self.recon.x);
+        let rx = px as isize + dx;
+        // Inside the picture across and in one column of the reference, a
+        // row is copied as it is.
+        let across = (rx >= 0 && rx as usize + wide <= width).then(|| reference.holding(rx as usize, wide)).flatten();
         for (plane, recon) in self.recon.planes.iter_mut().enumerate() {
             for y in py..py + high {
                 let ry = (y as isize + dy).clamp(0, height as isize - 1) as usize;
-                reference.read_row(plane, ry, px as isize + dx, width, &mut recon[y * stride + x..][..wide]);
+                let out = &mut recon[y * stride + x..][..wide];
+                match across {
+                    Some(column) => out.copy_from_slice(column.row(plane, ry, rx as usize, wide)),
+                    None => reference.read_row(plane, ry, rx, width, out),
+                }
             }
         }
     }
@@ -735,8 +751,7 @@ impl<'a> Tile<'a> {
         let (scan, _) = tokens::scan(tx.ilog2() as usize - 2);
         let (stride, x0) = (self.recon.stride, self.recon.x);
         let src = self.source;
-        let mut residual = [0i32; 1024];
-        let mut coeffs = [0i32; 1024];
+        let (residual, coeffs) = (&mut self.residual, &mut self.coeffs);
         let area = tx * tx;
         for plane in 0..3 {
             self.eobs[plane].clear();
@@ -753,17 +768,22 @@ impl<'a> Tile<'a> {
                     let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8, above: y > 0 || mi_row > 0, left: x > 0 || mi_col > self.mi_col_start };
                     predict::dc(recon, stride, lx, py, tx, &edges);
                 }
-                // Past the picture's edge the source repeats its last pixel.
-                for r in 0..tx {
-                    let srow = &src.planes[plane][(py + r).min(src.height - 1) * src.stride..][..src.width];
-                    let prow = &recon[(py + r) * stride + lx..][..tx];
-                    for c in 0..tx {
-                        residual[r * tx + c] = i32::from(srow[(px + c).min(src.width - 1)]) - i32::from(prow[c]);
+                if px + tx <= src.width && py + tx <= src.height {
+                    pixels::subtract(tx, &src.planes[plane][py * src.stride + px..], src.stride, &recon[py * stride + lx..], stride, &mut residual[..area]);
+                } else {
+                    // Past the picture's edge the source repeats its last
+                    // pixel.
+                    for r in 0..tx {
+                        let srow = &src.planes[plane][(py + r).min(src.height - 1) * src.stride..][..src.width];
+                        let prow = &recon[(py + r) * stride + lx..][..tx];
+                        for c in 0..tx {
+                            residual[r * tx + c] = i32::from(srow[(px + c).min(src.width - 1)]) - i32::from(prow[c]);
+                        }
                     }
                 }
                 transform::forward(tx, &residual[..area], &mut coeffs[..area]);
                 let levels = &mut self.levels[plane][i * area..][..area];
-                let eob = self.quantizer.quantize(tx, &coeffs[..area], scan, levels);
+                let eob = self.quantizer.quantize(tx, &coeffs[..area], levels);
                 if eob > 0 {
                     self.quantizer.dequantize(tx, levels, scan, eob, &mut coeffs[..area]);
                     transform::inverse_add(tx, &coeffs[..area], eob, &mut recon[py * stride + lx..], stride);
@@ -797,7 +817,8 @@ impl<'a> Tile<'a> {
                 let above = self.contexts.above_nonzero[plane][ax..ax + n4].iter().any(|&a| a != 0);
                 let left = self.left_nonzero[plane][ly..ly + n4].iter().any(|&l| l != 0);
                 let eob = self.eobs[plane][i];
-                tokens::write(&mut self.w, tx_log2, plane > 0, inter, usize::from(above) + usize::from(left), &self.levels[plane][i * area..][..area], eob);
+                let kind = tokens::Kind { tx: tx_log2, chroma: plane > 0, inter };
+                tokens::write(&mut self.w, kind, usize::from(above) + usize::from(left), &self.levels[plane][i * area..][..area], eob, &mut self.energy);
                 let coded = u8::from(eob > 0);
                 for k in 0..n4 {
                     self.contexts.above_nonzero[plane][ax + k] = if col4 + k < wide4 { coded } else { 0 };

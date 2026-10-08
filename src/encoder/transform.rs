@@ -7,6 +7,7 @@
 //! and the encoder predicts later blocks from the same pixels.
 
 use super::dct::{fdct32, idct4, idct8, idct16, idct32};
+use super::lanes::{Lanes, Vector};
 
 /// cos(π/4) in 14 bits.
 const COSPI_16_64: i32 = 11585;
@@ -30,46 +31,50 @@ fn round14(x: i32) -> i32 {
 }
 
 /// The 4-point forward DCT inside `vpx_fdct4x4_c`.
-fn fdct4(i: [i32; 4]) -> [i32; 4] {
+#[inline(always)]
+fn fdct4<V: Lanes>(i: &[V; 4], o: &mut [V; 4]) {
     let s = [i[0] + i[3], i[1] + i[2], i[1] - i[2], i[0] - i[3]];
-    [
-        round14((s[0] + s[1]) * COSPI_16_64),
-        round14(s[2] * COSPI_24_64 + s[3] * COSPI_8_64),
-        round14((s[0] - s[1]) * COSPI_16_64),
-        round14(-s[2] * COSPI_8_64 + s[3] * COSPI_24_64),
-    ]
+    *o = [
+        ((s[0] + s[1]) * COSPI_16_64).round14(),
+        (s[2] * COSPI_24_64 + s[3] * COSPI_8_64).round14(),
+        ((s[0] - s[1]) * COSPI_16_64).round14(),
+        (-s[2] * COSPI_8_64 + s[3] * COSPI_24_64).round14(),
+    ];
 }
 
 /// The 8-point forward DCT inside `vpx_fdct8x8_c`.
-fn fdct8(i: [i32; 8]) -> [i32; 8] {
+#[inline(always)]
+fn fdct8<V: Lanes>(i: &[V; 8], o: &mut [V; 8]) {
     let s = [i[0] + i[7], i[1] + i[6], i[2] + i[5], i[3] + i[4], i[3] - i[4], i[2] - i[5], i[1] - i[6], i[0] - i[7]];
     let (x0, x1, x2, x3) = (s[0] + s[3], s[1] + s[2], s[1] - s[2], s[0] - s[3]);
-    let even = [round14((x0 + x1) * COSPI_16_64), round14(x2 * COSPI_24_64 + x3 * COSPI_8_64), round14((x0 - x1) * COSPI_16_64), round14(-x2 * COSPI_8_64 + x3 * COSPI_24_64)];
-    let t2 = round14((s[6] - s[5]) * COSPI_16_64);
-    let t3 = round14((s[6] + s[5]) * COSPI_16_64);
+    let even = [((x0 + x1) * COSPI_16_64).round14(), (x2 * COSPI_24_64 + x3 * COSPI_8_64).round14(), ((x0 - x1) * COSPI_16_64).round14(), (-x2 * COSPI_8_64 + x3 * COSPI_24_64).round14()];
+    let t2 = ((s[6] - s[5]) * COSPI_16_64).round14();
+    let t3 = ((s[6] + s[5]) * COSPI_16_64).round14();
     let (x0, x1, x2, x3) = (s[4] + t2, s[4] - t2, s[7] - t3, s[7] + t3);
-    [
+    *o = [
         even[0],
-        round14(x0 * COSPI_28_64 + x3 * COSPI_4_64),
+        (x0 * COSPI_28_64 + x3 * COSPI_4_64).round14(),
         even[1],
-        round14(x2 * COSPI_12_64 + x1 * -COSPI_20_64),
+        (x2 * COSPI_12_64 + x1 * -COSPI_20_64).round14(),
         even[2],
-        round14(x1 * COSPI_12_64 + x2 * COSPI_20_64),
+        (x1 * COSPI_12_64 + x2 * COSPI_20_64).round14(),
         even[3],
-        round14(x3 * COSPI_28_64 + x0 * -COSPI_4_64),
-    ]
+        (x3 * COSPI_28_64 + x0 * -COSPI_4_64).round14(),
+    ];
 }
 
 /// The 16-point forward DCT inside `vpx_fdct16x16_c`: the even half is the
 /// 8-point one of the folded input.
-fn fdct16(i: [i32; 16]) -> [i32; 16] {
-    let even = fdct8(std::array::from_fn(|k| i[k] + i[15 - k]));
-    let step1: [i32; 8] = std::array::from_fn(|k| i[7 - k] - i[8 + k]);
-    let mut step2 = [0; 8];
-    step2[2] = round14((step1[5] - step1[2]) * COSPI_16_64);
-    step2[3] = round14((step1[4] - step1[3]) * COSPI_16_64);
-    step2[4] = round14((step1[4] + step1[3]) * COSPI_16_64);
-    step2[5] = round14((step1[5] + step1[2]) * COSPI_16_64);
+#[inline(always)]
+fn fdct16<V: Lanes>(i: &[V; 16], o: &mut [V; 16]) {
+    let mut even = [V::splat(0); 8];
+    fdct8(&std::array::from_fn(|k| i[k] + i[15 - k]), &mut even);
+    let step1: [V; 8] = std::array::from_fn(|k| i[7 - k] - i[8 + k]);
+    let mut step2 = [V::splat(0); 8];
+    step2[2] = ((step1[5] - step1[2]) * COSPI_16_64).round14();
+    step2[3] = ((step1[4] - step1[3]) * COSPI_16_64).round14();
+    step2[4] = ((step1[4] + step1[3]) * COSPI_16_64).round14();
+    step2[5] = ((step1[5] + step1[2]) * COSPI_16_64).round14();
     let step3 = [
         step1[0] + step2[3],
         step1[1] + step2[2],
@@ -80,10 +85,10 @@ fn fdct16(i: [i32; 16]) -> [i32; 16] {
         step1[6] + step2[5],
         step1[7] + step2[4],
     ];
-    step2[1] = round14(step3[1] * -COSPI_8_64 + step3[6] * COSPI_24_64);
-    step2[2] = round14(step3[2] * COSPI_24_64 + step3[5] * COSPI_8_64);
-    step2[5] = round14(step3[2] * COSPI_8_64 - step3[5] * COSPI_24_64);
-    step2[6] = round14(step3[1] * COSPI_24_64 + step3[6] * COSPI_8_64);
+    step2[1] = (step3[1] * -COSPI_8_64 + step3[6] * COSPI_24_64).round14();
+    step2[2] = (step3[2] * COSPI_24_64 + step3[5] * COSPI_8_64).round14();
+    step2[5] = (step3[2] * COSPI_8_64 - step3[5] * COSPI_24_64).round14();
+    step2[6] = (step3[1] * COSPI_24_64 + step3[6] * COSPI_8_64).round14();
     let s = [
         step3[0] + step2[1],
         step3[0] - step2[1],
@@ -94,86 +99,106 @@ fn fdct16(i: [i32; 16]) -> [i32; 16] {
         step3[7] - step2[6],
         step3[7] + step2[6],
     ];
-    let mut out = [0; 16];
     for k in 0..8 {
-        out[2 * k] = even[k];
+        o[2 * k] = even[k];
     }
-    out[1] = round14(s[0] * COSPI_30_64 + s[7] * COSPI_2_64);
-    out[9] = round14(s[1] * COSPI_14_64 + s[6] * COSPI_18_64);
-    out[5] = round14(s[2] * COSPI_22_64 + s[5] * COSPI_10_64);
-    out[13] = round14(s[3] * COSPI_6_64 + s[4] * COSPI_26_64);
-    out[3] = round14(s[3] * -COSPI_26_64 + s[4] * COSPI_6_64);
-    out[11] = round14(s[2] * -COSPI_10_64 + s[5] * COSPI_22_64);
-    out[7] = round14(s[1] * -COSPI_18_64 + s[6] * COSPI_14_64);
-    out[15] = round14(s[0] * -COSPI_2_64 + s[7] * COSPI_30_64);
-    out
+    o[1] = (s[0] * COSPI_30_64 + s[7] * COSPI_2_64).round14();
+    o[9] = (s[1] * COSPI_14_64 + s[6] * COSPI_18_64).round14();
+    o[5] = (s[2] * COSPI_22_64 + s[5] * COSPI_10_64).round14();
+    o[13] = (s[3] * COSPI_6_64 + s[4] * COSPI_26_64).round14();
+    o[3] = (s[3] * -COSPI_26_64 + s[4] * COSPI_6_64).round14();
+    o[11] = (s[2] * -COSPI_10_64 + s[5] * COSPI_22_64).round14();
+    o[7] = (s[1] * -COSPI_18_64 + s[6] * COSPI_14_64).round14();
+    o[15] = (s[0] * -COSPI_2_64 + s[7] * COSPI_30_64).round14();
 }
 
-/// Column `c` of an `N`×`N` block.
-fn column<const N: usize>(block: &[i32], c: usize) -> [i32; N] {
-    std::array::from_fn(|r| block[r * N + c])
+/// Run the one-dimensional `f` down every column of the `N`×`N` `src`, a
+/// vector of columns at a time: `dst[k * N + c]` is output `k` of column
+/// `c`. With `skip_zero`, columns that are all zero are taken to transform
+/// to zeros.
+#[inline(always)]
+fn down<V: Lanes, const N: usize>(f: impl Fn(&[V; N], &mut [V; N]), skip_zero: bool, src: &[i32], dst: &mut [i32]) {
+    let mut out = [V::splat(0); N];
+    for c in (0..N).step_by(V::WIDTH) {
+        let x: [V; N] = std::array::from_fn(|r| V::load(&src[r * N + c..]));
+        if skip_zero && x.iter().all(|v| v.is_zero()) {
+            for r in 0..N {
+                V::splat(0).store(&mut dst[r * N + c..]);
+            }
+            continue;
+        }
+        f(&x, &mut out);
+        for (k, v) in out.iter().enumerate() {
+            v.store(&mut dst[k * N + c..]);
+        }
+    }
+}
+
+/// Each value of `block` through `f`, a vector at a time.
+#[inline(always)]
+fn map<V: Lanes>(block: &mut [i32], f: impl Fn(V) -> V) {
+    for at in (0..block.len()).step_by(V::WIDTH) {
+        f(V::load(&block[at..])).store(&mut block[at..]);
+    }
 }
 
 /// The forward DCT of an `n`×`n` residual, `n` 4 to 32, both raster order:
 /// `out[v * n + h]` holds vertical frequency `v` and horizontal `h`.
 pub(super) fn forward(n: usize, residual: &[i32], out: &mut [i32]) {
+    forward_in::<Vector>(n, residual, out);
+}
+
+/// `forward` in lanes of `V`: columns, then rows, each pass scaled as
+/// libvpx's `vpx_fdct*_c` scales it.
+#[inline(always)]
+fn forward_in<V: Lanes>(n: usize, residual: &[i32], out: &mut [i32]) {
     match n {
         4 => {
-            // Columns, scaled up and the first one's DC nudged off zero, then
-            // rows; each pass leaves its result transposed.
-            let mut mid = [0; 16];
-            for c in 0..4 {
-                let mut x = column::<4>(residual, c).map(|v| v * 16);
-                if c == 0 && x[0] != 0 {
-                    x[0] += 1;
+            forward_n::<V, 4, 16>(residual, out, fdct4, |b| {
+                // The first column's DC nudged off zero.
+                map::<V>(b, |v| v * 16);
+                if b[0] != 0 {
+                    b[0] += 1;
                 }
-                mid[c * 4..][..4].copy_from_slice(&fdct4(x));
-            }
-            for r in 0..4 {
-                for (o, v) in out[r * 4..][..4].iter_mut().zip(fdct4(column::<4>(&mid, r))) {
-                    *o = (v + 1) >> 2;
-                }
-            }
+            }, |_| {}, |a| map::<V>(a, |v| (v + V::splat(1)).shr(2)));
         }
-        8 => {
-            let mut mid = [0; 64];
-            for c in 0..8 {
-                mid[c * 8..][..8].copy_from_slice(&fdct8(column::<8>(residual, c).map(|v| v * 4)));
-            }
-            for r in 0..8 {
-                for (o, v) in out[r * 8..][..8].iter_mut().zip(fdct8(column::<8>(&mid, r))) {
-                    *o = v / 2;
-                }
-            }
-        }
-        16 => {
-            let mut mid = [0; 256];
-            for c in 0..16 {
-                mid[c * 16..][..16].copy_from_slice(&fdct16(column::<16>(residual, c).map(|v| v * 4)));
-            }
-            for r in 0..16 {
-                out[r * 16..][..16].copy_from_slice(&fdct16(column::<16>(&mid, r).map(|v| (v + 1) >> 2)));
-            }
-        }
-        32 => {
-            // Columns stay columns here, then rows.
-            let mut mid = [0; 1024];
-            let mut t = [0; 32];
-            for c in 0..32 {
-                fdct32(&column::<32>(residual, c).map(|v| v * 4), &mut t);
-                for (r, v) in t.iter().enumerate() {
-                    mid[r * 32 + c] = (v + 1 + i32::from(*v > 0)) >> 2;
-                }
-            }
-            for r in 0..32 {
-                fdct32(mid[r * 32..][..32].try_into().expect("a row"), &mut t);
-                for (o, v) in out[r * 32..][..32].iter_mut().zip(t) {
-                    *o = (v + 1 + i32::from(v < 0)) >> 2;
-                }
-            }
-        }
+        // Halved toward zero.
+        8 => forward_n::<V, 8, 64>(residual, out, fdct8, |b| map::<V>(b, |v| v * 4), |_| {}, |a| map::<V>(a, |v| (v + v.negative()).shr(1))),
+        16 => forward_n::<V, 16, 256>(residual, out, fdct16, |b| map::<V>(b, |v| v * 4), |a| map::<V>(a, |v| (v + V::splat(1)).shr(2)), |_| {}),
+        32 => forward_n::<V, 32, 1024>(
+            residual,
+            out,
+            fdct32,
+            |b| map::<V>(b, |v| v * 4),
+            |a| map::<V>(a, |v| (v + V::splat(1) + v.positive()).shr(2)),
+            |a| map::<V>(a, |v| (v + V::splat(1) + v.negative()).shr(2)),
+        ),
         _ => unreachable!("a {n}-point transform"),
     }
+}
+
+/// The `N`×`N` forward DCT of `AREA` values: the residual through `before`,
+/// `f` down its columns, the result through `between`, `f` down its rows and
+/// that through `after`.
+#[inline(always)]
+fn forward_n<V: Lanes, const N: usize, const AREA: usize>(
+    residual: &[i32],
+    out: &mut [i32],
+    f: impl Fn(&[V; N], &mut [V; N]),
+    before: impl Fn(&mut [i32]),
+    between: impl Fn(&mut [i32]),
+    after: impl Fn(&mut [i32]),
+) {
+    let (mut a, mut b) = ([0; AREA], [0; AREA]);
+    b.copy_from_slice(&residual[..AREA]);
+    before(&mut b);
+    down::<V, N>(&f, false, &b, &mut a);
+    between(&mut a);
+    V::transpose(N, &a, &mut b);
+    down::<V, N>(&f, false, &b, &mut a);
+    after(&mut a);
+    // Each pass left its result transposed.
+    V::transpose(N, &a, &mut out[..AREA]);
 }
 
 /// Add the inverse DCT of `n`×`n` dequantized `coeffs` to the `n`×`n`
@@ -181,6 +206,13 @@ pub(super) fn forward(n: usize, residual: &[i32], out: &mut [i32]) {
 /// coefficients the scan reached; with one, only the DC is there, which
 /// libvpx's decoder takes its own path for, to the same result.
 pub(super) fn inverse_add(n: usize, coeffs: &[i32], eob: usize, dst: &mut [u8], stride: usize) {
+    inverse_add_in::<Vector>(n, coeffs, eob, dst, stride);
+}
+
+/// `inverse_add` in lanes of `V`: rows, then columns, then the rounding
+/// shift and the add, as `vpx_idct*_add_c`.
+#[inline(always)]
+fn inverse_add_in<V: Lanes>(n: usize, coeffs: &[i32], eob: usize, dst: &mut [u8], stride: usize) {
     let shift = match n {
         4 => 4,
         8 => 5,
@@ -197,31 +229,26 @@ pub(super) fn inverse_add(n: usize, coeffs: &[i32], eob: usize, dst: &mut [u8], 
         return;
     }
     match n {
-        4 => inverse_2d::<4>(idct4, shift, coeffs, dst, stride),
-        8 => inverse_2d::<8>(idct8, shift, coeffs, dst, stride),
-        16 => inverse_2d::<16>(idct16, shift, coeffs, dst, stride),
-        32 => inverse_2d::<32>(idct32, shift, coeffs, dst, stride),
+        4 => inverse_n::<V, 4, 16>(idct4, shift, coeffs, dst, stride),
+        8 => inverse_n::<V, 8, 64>(idct8, shift, coeffs, dst, stride),
+        16 => inverse_n::<V, 16, 256>(idct16, shift, coeffs, dst, stride),
+        32 => inverse_n::<V, 32, 1024>(idct32, shift, coeffs, dst, stride),
         _ => unreachable!("a {n}-point transform"),
     }
 }
 
-/// Rows, then columns, then the rounding shift and the add.
-fn inverse_2d<const N: usize>(idct: fn(&[i32; N], &mut [i32; N]), shift: u32, coeffs: &[i32], dst: &mut [u8], stride: usize) {
-    let mut mid = vec![0; N * N];
-    for r in 0..N {
-        let row: &[i32; N] = coeffs[r * N..][..N].try_into().expect("a row");
-        // A row of zeros transforms to zeros.
-        if row.iter().any(|&c| c != 0) {
-            idct(row, (&mut mid[r * N..][..N]).try_into().expect("a row"));
-        }
-    }
-    let mut out = [0; N];
-    for c in 0..N {
-        idct(&column::<N>(&mid, c), &mut out);
-        for (r, v) in out.iter().enumerate() {
-            let p = &mut dst[r * stride + c];
-            *p = (i32::from(*p) + ((v + (1 << (shift - 1))) >> shift)).clamp(0, 255) as u8;
-        }
+/// The `N`×`N` inverse DCT of `AREA` coefficients, `f` along the rows and
+/// then down the columns, added to `dst`.
+#[inline(always)]
+fn inverse_n<V: Lanes, const N: usize, const AREA: usize>(f: impl Fn(&[V; N], &mut [V; N]), shift: u32, coeffs: &[i32], dst: &mut [u8], stride: usize) {
+    let (mut a, mut b) = ([0; AREA], [0; AREA]);
+    // The rows, as columns; a row of zeros transforms to zeros.
+    V::transpose(N, &coeffs[..AREA], &mut a);
+    down::<V, N>(&f, true, &a, &mut b);
+    V::transpose(N, &b, &mut a);
+    down::<V, N>(&f, false, &a, &mut b);
+    for (r, values) in b.as_chunks::<N>().0.iter().enumerate() {
+        V::add_shifted(values, shift, &mut dst[r * stride..][..N]);
     }
 }
 
@@ -302,6 +329,31 @@ mod tests {
                 inverse_add(n, &coeffs, 1, &mut fast, n);
                 inverse_add(n, &coeffs, 2, &mut full, n);
                 assert_eq!(fast, full, "{n}x{n}, DC {dc}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_widest_lanes_transform_as_one_lane_does() {
+        for n in [4, 8, 16, 32] {
+            for seed in 1..40 {
+                // Residuals as large as a pixel's, and smaller.
+                let source = residual(n, seed, [255, 40, 3][seed as usize % 3]);
+                let (mut scalar, mut vector) = (vec![0; n * n], vec![0; n * n]);
+                forward_in::<i32>(n, &source, &mut scalar);
+                forward_in::<Vector>(n, &source, &mut vector);
+                assert_eq!(scalar, vector, "forward {n}x{n}, seed {seed}");
+                // Coefficients anywhere in 16 bits, which wrap inside the
+                // inverse, some rows left empty.
+                let mut coeffs = residual(n, seed + 1000, 32767);
+                for row in coeffs.chunks_exact_mut(n).skip(seed as usize % n) {
+                    row.fill(0);
+                }
+                let pixels: Vec<u8> = source.iter().map(|&v| (v + 128).clamp(0, 255) as u8).collect();
+                let (mut scalar, mut vector) = (pixels.clone(), pixels);
+                inverse_add_in::<i32>(n, &coeffs, n * n, &mut scalar, n);
+                inverse_add_in::<Vector>(n, &coeffs, n * n, &mut vector, n);
+                assert_eq!(scalar, vector, "inverse {n}x{n}, seed {seed}");
             }
         }
     }

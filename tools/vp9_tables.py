@@ -151,6 +151,8 @@ two also give its inter mode context.""", "MV_REF_BLOCKS", "i8", [13, 8, 2], ini
         emit(f"The {n}×{n} DCT scan: the coefficient at each position.", f"SCAN_{n}X{n}", "u16", [n * n], initializer(scan, f"default_scan_{n}x{n}"))
         emit(f"""The {n}×{n} DCT scan's neighbours: for each position, the two earlier
 coefficients its token context is taken from.""", f"SCAN_{n}X{n}_NEIGHBORS", "u16", [(n * n + 1) * 2], initializer(scan, f"default_scan_{n}x{n}_neighbors"))
+        emit(f"""The {n}×{n} DCT scan inverted: for each coefficient, one past its position,
+the end of block it makes when it is the last coded.""", f"ISCAN_{n}X{n}", "u16", [n * n], initializer(scan, f"vp9_default_iscan_{n}x{n}"))
 
 
 main()

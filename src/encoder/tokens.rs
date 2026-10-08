@@ -76,17 +76,28 @@ fn large(w: &mut BoolWriter, level: i32, p: &[u8; 8]) -> u8 {
     5
 }
 
-/// Code the `levels` (raster order) of a transform block of size `tx` whose
-/// scan ends at `eob`, in a block that is intra or `inter`, of luma or
-/// chroma, starting from context `ctx`: how many of the blocks above and to
-/// the left had coefficients.
-pub(super) fn write(w: &mut BoolWriter, tx: usize, chroma: bool, inter: bool, ctx: usize, levels: &[i32], eob: usize) {
-    let probs = &COEF_PROBS[tx][usize::from(chroma)][usize::from(inter)];
+/// Which probabilities a transform block's tokens are coded at: its size,
+/// as log2 less 2, whether it is chroma, and whether its block is inter.
+#[derive(Clone, Copy)]
+pub(super) struct Kind {
+    pub(super) tx: usize,
+    pub(super) chroma: bool,
+    pub(super) inter: bool,
+}
+
+/// Code the `levels` (raster order) of a transform block of `kind` whose
+/// scan ends at `eob`, starting from context `ctx`: how many of the blocks
+/// above and to the left had coefficients. `energy` is scratch, its
+/// contents whatever they are.
+pub(super) fn write(w: &mut BoolWriter, kind: Kind, ctx: usize, levels: &[i32], eob: usize, energy: &mut [u8; 1024]) {
+    let tx = kind.tx;
+    let probs = &COEF_PROBS[tx][usize::from(kind.chroma)][usize::from(kind.inter)];
     let (scan, neighbors) = scan(tx);
     let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
     let max = 16 << (2 * tx);
-    // The energy of each coefficient coded so far, by raster position.
-    let mut energy = [0u8; 1024];
+    // The energy of each coefficient coded so far, by raster position: a
+    // position's context is read from neighbours earlier in the scan, so
+    // only from what this block has written.
     let mut ctx = ctx;
     // An end of block cannot follow a zero, so after one it is not coded.
     let mut after_zero = false;
@@ -203,7 +214,9 @@ mod tests {
                 let eob = scan.iter().rposition(|&rc| levels[usize::from(rc)] != 0).map_or(0, |i| i + 1);
                 for ctx in 0..3 {
                     let mut w = BoolWriter::new();
-                    write(&mut w, tx, false, false, ctx, levels, eob);
+                    // Scratch left as another block would leave it.
+                    let mut energy = [(case * 3 + ctx) as u8; 1024];
+                    write(&mut w, Kind { tx, chroma: false, inter: false }, ctx, levels, eob, &mut energy);
                     w.literal(0x5a, 7);
                     let data = w.finish();
                     let mut r = BoolReader::new(&data);
