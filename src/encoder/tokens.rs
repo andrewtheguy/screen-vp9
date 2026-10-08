@@ -3,7 +3,7 @@
 //! a tree whose first three probabilities depend on the band of the position
 //! and the energy of the neighbours already coded, the rest on the third.
 
-use super::bool_writer::BoolWriter;
+use super::bool_writer::{BoolWriter, Run};
 use super::tables::{
     CAT1_PROB, CAT2_PROB, CAT3_PROB, CAT4_PROB, CAT5_PROB, CAT6_PROB, COEF_PROBS, COEFBAND_4X4, COEFBAND_8X8PLUS, PARETO8_FULL, SCAN_4X4, SCAN_4X4_NEIGHBORS, SCAN_8X8,
     SCAN_8X8_NEIGHBORS, SCAN_16X16, SCAN_16X16_NEIGHBORS, SCAN_32X32, SCAN_32X32_NEIGHBORS,
@@ -22,7 +22,8 @@ pub(super) fn scan(tx: usize) -> (&'static [u16], &'static [u16]) {
 }
 
 /// Code `n` bits of `value`, most significant first, each at its own probability.
-fn extra(w: &mut BoolWriter, value: i32, probs: &[u8]) {
+#[inline(always)]
+fn extra(w: &mut Run, value: i32, probs: &[u8]) {
     for (i, &p) in probs.iter().enumerate() {
         w.write(value >> (probs.len() - 1 - i) & 1 == 1, p);
     }
@@ -30,7 +31,8 @@ fn extra(w: &mut BoolWriter, value: i32, probs: &[u8]) {
 
 /// Code a level of 2 or more: the token, from the tree under the third
 /// probability, then the token's extra bits. Returns the token's energy.
-fn large(w: &mut BoolWriter, level: i32, p: &[u8; 8]) -> u8 {
+#[inline(always)]
+fn large(w: &mut Run, level: i32, p: &[u8; 8]) -> u8 {
     if level <= 4 {
         w.write(false, p[0]);
         if level == 2 {
@@ -95,6 +97,7 @@ pub(super) fn write(w: &mut BoolWriter, kind: Kind, ctx: usize, levels: &[i32], 
     let (scan, neighbors) = scan(tx);
     let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
     let max = 16 << (2 * tx);
+    let w = &mut w.run();
     // The energy of each coefficient coded so far, by raster position: a
     // position's context is read from neighbours earlier in the scan, so
     // only from what this block has written.
@@ -122,7 +125,7 @@ pub(super) fn write(w: &mut BoolWriter, kind: Kind, ctx: usize, levels: &[i32], 
                 w.write(true, p[2]);
                 large(w, abs, &PARETO8_FULL[usize::from(p[2]) - 1])
             };
-            w.bit(level < 0);
+            w.write(level < 0, 128);
             after_zero = false;
         }
         let next = c + 1;

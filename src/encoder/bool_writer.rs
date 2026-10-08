@@ -1,60 +1,71 @@
 //! VP9's boolean coder, the writing half: libvpx's `vpx_writer`, which the
 //! compressed header and every tile are coded with.
 
-/// The shift that brings a range of 1–255 back to 128 or more.
-fn norm(range: u32) -> u32 {
-    range.leading_zeros() - 24
-}
-
 /// Bools coded at 8-bit probabilities into a growing buffer.
 pub(super) struct BoolWriter {
     buffer: Vec<u8>,
-    low: u32,
+    state: State,
+}
+
+/// The coder's low end and range. `low` holds the bits of the low end not
+/// yet written, `width` of them, under at most one carry into the bytes
+/// already written; it reaches the buffer four bytes at a time.
+#[derive(Clone, Copy)]
+struct State {
+    low: u64,
+    width: u32,
     range: u32,
-    count: i32,
+}
+
+impl State {
+    #[inline]
+    fn write(&mut self, buffer: &mut Vec<u8>, bit: bool, probability: u8) {
+        let split = 1 + (((self.range - 1) * u32::from(probability)) >> 8);
+        let (low, range) = if bit { (self.low + u64::from(split), self.range - split) } else { (self.low, split) };
+        // Back to 128 or more. The range is 1 to 255, its top bit's place 0
+        // to 7, and 7 less that is the place with its three bits flipped.
+        let shift = 7 ^ range.ilog2();
+        self.low = low << shift;
+        self.range = range << shift;
+        self.width += shift;
+        // A shift is at most 7, so `low` holds at most 55 bits and the carry
+        // above them before a write and 62 after.
+        if self.width > 55 {
+            (self.low, self.width) = flush(buffer, self.low, self.width, 4);
+        }
+    }
+}
+
+/// Write the top `bytes` bytes of `low`, `width` bits under a carry, first
+/// carrying into those already written, and give back what is left.
+#[cold]
+#[inline(never)]
+fn flush(buffer: &mut Vec<u8>, low: u64, width: u32, bytes: u32) -> (u64, u32) {
+    if low >> width != 0 {
+        // A carry runs back through the bytes already written: a coder's
+        // interval only narrows, so there is one at most, and there is a
+        // byte for it, the interval having started inside the first.
+        let last = buffer.iter().rposition(|&b| b != 0xff).expect("a byte the carry stops at");
+        buffer[last] += 1;
+        buffer[last + 1..].fill(0);
+    }
+    let width = width - 8 * bytes;
+    buffer.extend_from_slice(&(low >> width).to_be_bytes()[(8 - bytes) as usize..]);
+    (low & ((1 << width) - 1), width)
 }
 
 impl BoolWriter {
     /// A writer that has written the marker bit a decoder reads first and
     /// requires to be zero.
     pub(super) fn new() -> Self {
-        let mut w = Self { buffer: Vec::new(), low: 0, range: 255, count: -24 };
+        let mut w = Self { buffer: Vec::new(), state: State { low: 0, width: 8, range: 255 } };
         w.bit(false);
         w
     }
 
     /// Code `bit`, whose chance of being false is `probability` / 256.
     pub(super) fn write(&mut self, bit: bool, probability: u8) {
-        let split = 1 + (((self.range - 1) * u32::from(probability)) >> 8);
-        let mut range = split;
-        let mut low = self.low;
-        if bit {
-            low += split;
-            range = self.range - split;
-        }
-        let mut shift = norm(range) as i32;
-        range <<= shift;
-        self.count += shift;
-        if self.count >= 0 {
-            let offset = shift - self.count;
-            // A carry out of the 24 bits held runs back through the bytes
-            // already written.
-            if (low << (offset - 1)) & 0x8000_0000 != 0 {
-                let mut x = self.buffer.len();
-                while x > 0 && self.buffer[x - 1] == 0xff {
-                    self.buffer[x - 1] = 0;
-                    x -= 1;
-                }
-                self.buffer[x - 1] += 1;
-            }
-            self.buffer.push((low >> (24 - offset)) as u8);
-            low <<= offset;
-            shift = self.count;
-            low &= 0xff_ffff;
-            self.count -= 8;
-        }
-        self.low = low << shift;
-        self.range = range;
+        self.state.write(&mut self.buffer, bit, probability);
     }
 
     /// Code `bit` at even odds.
@@ -69,17 +80,49 @@ impl BoolWriter {
         }
     }
 
-    /// Flush what is held and give back the bytes. The last byte never looks
-    /// like the marker of a superframe index, which a decoder looks for at the
-    /// end of a frame.
+    /// The writer as a run of bools whose state a loop can hold in
+    /// registers, back in the writer when the run is dropped. A loop coding
+    /// through the writer itself loads and stores the state at every bool,
+    /// growing the buffer being able to reach it.
+    pub(super) fn run(&mut self) -> Run<'_> {
+        Run { state: self.state, buffer: &mut self.buffer, home: &mut self.state }
+    }
+
+    /// Flush what is held and give back the bytes: 32 zero bits, then
+    /// every whole byte above the last 24 bits, as libvpx's writer leaves
+    /// them. The last byte never looks like the marker of a superframe
+    /// index, which a decoder looks for at the end of a frame.
     pub(super) fn finish(mut self) -> Vec<u8> {
         for _ in 0..32 {
             self.bit(false);
         }
+        let State { low, width, .. } = self.state;
+        flush(&mut self.buffer, low, width, (width - 24) / 8);
         if self.buffer.last().is_some_and(|&b| b & 0xe0 == 0xc0) {
             self.buffer.push(0);
         }
         self.buffer
+    }
+}
+
+/// `BoolWriter::run`.
+pub(super) struct Run<'a> {
+    state: State,
+    buffer: &'a mut Vec<u8>,
+    home: &'a mut State,
+}
+
+impl Run<'_> {
+    /// `BoolWriter::write`.
+    #[inline]
+    pub(super) fn write(&mut self, bit: bool, probability: u8) {
+        self.state.write(self.buffer, bit, probability);
+    }
+}
+
+impl Drop for Run<'_> {
+    fn drop(&mut self) {
+        *self.home = self.state;
     }
 }
 
