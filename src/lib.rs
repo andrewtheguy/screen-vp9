@@ -1115,6 +1115,7 @@ mod tests {
             // sign bias three times.
             read(2 + 8 + 12);
             assert_eq!(read(1), 1, "found_ref");
+            assert_eq!(read(1), 0, "render_and_frame_size_different");
             // allow_high_precision_mv, then the interpolation filter: one bit
             // if a block chooses its own, two more if the frame does.
             read(1);
