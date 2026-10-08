@@ -83,13 +83,20 @@ impl Speed {
 }
 
 /// A tile column is about this wide, so libvpx's `tile_columns` is the log2 of
-/// how many of them the picture holds: none under 1920 pixels, two at 1080p,
-/// four at 4K. The width rather than the thread count decides it because a tile
-/// is a cost as well as a split — the columns are coded apart, which costs
-/// bytes, and at 1080p four of them coded slower than two whatever the threads —
-/// while at 4K four were worth having. Never more than the threads can fill,
+/// how many of them the picture holds: one under 1440 pixels, two from 1440
+/// through 1080p and 1440p, four from 2880 and at 4K. The width rather than the
+/// thread count decides it because a tile is a cost as well as a split — the
+/// columns are coded apart, which costs bytes, and at 1080p four of them coded
+/// slower than two whatever the threads — while at 4K four were worth having.
+/// Two at 1440 are what a decoder's threads have to split: libvpx's own
+/// decoder, which is the browser's, parses and reconstructs a one-column frame
+/// on one thread and gives the others only the loop filter, and vp9-wasm, which
+/// reconstructs by rows whatever the tiles, still parses a column in order. A
+/// 1440×900 desktop re-encoded with two columns cost 8% more bytes and vp9-wasm
+/// decoded it 10% faster on four threads; a busy Mac screen of that size cost
+/// 0.1% more and decoded 21% faster. Never more than the threads can fill,
 /// since a tile no thread is free for is bytes for nothing.
-const TILE_WIDTH: usize = 960;
+const TILE_WIDTH: usize = 720;
 
 /// The most threads libvpx takes for one encoder.
 const MAX_THREADS: usize = 64;
@@ -1041,13 +1048,16 @@ mod tests {
         }
     }
 
-    /// Tile columns follow the width — one under 1920, two at 1080p, four at 4K
-    /// and 5K — and never outnumber the threads.
+    /// Tile columns follow the width — one under 1440, two from 1440 through
+    /// 1440p, four from 2880 and at 4K and 5K — and never outnumber the threads.
     #[test]
     fn tile_columns_follow_the_width_and_never_outnumber_the_threads() {
         assert_eq!(tile_columns_log2(1280, 8), 0);
+        assert_eq!(tile_columns_log2(1439, 8), 0);
+        assert_eq!(tile_columns_log2(1440, 8), 1);
         assert_eq!(tile_columns_log2(1920, 8), 1);
         assert_eq!(tile_columns_log2(2560, 8), 1);
+        assert_eq!(tile_columns_log2(2880, 8), 2);
         assert_eq!(tile_columns_log2(3840, 8), 2);
         assert_eq!(tile_columns_log2(5120, 8), 2);
         assert_eq!(tile_columns_log2(3840, 2), 1);
