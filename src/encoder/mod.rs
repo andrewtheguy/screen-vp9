@@ -4,14 +4,16 @@
 //!
 //! So far it codes keyframes and inter frames against the frame before, each
 //! superblock split as far as its source varies, every block either DC
-//! predicted or the previous frame where it is, at the largest transform that
-//! fits it, its residual coded at the dial's quantizer, and the frame
-//! reconstructed exactly as libvpx's decoder reconstructs it. Where the source
-//! has not changed since the frame before, a block is that frame's, skipped.
+//! predicted or the previous frame at a whole-pixel vector, at the largest
+//! transform that fits it, its residual coded at the dial's quantizer, and the
+//! frame reconstructed exactly as libvpx's decoder reconstructs it. Where the
+//! source has not changed since the frame before, a block is that frame's,
+//! skipped; where it moved, a hash search finds where it came from.
 
 mod bool_writer;
 mod dct;
 mod header;
+mod motion;
 mod mv;
 mod predict;
 mod quantize;
@@ -85,6 +87,7 @@ pub(crate) struct Encoder {
     previous: [Vec<u8>; 3],
     /// Per 8×8 of the frame, whether the source is `previous` there.
     unchanged: Vec<bool>,
+    search: motion::Search,
     /// Whether a frame has been coded, so the next can be an inter frame.
     started: bool,
     /// Whether the frame coded last was an inter frame, whose vectors a
@@ -119,6 +122,7 @@ impl Encoder {
             reference: reconstruction(),
             previous: std::array::from_fn(|_| vec![0; pixels]),
             unchanged: vec![false; geometry.mi_rows * geometry.mi_cols],
+            search: motion::Search::new(&geometry),
             started: false,
             last_inter: false,
             requantize: false,
@@ -152,7 +156,9 @@ impl Encoder {
             return Err(Error::Mismatch(g.width, g.height, Chroma::Full.name(), pw, ph, picture.chroma().name()));
         }
         let keyframe = keyframe || !self.started;
-        self.compare(picture, keyframe || self.requantize);
+        let everything = keyframe || self.requantize;
+        self.compare(picture, everything);
+        let vectors = self.search.update(&self.previous[0], (!everything).then_some(&self.unchanged[..]), !keyframe);
         self.contexts.start(self.last_inter);
         let g = &self.geometry;
         let q_index = tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize];
@@ -160,7 +166,7 @@ impl Encoder {
         let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
         let tiles: Vec<Vec<u8>> = (0..1 << self.tile_cols_log2)
             .map(|i| {
-                let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged });
+                let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, vectors: &vectors });
                 tile::Tile::new(g, g.tile_cols(i, self.tile_cols_log2), &mut self.contexts, &mut self.recon, &source, previous, &quantizer).code()
             })
             .collect();
@@ -425,18 +431,73 @@ mod tests {
         assert_eq!(Encoder::new(255, 8, 90, 64).expect("an encoder").tile_cols_log2, 0);
     }
 
+    /// `rgb`, `w` wide, with its rectangle at `(x, y)` of `rw`×`rh` moved
+    /// by `(dx, dy)`, as far as the picture holds either, what it uncovers
+    /// left as it was.
+    fn drag(rgb: &[u8], w: u16, (x, y, rw, rh): (usize, usize, usize, usize), (dx, dy): (isize, isize)) -> Vec<u8> {
+        let w = usize::from(w);
+        let h = rgb.len() / 3 / w;
+        let mut out = rgb.to_vec();
+        for r in y..(y + rh).min(h) {
+            for c in x..(x + rw).min(w) {
+                let (tx, ty) = (c as isize + dx, r as isize + dy);
+                if (0..w as isize).contains(&tx) && (0..h as isize).contains(&ty) {
+                    out[(ty as usize * w + tx as usize) * 3..][..3].copy_from_slice(&rgb[(r * w + c) * 3..][..3]);
+                }
+            }
+        }
+        out
+    }
+
+    /// `rgb`, `w` wide, each row turned left by `cols`, wrapping.
+    fn pan(rgb: &[u8], w: u16, cols: usize) -> Vec<u8> {
+        let mut out = rgb.to_vec();
+        for row in out.chunks_exact_mut(usize::from(w) * 3) {
+            row.rotate_left(cols % usize::from(w) * 3);
+        }
+        out
+    }
+
+    /// `rgb`, `w` wide, scrolled up by `rows` with a flat colour coming in
+    /// below.
+    fn scroll(rgb: &[u8], w: u16, rows: usize) -> Vec<u8> {
+        let h = rgb.len() / 3 / usize::from(w);
+        let mut out = rgb[rows * usize::from(w) * 3..].to_vec();
+        out.extend([235, 235, 240].repeat(rows * usize::from(w)));
+        assert_eq!(out.len(), usize::from(w) * h * 3);
+        out
+    }
+
     #[test]
     fn inter_frames_decode_to_the_encoders_own_reconstruction() {
         for (w, h) in [(1, 1), (7, 5), (8, 8), (65, 65), (130, 67), (200, 120), (40, 360), (640, 360)] {
             let original = desktop_rgb(w, h);
-            let mut scrolled = original.clone();
-            scrolled.rotate_left(3 % usize::from(h) * usize::from(w) * 3);
+            let (wu, hu) = (usize::from(w), usize::from(h));
+            let turned = |rows: usize, left: bool| {
+                let mut rgb = original.clone();
+                if left {
+                    rgb.rotate_left(rows % hu * wu * 3);
+                } else {
+                    rgb.rotate_right(rows % hu * wu * 3);
+                }
+                rgb
+            };
+            // Motion every way, by little and by much, across the frame's
+            // edges and back, each frame against the one before.
             let frames = [
                 original.clone(),
                 original.clone(),
                 edit(original.clone(), w, (5, 3, 40, 21), 1),
                 edit(original.clone(), w, (60, 30, 300, 200), 2),
-                scrolled,
+                turned(3, true),
+                turned(3, false),
+                turned(70, false),
+                scroll(&original, w, 13 % hu),
+                pan(&original, w, 5),
+                pan(&original, w, wu * 9 / 10),
+                drag(&original, w, (10, 20, 100, 70), (-30, 17)),
+                drag(&original, w, (wu / 2, hu / 2, 120, 90), (45, 60)),
+                drag(&original, w, (0, 0, wu, hu), (-9, -70)),
                 noise_rgb(w, h, 3),
                 edit(noise_rgb(w, h, 3), w, (0, 0, 9, 9), 4),
                 original,
@@ -451,6 +512,28 @@ mod tests {
                 assert!(stream.frame(&desktop(w, h), true).1);
                 assert!(!stream.frame(&noise(w, h), false).1);
             }
+        }
+    }
+
+    #[test]
+    fn motion_decodes_across_tile_columns() {
+        // Four tile columns: vectors are predicted only from inside a tile,
+        // and one may point into another's part of the frame before.
+        let (w, h) = (3840, 136);
+        let original = desktop_rgb(w, h);
+        let mut stream = Stream::new(w, h, 90, 4);
+        assert_eq!(stream.encoder.tile_cols_log2, 2);
+        let frames = [
+            original.clone(),
+            pan(&original, w, 77),
+            scroll(&pan(&original, w, 70), w, 9),
+            drag(&original, w, (700, 10, 400, 100), (500, 6)),
+            drag(&original, w, (2000, 10, 600, 120), (-900, -6)),
+            pan(&original, w, 3840 - 1000),
+        ];
+        for (i, rgb) in frames.iter().enumerate() {
+            let (bytes, keyframe, _) = stream.frame(&picture(w, h, rgb), false);
+            assert_eq!(keyframe, i == 0, "frame {i}, {bytes} bytes");
         }
     }
 
@@ -494,6 +577,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_scroll_is_coded_as_motion() {
+        let (w, h) = (640, 384);
+        let mut stream = Stream::new(w, h, 100, 1);
+        let rgb = desktop_rgb(w, h);
+        let (key_bytes, _, _) = stream.frame(&picture(w, h, &rgb), false);
+        let scrolled = scroll(&rgb, w, 37);
+        let (bytes, keyframe, mse) = stream.frame(&picture(w, h, &scrolled), false);
+        assert!(!keyframe);
+        assert!(bytes * 10 < key_bytes, "{bytes} bytes against a keyframe of {key_bytes}");
+        assert!(mse < 4.0, "squared error {mse}");
+    }
+
+    #[test]
+    fn a_dragged_window_is_coded_as_motion() {
+        let (w, h) = (640, 384);
+        let mut stream = Stream::new(w, h, 100, 1);
+        let rgb = desktop_rgb(w, h);
+        let (key_bytes, _, _) = stream.frame(&picture(w, h, &rgb), false);
+        let dragged = drag(&rgb, w, (40, 30, 300, 200), (53, 21));
+        let (bytes, _, mse) = stream.frame(&picture(w, h, &dragged), false);
+        assert!(bytes * 10 < key_bytes, "{bytes} bytes against a keyframe of {key_bytes}");
+        assert!(mse < 4.0, "squared error {mse}");
     }
 
     #[test]

@@ -14,6 +14,7 @@
 //! is so only in part is split.
 
 use super::bool_writer::{self, BoolWriter};
+use super::motion;
 use super::mv::{self, Mv};
 use super::predict::{self, Edges};
 use super::quantize::Quantizer;
@@ -36,6 +37,10 @@ const SB_LOG2: u32 = 3;
 /// and around an eighth was best; keeping every square whole cost up to a
 /// third more bytes and 1–3 dB.
 const SPLIT_VARIANCE: i64 = 8;
+
+/// A vector the search offers is taken over the vectors a decoder predicts
+/// only where it leaves `1 / NEW_VECTOR_GAIN` less variance than they do.
+const NEW_VECTOR_GAIN: i64 = 4;
 
 /// What an intra neighbour adds to the mode context's counter (libvpx's
 /// `mode_2_counter`); `InterMode::counter` gives the rest.
@@ -61,11 +66,12 @@ pub(super) struct Source<'a> {
 }
 
 /// What an inter frame is coded against: the previous frame as a decoder
-/// has it, and per 8×8 of the frame, whether the source there is the
-/// previous frame's.
+/// has it, per 8×8 of the frame whether the source there is the previous
+/// frame's, and per superblock the vectors the motion search offers it.
 pub(super) struct Previous<'a> {
     pub(super) reference: &'a Reconstruction,
     pub(super) unchanged: &'a [bool],
+    pub(super) vectors: &'a [[Mv; motion::VECTORS]],
 }
 
 /// How a block is coded.
@@ -238,6 +244,10 @@ pub(super) struct Tile<'a> {
     split_variance: i64,
     /// The superblock being coded, per 8×8 in raster order.
     measures: [Measure; 64],
+    /// The superblock being coded, per vector other than zero measured at
+    /// so far: per 8×8, the moments of its residual at that vector, and
+    /// which of them are measured yet.
+    moved: Vec<(Mv, [Moments; 64], u64)>,
     w: BoolWriter,
     /// The block being coded: per plane, the levels of its transform blocks
     /// one after another, each in raster order, and their ends of block.
@@ -268,6 +278,7 @@ impl<'a> Tile<'a> {
             quantizer,
             split_variance: i64::from(quantizer.ac_step()) / SPLIT_VARIANCE,
             measures: [Measure::default(); 64],
+            moved: Vec::new(),
             w: BoolWriter::new(),
             levels: std::array::from_fn(|_| vec![0; 64 * 64]),
             eobs: std::array::from_fn(|_| Vec::with_capacity(16)),
@@ -282,6 +293,7 @@ impl<'a> Tile<'a> {
             for mi_col in (self.mi_col_start..self.mi_col_end).step_by(8) {
                 if !self.unchanged(mi_row, mi_col, SB_LOG2) {
                     self.measure(mi_row, mi_col);
+                    self.moved.clear();
                 }
                 self.partition(mi_row, mi_col, SB_LOG2);
             }
@@ -366,6 +378,27 @@ impl<'a> Tile<'a> {
         let (width, height) = (self.source.width, self.source.height);
         let (dy, dx) = mv.whole();
         let mut m = Moments::default();
+        let (rx, ry) = (px as isize + dx, py as isize + dy);
+        if px + 8 <= width && py + 8 <= height && rx >= 0 && ry >= 0 && rx as usize + 8 <= width && ry as usize + 8 <= height {
+            // Both wholly inside the picture: read as they are.
+            let (rx, ry) = (rx as usize, ry as usize);
+            let src = self.source;
+            for plane in 0..3 {
+                let (mut sum, mut squares) = (0i32, 0i32);
+                for k in 0..8 {
+                    let a = &src.planes[plane][(py + k) * src.stride + px..][..8];
+                    let b = &reference.planes[plane][(ry + k) * reference.stride + rx..][..8];
+                    for (&a, &b) in a.iter().zip(b) {
+                        let d = i32::from(a) - i32::from(b);
+                        sum += d;
+                        squares += d * d;
+                    }
+                }
+                m.sums[plane] = i64::from(sum);
+                m.squares += i64::from(squares);
+            }
+            return m;
+        }
         for plane in 0..3 {
             for y in py..py + 8 {
                 let ry = (y as isize + dy).clamp(0, height as isize - 1) as usize;
@@ -381,14 +414,30 @@ impl<'a> Tile<'a> {
     }
 
     /// The moments of the square of `1 << n` 8×8s at `(mi_row, mi_col)`, as
-    /// far as the frame holds it, less the previous frame at `mv` from it.
-    fn square_residual(&self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> Moments {
+    /// far as the frame holds it, less the previous frame at `mv`, a vector
+    /// other than zero, from it. Each 8×8 is measured at a vector once per
+    /// superblock, however many squares it is in.
+    fn square_residual(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> Moments {
         let (rows, cols) = self.inside(mi_row, mi_col, n);
         let (row0, col0) = (mi_row - (mi_row & 7), mi_col - (mi_col & 7));
+        let at = match self.moved.iter().position(|m| m.0 == mv) {
+            Some(at) => at,
+            None => {
+                self.moved.push((mv, [Moments::default(); 64], 0));
+                self.moved.len() - 1
+            }
+        };
         let mut total = Moments::default();
         for r in rows {
             for c in cols.clone() {
-                total.add(&self.residual_moments((col0 + c) * 8, (row0 + r) * 8, mv));
+                let i = r * 8 + c;
+                if self.moved[at].2 & 1 << i == 0 {
+                    let m = self.residual_moments((col0 + c) * 8, (row0 + r) * 8, mv);
+                    let (_, moments, measured) = &mut self.moved[at];
+                    moments[i] = m;
+                    *measured |= 1 << i;
+                }
+                total.add(&self.moved[at].1[i]);
             }
         }
         total
@@ -397,15 +446,12 @@ impl<'a> Tile<'a> {
     /// How the square of `1 << n` 8×8s at `(mi_row, mi_col)` is coded
     /// whole, or none when it varies more from its best prediction than a
     /// square is coded whole at.
-    fn choose(&self, mi_row: usize, mi_col: usize, n: u32) -> Option<Mode> {
-        match self.count_unchanged(mi_row, mi_col, n) {
+    fn choose(&mut self, mi_row: usize, mi_col: usize, n: u32) -> Option<Mode> {
+        let partly = match self.count_unchanged(mi_row, mi_col, n) {
             Some(u) if u == self.count_inside(mi_row, mi_col, n) => return Some(Mode::Unchanged),
-            // Partly unchanged: split, so the unchanged part stays the
-            // previous frame's rather than coding again what the previous
-            // frame got wrong there.
-            Some(u) if u > 0 && n > 0 => return None,
-            _ => {}
-        }
+            Some(u) => u > 0,
+            None => false,
+        };
         let (rows, cols) = self.inside(mi_row, mi_col, n);
         let mut total = Measure::default();
         let mut count = 0;
@@ -417,19 +463,23 @@ impl<'a> Tile<'a> {
             }
         }
         let intra = total.source.variance(count);
-        let (mode, variance) = match self.previous {
-            Some(_) => {
-                // The vectors a decoder predicts are tried after zero, so a
-                // tie goes to the cheaper to code.
+        let (mode, variance) = match &self.previous {
+            Some(previous) => {
+                // Zero first, then the vectors a decoder predicts, then the
+                // search's, which are new vectors to code and so have to do
+                // clearly better than the others to be taken.
+                let searched = previous.vectors[(mi_row >> SB_LOG2) * self.geometry.sb_cols + (mi_col >> SB_LOG2)];
+                let predicted = self.candidates(mi_row, mi_col, n);
                 let mut best = (Mv::ZERO, total.residual.variance(count));
-                let mut tried = vec![Mv::ZERO];
-                for mv in self.candidates(mi_row, mi_col, n) {
+                let mut tried = [Mv::ZERO; 1 + 2 + motion::VECTORS];
+                for (i, mv) in predicted.into_iter().chain(searched).enumerate() {
                     if best.1 == 0 || tried.contains(&mv) {
                         continue;
                     }
-                    tried.push(mv);
+                    tried[1 + i] = mv;
                     let variance = self.square_residual(mi_row, mi_col, n, mv).variance(count);
-                    if variance < best.1 {
+                    let better = if i < predicted.len() { variance < best.1 } else { variance < best.1 - best.1 / NEW_VECTOR_GAIN };
+                    if better {
                         best = (mv, variance);
                     }
                 }
@@ -437,6 +487,14 @@ impl<'a> Tile<'a> {
             }
             None => (Mode::Intra, intra),
         };
+        // A square that is unchanged in part is split unless what moved
+        // into it is coded as moving, so the unchanged part stays the
+        // previous frame's rather than coding again what the previous frame
+        // got wrong there. What moved takes the unchanged part with it: it
+        // is as likely to be where the motion left it as where it was.
+        if partly && matches!(mode, Mode::Intra | Mode::Inter(Mv::ZERO)) {
+            return None;
+        }
         (n == 0 || variance <= self.split_variance * count * count).then_some(mode)
     }
 

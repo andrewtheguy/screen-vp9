@@ -6,6 +6,11 @@
 
 use super::tables::{MV_BITS_PROBS, MV_CLASS_PROBS, MV_CLASS0_FP_PROBS, MV_CLASS0_PROBS, MV_FP_PROBS, MV_JOINT_PROBS, MV_SIGN_PROBS};
 
+/// The most whole pixels either part of a vector this encoder codes may
+/// have. A vector less one predicted from vectors this size stays within
+/// what a component can code, 2048 pixels.
+pub(super) const MAX_PIXELS: i32 = 1023;
+
 /// How far past a frame's edges a predicted vector may reach, in eighths:
 /// 16 pixels (libvpx's `MV_BORDER`).
 const BORDER: i32 = 16 << 3;
