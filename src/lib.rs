@@ -120,20 +120,21 @@ fn tile_columns_log2(width: u16, threads: usize) -> u32 {
 /// from the quantizer, 7 to 9 at the fine end of the dial, a light filter that
 /// still visits every block edge of every frame, and it is a quarter to two
 /// fifths of what vp9-wasm spends on a frame. Measured on vp9-wasm 0.0.5 with
-/// six 4:4:4 captures coded both ways: without the filter one thread decodes
-/// in 26% to 40% fewer cycles, and the stream is 2% to 8% larger and 0.5 to
-/// 0.9 dB of luma further from its source, since every later frame predicts
-/// from what the filter smoothed. What four threads gain is what the tiles
-/// leave: with two columns a frame waits on their parsing, and a 1440-wide
-/// desktop decoded in 3.1 ms for 3.7, a busy Mac screen and a 1728-wide
-/// animation in the same time as before; with four, a 3456-wide desktop
-/// decoded in 19.0 ms for 27.9 and a 3456×2234 recording in 11.3 for 17.5.
-/// That desktop coded in two columns: 27.4 for 29.0. So the filter goes where
-/// the columns have left it as what a decoder's threads wait on, which is
-/// also where a frame is slowest to decode, and stays where it would be bytes
-/// and picture given for no time. A 4:2:0 stream keeps it whatever its size:
-/// that is the profile a browser decodes itself, often in hardware, and
-/// nothing here was measured on one.
+/// what the remotex gateway wrote of one four-pane desktop at eight sizes,
+/// 1280×800 to 3840×2160, each coded both ways at quality 90: without the
+/// filter one thread decodes in 29% to 41% fewer cycles, and the stream is 3%
+/// to 6% larger and 0.6 to 1.4 dB of luma further from its source, since every
+/// later frame predicts from what the filter smoothed. What four threads gain
+/// is what the tiles leave. In one or two columns a frame waits on their
+/// parsing: 7.2 ms for 7.5 at 1280 wide, 5.7 for 5.8 at 1440, 6.1 for 6.4 at
+/// 1600, 9.8 for 9.0 at 1920, 9.5 for 10.3 at 2560. In four: 6.4 for 10.4 at
+/// 2880, 14.2 for 21.3 at 3456, 12.1 for 17.4 at 3840. An earlier 3456-wide
+/// desktop coded in two columns: 27.4 for 29.0. So the filter goes where the
+/// columns have left it as what a decoder's threads wait on, which is also
+/// where a frame is slowest to decode, and stays where it would be bytes and
+/// picture given for no time. A 4:2:0 stream keeps it whatever its size: that
+/// is the profile a browser decodes itself, often in hardware, and nothing
+/// here was measured on one.
 fn loop_filtered(chroma: Chroma, width: u16, threads: usize) -> bool {
     chroma != Chroma::Full || tile_columns_log2(width, threads) < 2
 }
