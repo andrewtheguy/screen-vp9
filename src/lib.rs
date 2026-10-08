@@ -52,6 +52,10 @@
 //!   corrupts the stack.
 
 pub mod walk;
+// The Rust encoder that is to replace libvpx's, reachable only from tests until
+// it passes the gate `docs/rust-encoder-plan.md` sets.
+#[cfg(test)]
+mod encoder;
 
 use std::os::raw::{c_int, c_uint, c_ulong};
 

@@ -2,7 +2,7 @@
 name = "screen-vp9"
 version = "0.0.12"
 edition = "2024"
-license = "MIT"
+license = "MIT AND BSD-3-Clause"
 repository = "https://github.com/andrewtheguy/screen-vp9"
 description = "VP9 for a desktop picture, as wlshare and the remotex gateway both code it: libvpx pinned to a 1–100 quality dial, BT.601 4:2:0 or 4:4:4 planes in front of it, the decoder, what a frame says about itself, and the walk of the dial a link will bear"
 

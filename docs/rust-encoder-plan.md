@@ -133,11 +133,13 @@ decoder, not an encoder, and is not used here.
 
 ## Reuse and licence
 
-The bool coder, probability tables, scan orders, motion vector prediction,
-inverse transforms and the DC predictor can be adapted from `rusty_vp9`, which
-is Apache-2.0 and goes into this MIT crate with attribution. Mode decision,
-motion search, forward transforms and all SIMD are new. `rivet-vp9` is
-source-available only and none of it is used.
+What a decoder has to match exactly follows libvpx, the decoder the tests
+check against: the bool coder, intra prediction, inverse transforms and motion
+vector prediction are ported from its C, and every table (probabilities, scan
+orders, quantizer steps) is generated from it by `tools/vp9_tables.py` at the
+commit libvpx-prebuilt pins. libvpx is BSD-3-Clause; its licence is in
+`LICENSE-libvpx`. Mode decision, motion search, forward transforms and all
+SIMD are new. Neither `rusty_vp9` nor `rivet-vp9` is used.
 
 ## Main risk
 
