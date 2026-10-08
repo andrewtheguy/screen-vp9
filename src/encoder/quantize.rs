@@ -62,6 +62,24 @@ impl Quantizer {
         }
     }
 
+    /// The squared error of `levels` as a decoder dequantizes them against
+    /// the `coeffs` they were quantized from, `n`×`n` in raster order, in the
+    /// scale of a transform below 32×32: 64 times the squared error in
+    /// pixels. A 32×32 transform's coefficients are half that scale.
+    pub(super) fn error(&self, n: usize, coeffs: &[i32], levels: &[i32]) -> i64 {
+        let shift = u32::from(n == 32);
+        // A coefficient of 8-bit pixels is within 32640 of zero, so an error
+        // squares within 32 bits.
+        let error = |c: i32, level: i32, step: i32| {
+            let v = (level.abs() * step) >> shift;
+            let e = c - if level < 0 { -v } else { v };
+            i64::from(e * e)
+        };
+        let dc = error(coeffs[0], levels[0], self.dequant[0]);
+        let ac: i64 = coeffs[1..n * n].iter().zip(&levels[1..n * n]).map(|(&c, &l)| error(c, l, self.dequant[1])).sum();
+        (dc + ac) << (2 * shift)
+    }
+
     /// What a decoder makes of `levels` (libvpx's `decode_coefs`): each
     /// times its step, halved at 32×32, as the 16 bits a decoder keeps it in.
     pub(super) fn dequantize(&self, n: usize, levels: &[i32], scan: &[u16], eob: usize, coeffs: &mut [i32]) {
@@ -176,6 +194,31 @@ mod avx2 {
 mod tests {
     use super::*;
     use crate::encoder::tables::SCAN_4X4;
+
+    #[test]
+    fn the_error_is_what_dequantizing_leaves() {
+        let q = Quantizer::new(60);
+        for n in [4, 8, 16, 32] {
+            let coeffs: Vec<i32> = (0..n * n).map(|i| ((i * 7919) % 2001) as i32 - 1000).collect();
+            let mut levels = vec![0; n * n];
+            let iscan = match n {
+                4 => &ISCAN_4X4[..],
+                8 => &ISCAN_8X8[..],
+                16 => &ISCAN_16X16[..],
+                _ => &ISCAN_32X32[..],
+            };
+            q.quantize(n, &coeffs, &mut levels);
+            // The scan is the inverse scan's inverse: every level is in it.
+            let mut scan = vec![0u16; n * n];
+            for (rc, &at) in iscan.iter().enumerate() {
+                scan[usize::from(at) - 1] = rc as u16;
+            }
+            let mut back = vec![0; n * n];
+            q.dequantize(n, &levels, &scan, n * n, &mut back);
+            let squared: i64 = coeffs.iter().zip(&back).map(|(&c, &b)| i64::from(c - b).pow(2)).sum();
+            assert_eq!(q.error(n, &coeffs, &levels), if n == 32 { squared * 4 } else { squared }, "{n}x{n}");
+        }
+    }
 
     #[test]
     fn a_coefficient_comes_back_within_its_rounding() {

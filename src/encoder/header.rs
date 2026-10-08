@@ -1,9 +1,10 @@
 //! A frame's two headers: the uncompressed one, plain bits, and the
 //! compressed one, bool coded. The fields are written in the order the VP9
 //! specification reads them (§6.2, §6.3), each at the one value the subset
-//! the encoder codes allows.
+//! the encoder codes allows, but for the probability updates.
 
 use super::bool_writer::BoolWriter;
+use super::probs::{Counts, DIFF_UPDATE_PROB, Probs};
 
 /// The most a frame's compressed header can say it holds: its size is a
 /// 16-bit field.
@@ -12,12 +13,10 @@ const MAX_COMPRESSED_HEADER: usize = u16::MAX as usize;
 /// `color_space` for BT.601.
 const CS_BT_601: u32 = 1;
 
-/// `tx_mode` ALLOW_32X32: every block takes the largest transform that fits
-/// it, up to 32×32, and no block says which.
+/// `tx_mode` ALLOW_32X32, which with `tx_mode_select` after it is
+/// TX_MODE_SELECT: each block says which transform size it takes, up to the
+/// largest that fits it.
 const ALLOW_32X32: u32 = 3;
-
-/// The probability an update flag for a probability is coded at.
-const DIFF_UPDATE_PROB: u8 = 252;
 
 /// The probability an update flag for a motion vector probability is coded
 /// at.
@@ -125,9 +124,9 @@ impl Uncompressed {
 
     /// From `refresh_frame_context` on, which every frame writes alike.
     fn write_tail(&self, w: &mut BitWriter, compressed_size: usize) {
-        // Probabilities are the defaults on every frame: the decoder neither
-        // adapts them after a frame nor keeps what one did.
-        w.flag(false); // refresh_frame_context
+        // The decoder keeps the probabilities a frame's header updated for
+        // the next, and does not adapt them to what the frame coded.
+        w.flag(true); // refresh_frame_context
         w.flag(true); // frame_parallel_decoding_mode
         w.put(0, 2); // frame_context_idx
         // loop_filter_params: level 0, so no filter runs.
@@ -153,21 +152,19 @@ impl Uncompressed {
     }
 }
 
-/// The compressed header: the transform mode and no update to any default
-/// probability, of which an inter frame has more.
-pub(super) fn compressed(keyframe: bool) -> Vec<u8> {
+/// The compressed header: the transform mode, each block saying its size;
+/// the updates to the transform size, coefficient and skip probabilities
+/// `probs` that the frame's bools, `counts`, call for, made to `probs`; and
+/// no update to any other probability, of which an inter frame has more.
+pub(super) fn compressed(keyframe: bool, probs: &mut Probs, counts: &Counts) -> Vec<u8> {
     let mut w = BoolWriter::new();
-    // tx_mode: ALLOW_32X32 and, after it, tx_mode_select clear.
+    // tx_mode: TX_MODE_SELECT, and the transform size probabilities.
     w.literal(ALLOW_32X32, 2);
-    w.bit(false);
-    // update_probs for the coefficients of each transform size up to 32×32.
-    for _ in 0..4 {
-        w.bit(false);
-    }
-    // No update to any of the three skip probabilities.
-    for _ in 0..3 {
-        w.write(false, DIFF_UPDATE_PROB);
-    }
+    w.bit(true);
+    probs.update_tx(&mut w, counts);
+    // The coefficients of each transform size up to 32×32, then skip.
+    probs.update_coefs(&mut w, counts, 3);
+    probs.update_skip(&mut w, counts);
     if !keyframe {
         // The inter modes (7 contexts of 3), intra or inter (4), the single
         // reference (5 of 2), the luma intra modes (4 of 9) and the
@@ -189,6 +186,11 @@ pub(super) fn compressed(keyframe: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::super::bool_writer::tests::BoolReader;
+    use super::super::probs::tests::read_update;
+    use super::super::probs::{skip_slot, tx_slot};
+    use super::super::tables::{COEF_PROBS, SKIP_PROBS, TX_PROBS_8X8, TX_PROBS_16X16, TX_PROBS_32X32};
+    use super::super::tape::Tape;
+    use super::super::tokens;
     use super::*;
 
     #[test]
@@ -216,7 +218,7 @@ mod tests {
         // Render size, the two context flags, the context index, the loop
         // filter, then the q index.
         assert_eq!(field(71, 1), 0);
-        assert_eq!(field(72, 2), 0b01, "no refresh, frame parallel");
+        assert_eq!(field(72, 2), 0b11, "refreshed, frame parallel");
         assert_eq!(field(74, 12), 0, "context 0, loop filter level, sharpness and deltas off");
         assert_eq!(field(86, 8), 32);
         // Three deltas and segmentation off, a 0 that stops the tile columns
@@ -240,7 +242,7 @@ mod tests {
         assert_eq!(field(18, 12), 0, "every reference slot 0, no sign bias");
         assert_eq!(field(30, 2), 0b10, "the size of LAST, no render size");
         assert_eq!(field(32, 4), 0b0001, "no high precision, EIGHTTAP");
-        assert_eq!(field(36, 2), 0b01, "no refresh, frame parallel");
+        assert_eq!(field(36, 2), 0b11, "refreshed, frame parallel");
         assert_eq!(field(38, 12), 0);
         assert_eq!(field(50, 8), 32);
         assert_eq!(field(58, 6), 0);
@@ -248,19 +250,102 @@ mod tests {
         assert_eq!(bytes.len(), 10);
     }
 
+    /// The transform size probabilities' part of a compressed header as a
+    /// decoder reads it (libvpx's `tx_mode_probs`), into `probs`.
+    fn read_tx(r: &mut BoolReader, probs: &mut Probs) {
+        for p in probs.tx8.iter_mut().flatten().chain(probs.tx16.iter_mut().flatten()).chain(probs.tx32.iter_mut().flatten()) {
+            *p = read_update(r, *p);
+        }
+    }
+
+    /// The coefficient probabilities' part of a compressed header as a
+    /// decoder reads it (libvpx's `read_coef_probs`), into `probs`.
+    fn read_coefs(r: &mut BoolReader, probs: &mut Probs) {
+        for tx in 0..4 {
+            if !r.read(128) {
+                continue;
+            }
+            for (band, contexts) in probs.coef[tx].iter_mut().flatten().flat_map(|kind| kind.iter_mut().enumerate()) {
+                for p in contexts[..if band == 0 { 3 } else { 6 }].iter_mut().flatten() {
+                    *p = read_update(r, *p);
+                }
+            }
+        }
+    }
+
+    /// A compressed header up to the inter frame's modes, as a decoder reads
+    /// it into `probs`: the transform mode, then the updates.
+    fn read<'a>(bytes: &'a [u8], probs: &mut Probs) -> BoolReader<'a> {
+        let mut r = BoolReader::new(bytes);
+        assert_eq!(r.literal(2), ALLOW_32X32);
+        assert!(r.read(128), "tx_mode_select");
+        read_tx(&mut r, probs);
+        read_coefs(&mut r, probs);
+        for p in &mut probs.skip {
+            *p = read_update(&mut r, *p);
+        }
+        r
+    }
+
     #[test]
-    fn the_compressed_header_asks_for_32x32_and_updates_nothing() {
+    fn the_compressed_header_selects_transform_sizes_and_updates_nothing_without_bools() {
         for keyframe in [true, false] {
-            let bytes = compressed(keyframe);
-            let mut r = BoolReader::new(&bytes);
-            assert_eq!(r.literal(2), ALLOW_32X32);
-            assert!(!r.read(128), "tx_mode_select");
-            assert!((0..4).all(|_| !r.read(128)), "no coefficient update");
-            assert!((0..3).all(|_| !r.read(DIFF_UPDATE_PROB)), "no skip update");
+            let mut probs = Probs::default();
+            let bytes = compressed(keyframe, &mut probs, &Counts::new());
+            let mut read = Probs::default();
+            let mut r = super::tests::read(&bytes, &mut read);
+            assert_eq!((read.tx8, read.tx16, read.tx32, read.skip, read.coef), (probs.tx8, probs.tx16, probs.tx32, probs.skip, probs.coef));
+            assert_eq!((probs.tx8, probs.tx16, probs.tx32, probs.skip, probs.coef), (TX_PROBS_8X8, TX_PROBS_16X16, TX_PROBS_32X32, SKIP_PROBS, COEF_PROBS));
             if !keyframe {
                 assert!((0..119).all(|_| !r.read(DIFF_UPDATE_PROB)), "no mode update");
                 assert!((0..65).all(|_| !r.read(MV_UPDATE_PROB)), "no vector update");
             }
         }
+    }
+
+    #[test]
+    fn coefficient_updates_follow_the_tokens_and_read_back() {
+        // Luma intra 8×8 blocks of a lone DC of 3, far from what the defaults
+        // expect, and nothing else.
+        let mut tape = Tape::new();
+        let mut levels = [0; 64];
+        levels[0] = 3;
+        let mut energy = [0; 1024];
+        for _ in 0..2000 {
+            tokens::write(&mut tape, tokens::Kind { tx: 1, chroma: false, inter: false }, 0, &levels, 1, &mut energy);
+        }
+        let before = Probs::default();
+        let mut probs = before.clone();
+        let bytes = compressed(false, &mut probs, &tape.counts);
+        let mut read = before.clone();
+        super::tests::read(&bytes, &mut read);
+        assert_eq!(read.coef, probs.coef, "what a decoder reads is what the encoder codes at");
+        assert_eq!([probs.coef[0], probs.coef[2], probs.coef[3]], [before.coef[0], before.coef[2], before.coef[3]], "only 8x8 updated");
+        let (now, then) = (probs.coef[1][0][0], before.coef[1][0][0]);
+        assert!(now[0][0][1] < then[0][0][1] && now[0][0][2] < then[0][0][2], "the DC more often not a zero, and more often more than one");
+        // After a DC of 3 the next position is in band 1 at context 3.
+        assert!(now[1][3][0] > then[1][3][0], "the block more often ending after it");
+    }
+
+    #[test]
+    fn transform_size_and_skip_updates_follow_the_bools_and_read_back() {
+        // 32×32 blocks at context 1 nearly all 4×4, and blocks beside two
+        // skipped ones nearly all skipped too.
+        let mut tape = Tape::new();
+        for i in 0..3000 {
+            tape.put(i % 50 == 0, tx_slot(3, 1));
+            tape.put(i % 40 != 0, skip_slot(2));
+        }
+        let before = Probs::default();
+        let mut probs = before.clone();
+        let bytes = compressed(true, &mut probs, &tape.counts);
+        let mut read = before.clone();
+        super::tests::read(&bytes, &mut read);
+        assert_eq!((read.tx8, read.tx16, read.tx32, read.skip), (probs.tx8, probs.tx16, probs.tx32, probs.skip));
+        assert!(probs.tx32[1][0] > before.tx32[1][0], "4×4 likelier");
+        assert_eq!((probs.tx32[0], &probs.tx32[1][1..], probs.tx8, probs.tx16), (before.tx32[0], &before.tx32[1][1..], before.tx8, before.tx16));
+        assert!(probs.skip[2] < before.skip[2], "skips likelier");
+        assert_eq!(probs.skip[..2], before.skip[..2]);
+        assert_eq!(probs.coef, before.coef);
     }
 }

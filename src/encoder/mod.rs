@@ -4,13 +4,15 @@
 //!
 //! So far it codes keyframes and inter frames against the frame before, each
 //! superblock split as far as its source varies, every block either DC
-//! predicted or the previous frame at a whole-pixel vector, at the largest
-//! transform that fits it, its residual coded at the dial's quantizer, and the
-//! frame reconstructed exactly as libvpx's decoder reconstructs it. Where the
-//! source has not changed since the frame before, a block is that frame's,
-//! skipped; where it moved, a hash search finds where it came from. Tile
-//! columns, which a decoder reads independently of each other, are coded on
-//! threads of their own.
+//! predicted or the previous frame at a whole-pixel vector, at a transform
+//! size of its own, its residual coded at the dial's quantizer, and the frame
+//! reconstructed exactly as libvpx's decoder reconstructs it. Where the source
+//! has not changed since the frame before, a block is that frame's, skipped;
+//! where it moved, a hash search finds where it came from. A frame's bools
+//! are recorded as its blocks are decided and coded once its header has
+//! updated the probabilities to what they count, which a decoder keeps for
+//! the next frame. Tile columns, which a decoder reads independently of each
+//! other, are decided and coded on threads of their own.
 
 mod bool_writer;
 mod dct;
@@ -20,8 +22,10 @@ mod motion;
 mod mv;
 mod pixels;
 mod predict;
+mod probs;
 mod quantize;
 mod tables;
+mod tape;
 mod tile;
 mod tokens;
 mod transform;
@@ -178,6 +182,8 @@ pub(crate) struct Encoder {
     quality: u8,
     /// Per tile column, what a decoder keeps while it reads it.
     contexts: Vec<tile::Contexts>,
+    /// The probabilities a decoder keeps from the frame coded last.
+    probs: probs::Probs,
     /// The frame being coded.
     recon: Reconstruction,
     /// The frame coded last, as a decoder has it: what an inter frame is
@@ -217,6 +223,7 @@ impl Encoder {
             threads,
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
             contexts: (0..1 << tile_cols_log2).map(|i| tile::Contexts::new(&geometry, geometry.tile_cols(i, tile_cols_log2))).collect(),
+            probs: probs::Probs::default(),
             recon: Reconstruction::new(&geometry, tile_cols_log2),
             reference: Reconstruction::new(&geometry, tile_cols_log2),
             previous: std::array::from_fn(|_| vec![0; pixels]),
@@ -266,10 +273,22 @@ impl Encoder {
         let quantizer = quantize::Quantizer::new(q_index);
         let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
         let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, vectors: &vectors });
-        let tiles = on_threads(self.threads, self.contexts.iter_mut().zip(&mut self.recon.columns), |(contexts, column)| {
-            tile::Tile::new(g, contexts, column, &source, previous, &quantizer).code()
+        // A keyframe starts a decoder's probabilities over from the defaults;
+        // an inter frame takes the ones the frame before left.
+        let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
+        let costs = tokens::Costs::new(&probs);
+        on_threads(self.threads, self.contexts.iter_mut().zip(&mut self.recon.columns), |(contexts, column)| {
+            tile::Tile::new(g, contexts, column, &source, previous, &quantizer, &costs).code()
         });
-        let compressed = header::compressed(keyframe);
+        // The header updates the probabilities from what the frame's bools
+        // count, and then the bools are coded.
+        let mut counts = probs::Counts::new();
+        for contexts in &self.contexts {
+            counts.add(&contexts.tape.counts);
+        }
+        let compressed = header::compressed(keyframe, &mut probs, &counts);
+        let table = probs.table();
+        let tiles = on_threads(self.threads, self.contexts.iter(), |contexts| contexts.tape.code(&table));
         let uncompressed = header::Uncompressed {
             keyframe,
             width: g.width,
@@ -290,6 +309,7 @@ impl Encoder {
             out.extend(tile);
         }
         std::mem::swap(&mut self.recon, &mut self.reference);
+        self.probs = probs;
         self.started = true;
         self.last_inter = !keyframe;
         self.requantize = false;

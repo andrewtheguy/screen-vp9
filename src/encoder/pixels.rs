@@ -123,7 +123,17 @@ mod neon {
 
     pub(super) fn subtract(n: usize, a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, out: &mut [i32]) {
         if n == 4 {
-            return super::scalar::subtract(n, a, a_stride, b, b_stride, out);
+            // A row's four pixels each as the low half of a vector of eight.
+            let four = |p: &[u8], at: usize| u64::from(u32::from_le_bytes(p[at..at + 4].try_into().expect("four pixels")));
+            for r in 0..4 {
+                let o = &mut out[r * 4..][..4];
+                // SAFETY: `o` is four values.
+                unsafe {
+                    let d = vreinterpretq_s16_u16(vsubl_u8(vcreate_u8(four(a, r * a_stride)), vcreate_u8(four(b, r * b_stride))));
+                    vst1q_s32(o.as_mut_ptr(), vmovl_s16(vget_low_s16(d)));
+                }
+            }
+            return;
         }
         for r in 0..n {
             for c in (0..n).step_by(8) {

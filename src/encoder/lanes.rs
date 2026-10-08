@@ -204,6 +204,7 @@ pub(super) mod neon {
             unsafe { vmaxvq_u32(vreinterpretq_u32_s32(self.0)) == 0 }
         }
 
+        #[inline(always)]
         fn transpose(n: usize, src: &[i32], dst: &mut [i32]) {
             // A 4×4 at a time, its rows swapped pairwise across 32 and then
             // 64 bits.

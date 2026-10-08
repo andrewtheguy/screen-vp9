@@ -13,14 +13,16 @@
 //! frame is the previous frame's, skipped, without being measured; one that
 //! is so only in part is split.
 
-use super::bool_writer::{self, BoolWriter};
+use super::bool_writer;
 use super::motion;
 use super::mv::{self, Mv};
 use super::predict::{self, Edges};
+use super::probs::{skip_slot, tx_slot};
 use super::quantize::Quantizer;
+use super::tape::Tape;
 use super::tables::{
     INTER_MODE_PROBS, INTRA_INTER_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, MV_REF_BLOCKS, PARTITION_PROBS, SINGLE_REF_PROBS,
-    SKIP_PROBS, UV_MODE_PROBS, Y_MODE_PROBS,
+    UV_MODE_PROBS, Y_MODE_PROBS,
 };
 use super::{Column, Geometry, Reconstruction, pixels, tokens, transform};
 
@@ -37,6 +39,13 @@ const SB_LOG2: u32 = 3;
 /// and around an eighth was best; keeping every square whole cost up to a
 /// third more bytes and 1–3 dB.
 const SPLIT_VARIANCE: i64 = 8;
+
+/// What a bit is worth in squared error when an inter block's transform size
+/// is chosen, in thousandths of the AC step squared over 64, a step in
+/// pixels being an eighth of one in coefficients. Of 0.07, 0.14 and 0.28 of
+/// a step squared, measured on the plan's captures, 0.14 made the fewest
+/// bytes on five of the six.
+const RATE_WEIGHT: i64 = 140;
 
 /// A vector the search offers is taken over the vectors a decoder predicts
 /// only where it leaves `1 / NEW_VECTOR_GAIN` less variance than they do.
@@ -135,6 +144,8 @@ pub(super) struct ModeInfo {
     /// How an inter block's vector was coded, and the vector; none for an
     /// intra block.
     inter: Option<(InterMode, Mv)>,
+    /// The transform size, as log2 less 2.
+    tx: usize,
 }
 
 /// What a decoder keeps while it reads a tile column, which nothing outside
@@ -152,6 +163,9 @@ pub(super) struct Contexts {
     /// Whether a decoder predicts vectors from the frame before's too:
     /// when that was an inter frame (libvpx's `use_prev_frame_mvs`).
     use_last: bool,
+    /// The column's bools, to be coded once the frame's probabilities are
+    /// chosen.
+    pub(super) tape: Tape,
 }
 
 impl Contexts {
@@ -164,6 +178,7 @@ impl Contexts {
             mode_info: vec![ModeInfo::default(); geometry.mi_rows * cols.len()],
             last_mode_info: vec![ModeInfo::default(); geometry.mi_rows * cols.len()],
             use_last: false,
+            tape: Tape::new(),
         }
     }
 
@@ -178,6 +193,7 @@ impl Contexts {
         std::mem::swap(&mut self.mode_info, &mut self.last_mode_info);
         self.mode_info.fill(ModeInfo::default());
         self.use_last = last_inter;
+        self.tape.clear();
     }
 }
 
@@ -236,6 +252,8 @@ pub(super) struct Tile<'a> {
     /// What an inter frame is coded against; none in a keyframe.
     previous: Option<Previous<'a>>,
     quantizer: &'a Quantizer,
+    /// What tokens cost at the probabilities the frame starts from.
+    costs: &'a tokens::Costs,
     /// The variance a square is split above, `SPLIT_VARIANCE` of the step.
     split_variance: i64,
     /// The superblock being coded, per 8×8 in raster order.
@@ -244,11 +262,14 @@ pub(super) struct Tile<'a> {
     /// so far: per 8×8, the moments of its residual at that vector, and
     /// which of them are measured yet.
     moved: Vec<(Mv, [Moments; 64], u64)>,
-    w: BoolWriter,
     /// The block being coded: per plane, the levels of its transform blocks
     /// one after another, each in raster order, and their ends of block.
     levels: [Vec<i32>; 3],
     eobs: [Vec<usize>; 3],
+    /// The luma levels and ends of block of the best transform size tried so
+    /// far.
+    best_levels: Vec<i32>,
+    best_eobs: Vec<usize>,
     /// Scratch for a transform block's residual and coefficients, and for
     /// the token coder.
     residual: Box<[i32; 1024]>,
@@ -266,6 +287,7 @@ impl<'a> Tile<'a> {
         source: &'a Source<'a>,
         previous: Option<Previous<'a>>,
         quantizer: &'a Quantizer,
+        costs: &'a tokens::Costs,
     ) -> Self {
         let mi_col_start = recon.x / 8;
         Self {
@@ -279,20 +301,23 @@ impl<'a> Tile<'a> {
             source,
             previous,
             quantizer,
+            costs,
             split_variance: i64::from(quantizer.ac_step()) / SPLIT_VARIANCE,
             measures: [Measure::default(); 64],
             moved: Vec::new(),
-            w: BoolWriter::new(),
             levels: std::array::from_fn(|_| vec![0; 64 * 64]),
-            eobs: std::array::from_fn(|_| Vec::with_capacity(16)),
+            eobs: std::array::from_fn(|_| Vec::with_capacity(256)),
+            best_levels: vec![0; 64 * 64],
+            best_eobs: Vec::with_capacity(256),
             residual: Box::new([0; 1024]),
             coeffs: Box::new([0; 1024]),
             energy: Box::new([0; 1024]),
         }
     }
 
-    /// Code every superblock of the tile and give back its bytes.
-    pub(super) fn code(mut self) -> Vec<u8> {
+    /// Decide every superblock of the tile, its bools onto its contexts'
+    /// tape.
+    pub(super) fn code(mut self) {
         for mi_row in (0..self.geometry.mi_rows).step_by(8) {
             self.left_partition = [0; 8];
             self.left_nonzero = [[0; 16]; 3];
@@ -304,7 +329,6 @@ impl<'a> Tile<'a> {
                 self.partition(mi_row, mi_col, SB_LOG2);
             }
         }
-        self.w.finish()
     }
 
     /// Where the tile keeps the mode info of the 8×8 at `(mi_row, mi_col)`.
@@ -458,11 +482,12 @@ impl<'a> Tile<'a> {
     }
 
     /// How the square of `1 << n` 8×8s at `(mi_row, mi_col)` is coded
-    /// whole, or none when it varies more from its best prediction than a
-    /// square is coded whole at.
-    fn choose(&mut self, mi_row: usize, mi_col: usize, n: u32) -> Option<Mode> {
+    /// whole, and the moments of its source less that prediction (of the
+    /// source alone for DC), or none when it varies more from its best
+    /// prediction than a square is coded whole at.
+    fn choose(&mut self, mi_row: usize, mi_col: usize, n: u32) -> Option<(Mode, Moments)> {
         let partly = match self.count_unchanged(mi_row, mi_col, n) {
-            Some(u) if u == self.count_inside(mi_row, mi_col, n) => return Some(Mode::Unchanged),
+            Some(u) if u == self.count_inside(mi_row, mi_col, n) => return Some((Mode::Unchanged, Moments::default())),
             Some(u) => u > 0,
             None => false,
         };
@@ -477,29 +502,30 @@ impl<'a> Tile<'a> {
             }
         }
         let intra = total.source.variance(count);
-        let (mode, variance) = match &self.previous {
+        let (mode, variance, moments) = match &self.previous {
             Some(previous) => {
                 // Zero first, then the vectors a decoder predicts, then the
                 // search's, which are new vectors to code and so have to do
                 // clearly better than the others to be taken.
                 let searched = previous.vectors[(mi_row >> SB_LOG2) * self.geometry.sb_cols + (mi_col >> SB_LOG2)];
                 let predicted = self.candidates(mi_row, mi_col, n);
-                let mut best = (Mv::ZERO, total.residual.variance(count));
+                let mut best = (Mv::ZERO, total.residual.variance(count), total.residual);
                 let mut tried = [Mv::ZERO; 1 + 2 + motion::VECTORS];
                 for (i, mv) in predicted.into_iter().chain(searched).enumerate() {
                     if best.1 == 0 || tried.contains(&mv) {
                         continue;
                     }
                     tried[1 + i] = mv;
-                    let variance = self.square_residual(mi_row, mi_col, n, mv).variance(count);
+                    let moments = self.square_residual(mi_row, mi_col, n, mv);
+                    let variance = moments.variance(count);
                     let better = if i < predicted.len() { variance < best.1 } else { variance < best.1 - best.1 / NEW_VECTOR_GAIN };
                     if better {
-                        best = (mv, variance);
+                        best = (mv, variance, moments);
                     }
                 }
-                if best.1 <= intra { (Mode::Inter(best.0), best.1) } else { (Mode::Intra, intra) }
+                if best.1 <= intra { (Mode::Inter(best.0), best.1, best.2) } else { (Mode::Intra, intra, total.source) }
             }
-            None => (Mode::Intra, intra),
+            None => (Mode::Intra, intra, total.source),
         };
         // A square that is unchanged in part is split unless what moved
         // into it is coded as moving, so the unchanged part stays the
@@ -509,7 +535,7 @@ impl<'a> Tile<'a> {
         if partly && matches!(mode, Mode::Intra | Mode::Inter(Mv::ZERO)) {
             return None;
         }
-        (n == 0 || variance <= self.split_variance * count * count).then_some(mode)
+        (n == 0 || variance <= self.split_variance * count * count).then_some((mode, moments))
     }
 
     /// The partition of the square of `1 << n` 8×8s at `(mi_row, mi_col)`:
@@ -530,16 +556,16 @@ impl<'a> Tile<'a> {
         match (has_rows, has_cols) {
             // PARTITION_NONE is the tree's first leaf; PARTITION_SPLIT its last.
             (true, true) => {
-                self.w.write(split, probs[0]);
+                self.contexts.tape.write(split, probs[0]);
                 if split {
-                    self.w.write(true, probs[1]);
-                    self.w.write(true, probs[2]);
+                    self.contexts.tape.write(true, probs[1]);
+                    self.contexts.tape.write(true, probs[2]);
                 }
             }
             // Split, or a horizontal half the frame cuts.
-            (false, true) => self.w.write(split, probs[1]),
+            (false, true) => self.contexts.tape.write(split, probs[1]),
             // Split, or a vertical half the frame cuts.
-            (true, false) => self.w.write(split, probs[2]),
+            (true, false) => self.contexts.tape.write(split, probs[2]),
             // Split, and the decoder knows it.
             (false, false) => {}
         }
@@ -549,8 +575,8 @@ impl<'a> Tile<'a> {
                     self.partition(mi_row + r, mi_col + c, n - 1);
                 }
             }
-            Some(mode) => {
-                self.block(mi_row, mi_col, n, mode);
+            Some((mode, moments)) => {
+                self.block(mi_row, mi_col, n, mode, &moments);
                 let bw = 1 << n;
                 let ctx = partition_context_of(n);
                 let x = mi_col - self.mi_col_start;
@@ -605,13 +631,116 @@ impl<'a> Tile<'a> {
         [nearest, near].map(|mv| mv.clamp((mi_row, mi_col), 1 << n, (g.mi_rows, g.mi_cols)))
     }
 
+    /// The transform size, as log2 less 2, of a block of `1 << n` 8×8s
+    /// coded intra, whose source has `moments` over its `count` pixels: 4×4
+    /// in an 8×8 or 16×16 whose pixels deviate by more than two steps, where
+    /// DC predicted from nearer pixels does better, and otherwise the largest
+    /// that fits up to 16×16 (libvpx's keyframe `ALLOW_16X16`). Measured on
+    /// the plan's captures against a half, an eighth and a sixty-fourth of
+    /// that variance; the 4×4s bought desktop 2 dB and 5% of its bytes.
+    fn intra_transform_size(&self, n: u32, moments: &Moments, count: i64) -> usize {
+        let ac = i64::from(self.quantizer.ac_step());
+        // The variance per pixel and plane against two steps squared, a step
+        // in pixels being an eighth of the AC step.
+        if n <= 1 && moments.variance(count) * 16 > ac * ac * 3 * count * count {
+            0
+        } else {
+            (n as usize + 1).min(2)
+        }
+    }
+
+    /// Ends of block of zero in `eobs` for the transform blocks of size `tx`
+    /// of a block of `1 << n` 8×8s at `(mi_row, mi_col)`, which codes no
+    /// coefficient.
+    fn nothing(&mut self, mi_row: usize, mi_col: usize, n: u32, tx: usize) {
+        let count = self.transform_blocks(mi_row, mi_col, n, tx).1.count();
+        for eobs in &mut self.eobs {
+            eobs.clear();
+            eobs.resize(count, 0);
+        }
+    }
+
+    /// The transform size, as log2 less 2, of an inter block of `1 << n`
+    /// 8×8s at `(mi_row, mi_col)` whose prediction is in `recon`: of every
+    /// size that fits it, the one whose luma levels cost least in their
+    /// squared error and their bits at `RATE_WEIGHT`, the error measured on
+    /// the coefficients and the bits at the frame's starting probabilities.
+    /// Its luma levels and ends of block are left in `levels` and `eobs`.
+    /// Chroma takes the size luma chose: deciding each plane's part of the
+    /// cost too saved 0.4–3% of the bytes for a fifth more time.
+    fn trial(&mut self, mi_row: usize, mi_col: usize, n: u32) -> usize {
+        let ac = i64::from(self.quantizer.ac_step());
+        let mut best = (i64::MAX, 0);
+        for tx in (0..=(n as usize + 1).min(3)).rev() {
+            let side = 4 << tx;
+            let area = side * side;
+            let mut cost = 0;
+            self.eobs[0].clear();
+            for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx).1.enumerate() {
+                self.transform(0, mi_col * 8 + x, mi_row * 8 + y, side);
+                let levels = &mut self.levels[0][i * area..][..area];
+                let eob = self.quantizer.quantize(side, &self.coeffs[..area], levels);
+                let kind = tokens::Kind { tx, chroma: false, inter: true };
+                let bits = tokens::estimate(self.costs, kind, 0, levels, eob, &mut self.energy);
+                // In 256000ths of the squared error on the coefficients'
+                // scale, which is 64 times that in pixels.
+                cost += self.quantizer.error(side, &self.coeffs[..area], levels) * 256_000 + RATE_WEIGHT * ac * ac * i64::from(bits);
+                self.eobs[0].push(eob);
+            }
+            if cost < best.0 {
+                best = (cost, tx);
+                std::mem::swap(&mut self.levels[0], &mut self.best_levels);
+                std::mem::swap(&mut self.eobs[0], &mut self.best_eobs);
+            }
+        }
+        std::mem::swap(&mut self.levels[0], &mut self.best_levels);
+        std::mem::swap(&mut self.eobs[0], &mut self.best_eobs);
+        best.1
+    }
+
+    /// Code the transform size `tx` of the square block of `1 << n` 8×8s
+    /// with `above` and `left` it (libvpx's `write_selected_tx_size`): the
+    /// tree's nodes down to it, at the probabilities of its largest size
+    /// and of whether the sizes above and to the left add up to more than
+    /// that (`get_tx_size_context`), a skipped block's counting as the
+    /// largest.
+    fn write_tx(&mut self, n: u32, tx: usize, above: Option<ModeInfo>, left: Option<ModeInfo>) {
+        let largest = (n as usize + 1).min(3);
+        let size = |m: Option<ModeInfo>| m.map(|m| if m.skip { largest } else { m.tx });
+        let (a, l) = match (size(above), size(left)) {
+            (Some(a), Some(l)) => (a, l),
+            (Some(a), None) => (a, a),
+            (None, Some(l)) => (l, l),
+            (None, None) => (largest, largest),
+        };
+        let slot = tx_slot(largest, usize::from(a + l > largest));
+        for node in 0..largest.min(tx + 1) {
+            self.contexts.tape.put(tx > node, slot + node);
+        }
+    }
+
     /// Code the square block of `1 << n` 8×8s at `(mi_row, mi_col)` in
-    /// `mode`, at the transform size `ALLOW_32X32` gives it, and skipped
-    /// when no transform block keeps a coefficient.
-    fn block(&mut self, mi_row: usize, mi_col: usize, n: u32, mode: Mode) {
+    /// `mode`, whose source less its prediction has `moments`: at the
+    /// transform size `trial` finds for an inter block and
+    /// `intra_transform_size` gives an intra one, and skipped when no
+    /// transform block keeps a coefficient.
+    fn block(&mut self, mi_row: usize, mi_col: usize, n: u32, mode: Mode, moments: &Moments) {
         let g = self.geometry;
-        self.reconstruct(mi_row, mi_col, n, mode);
+        // A skipped inter block's transform is the largest that fits it,
+        // which it does not code.
+        let largest = (n as usize + 1).min(3);
+        let count = 64 * self.count_inside(mi_row, mi_col, n) as i64;
+        let tx = match mode {
+            Mode::Intra => self.intra_transform_size(n, moments, count),
+            Mode::Inter(mv) => {
+                self.predict_inter(mi_row, mi_col, n, mv);
+                self.trial(mi_row, mi_col, n)
+            }
+            Mode::Unchanged => largest,
+        };
+        self.reconstruct(mi_row, mi_col, n, mode, tx);
         let skip = self.eobs.iter().flatten().all(|&eob| eob == 0);
+        let tx = if skip && mode != Mode::Intra { largest } else { tx };
         let inter = match mode {
             Mode::Intra => None,
             Mode::Inter(mv) => Some(self.inter_mode(mi_row, mi_col, n, mv)),
@@ -621,13 +750,14 @@ impl<'a> Tile<'a> {
         let left = (mi_col > self.mi_col_start).then(|| self.contexts.mode_info[self.at(mi_row, mi_col - 1)]);
         let skips = usize::from(above.is_some_and(|m| m.skip)) + usize::from(left.is_some_and(|m| m.skip));
         let bw = 1 << n;
-        self.w.write(skip, SKIP_PROBS[skips]);
+        self.contexts.tape.put(skip, skip_slot(skips));
         if self.previous.is_none() {
+            self.write_tx(n, tx, above, left);
             // The luma mode's probabilities are chosen by the modes above and
             // to the left, which are DC in every block of a keyframe this
             // encoder codes and DC by rule where there is no block.
-            self.w.write(false, KF_Y_MODE_PROBS[DC_PRED][DC_PRED][0]);
-            self.w.write(false, KF_UV_MODE_PROBS[DC_PRED][0]);
+            self.contexts.tape.write(false, KF_Y_MODE_PROBS[DC_PRED][DC_PRED][0]);
+            self.contexts.tape.write(false, KF_UV_MODE_PROBS[DC_PRED][0]);
         } else {
             // libvpx's `get_intra_inter_context`.
             let is_intra = |m: &ModeInfo| m.inter.is_none();
@@ -637,31 +767,34 @@ impl<'a> Tile<'a> {
                 (Some(m), None) | (None, Some(m)) => 2 * usize::from(is_intra(&m)),
                 (None, None) => 0,
             };
-            self.w.write(inter.is_some(), INTRA_INTER_PROBS[ctx]);
+            self.contexts.tape.write(inter.is_some(), INTRA_INTER_PROBS[ctx]);
+            if !skip || inter.is_none() {
+                self.write_tx(n, tx, above, left);
+            }
             if let Some((mode, mv)) = inter {
                 // LAST, the reference tree's first leaf, at libvpx's
                 // `vp9_get_pred_context_single_ref_p1` when LAST is the only
                 // reference: 4 beside an inter block, 2 otherwise.
                 let ctx = if above.is_some_and(|m| !is_intra(&m)) || left.is_some_and(|m| !is_intra(&m)) { 4 } else { 2 };
-                self.w.write(false, SINGLE_REF_PROBS[ctx][0]);
+                self.contexts.tape.write(false, SINGLE_REF_PROBS[ctx][0]);
                 let probs = INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)];
                 for (b, node) in mode.bits() {
-                    self.w.write(b, probs[node]);
+                    self.contexts.tape.write(b, probs[node]);
                 }
                 if mode == InterMode::New {
                     let nearest = self.candidates(mi_row, mi_col, n)[0];
-                    let w = &mut self.w;
-                    mv::code(mv - nearest, |b, p| w.write(b, p));
+                    let tape = &mut self.contexts.tape;
+                    mv::code(mv - nearest, |b, p| tape.write(b, p));
                 }
             } else {
                 // DC, at the probabilities of the block's size group.
-                self.w.write(false, Y_MODE_PROBS[(n as usize + 1).min(3)][0]);
-                self.w.write(false, UV_MODE_PROBS[DC_PRED][0]);
+                self.contexts.tape.write(false, Y_MODE_PROBS[(n as usize + 1).min(3)][0]);
+                self.contexts.tape.write(false, UV_MODE_PROBS[DC_PRED][0]);
             }
         }
         for row in mi_row..(mi_row + bw).min(g.mi_rows) {
             let at = self.at(row, mi_col);
-            self.contexts.mode_info[at..][..bw.min(self.mi_col_end - mi_col)].fill(ModeInfo { skip, inter });
+            self.contexts.mode_info[at..][..bw.min(self.mi_col_end - mi_col)].fill(ModeInfo { skip, inter, tx });
         }
         if skip {
             // A skipped block leaves no coefficient above or left of the
@@ -672,7 +805,7 @@ impl<'a> Tile<'a> {
                 self.left_nonzero[plane][y4..y4 + 2 * bw].fill(0);
             }
         } else {
-            self.tokens(mi_row, mi_col, n, inter.is_some());
+            self.tokens(mi_row, mi_col, n, inter.is_some(), tx);
         }
     }
 
@@ -694,14 +827,15 @@ impl<'a> Tile<'a> {
         (mode, mv)
     }
 
-    /// The transform blocks of a block at `(mi_row, mi_col)`, in the order
-    /// they are predicted and coded: per plane, rows of them, each starting
-    /// inside the frame's edge rounded up to 8. With the transform size, the
-    /// offset of each in pixels from the block's corner.
-    fn transform_blocks(&self, mi_row: usize, mi_col: usize, n: u32) -> (usize, impl Iterator<Item = (usize, usize)>) {
+    /// The transform blocks of size `tx` (log2 less 2) of a block at
+    /// `(mi_row, mi_col)`, in the order they are predicted and coded: per
+    /// plane, rows of them, each starting inside the frame's edge rounded up
+    /// to 8. With their side, the offset of each in pixels from the block's
+    /// corner.
+    fn transform_blocks(&self, mi_row: usize, mi_col: usize, n: u32, tx: usize) -> (usize, impl Iterator<Item = (usize, usize)> + use<>) {
         let g = self.geometry;
         let size = 8 << n;
-        let tx = size.min(32);
+        let tx = 4 << tx;
         let wide = size.min((g.mi_cols - mi_col) * 8);
         let high = size.min((g.mi_rows - mi_row) * 8);
         (tx, (0..high).step_by(tx).flat_map(move |y| (0..wide).step_by(tx).map(move |x| (x, y))))
@@ -737,58 +871,71 @@ impl<'a> Tile<'a> {
         }
     }
 
-    /// Predict, code and reconstruct the block's transform blocks, each from
-    /// the ones before it, keeping their levels to be written.
-    fn reconstruct(&mut self, mi_row: usize, mi_col: usize, n: u32, mode: Mode) {
-        let g = self.geometry;
-        match mode {
-            Mode::Intra => {}
-            Mode::Inter(mv) => self.predict_inter(mi_row, mi_col, n, mv),
-            Mode::Unchanged => self.predict_inter(mi_row, mi_col, n, Mv::ZERO),
-        }
-        let (tx, blocks) = self.transform_blocks(mi_row, mi_col, n);
-        let blocks: Vec<_> = blocks.collect();
-        let (scan, _) = tokens::scan(tx.ilog2() as usize - 2);
-        let (stride, x0) = (self.recon.stride, self.recon.x);
-        let src = self.source;
-        let (residual, coeffs) = (&mut self.residual, &mut self.coeffs);
-        let area = tx * tx;
-        for plane in 0..3 {
-            self.eobs[plane].clear();
-            if mode == Mode::Unchanged {
-                self.eobs[plane].resize(blocks.len(), 0);
-                continue;
+    /// The residual of the transform block of side `tx` at `(px, py)` of
+    /// `plane`, the source less the prediction in `recon` there, transformed
+    /// into `coeffs`. Past the picture's edge the source repeats its last
+    /// pixel.
+    fn transform(&mut self, plane: usize, px: usize, py: usize, tx: usize) {
+        let (stride, lx) = (self.recon.stride, px - self.recon.x);
+        let (src, recon) = (self.source, &self.recon.planes[plane]);
+        let (residual, area) = (&mut self.residual, tx * tx);
+        if px + tx <= src.width && py + tx <= src.height {
+            pixels::subtract(tx, &src.planes[plane][py * src.stride + px..], src.stride, &recon[py * stride + lx..], stride, &mut residual[..area]);
+        } else {
+            for r in 0..tx {
+                let srow = &src.planes[plane][(py + r).min(src.height - 1) * src.stride..][..src.width];
+                let prow = &recon[(py + r) * stride + lx..][..tx];
+                for c in 0..tx {
+                    residual[r * tx + c] = i32::from(srow[(px + c).min(src.width - 1)]) - i32::from(prow[c]);
+                }
             }
-            for (i, &(x, y)) in blocks.iter().enumerate() {
+        }
+        transform::forward(tx, &residual[..area], &mut self.coeffs[..area]);
+    }
+
+    /// Code and reconstruct the block's transform blocks of size `tx`: an
+    /// intra block's each predicted from the ones before it, its levels kept
+    /// to be written; an inter block's levels as `trial` left them, added to
+    /// its prediction; an unchanged block's prediction as it is.
+    fn reconstruct(&mut self, mi_row: usize, mi_col: usize, n: u32, mode: Mode, tx: usize) {
+        let g = self.geometry;
+        let (scan, _) = tokens::scan(tx);
+        let (tx_log2, tx) = (tx, 4 << tx);
+        let (stride, x0) = (self.recon.stride, self.recon.x);
+        let area = tx * tx;
+        if mode == Mode::Unchanged {
+            self.predict_inter(mi_row, mi_col, n, Mv::ZERO);
+            self.nothing(mi_row, mi_col, n, tx_log2);
+            return;
+        }
+        for plane in 0..3 {
+            // All but an inter block's luma, which `trial` left.
+            let fresh = mode == Mode::Intra || plane > 0;
+            if fresh {
+                self.eobs[plane].clear();
+            }
+            for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx_log2).1.enumerate() {
                 let (px, py) = (mi_col * 8 + x, mi_row * 8 + y);
                 // Where it is in the tile's column.
                 let lx = px - x0;
-                let recon = &mut self.recon.planes[plane];
-                if mode == Mode::Intra {
-                    let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8, above: y > 0 || mi_row > 0, left: x > 0 || mi_col > self.mi_col_start };
-                    predict::dc(recon, stride, lx, py, tx, &edges);
-                }
-                if px + tx <= src.width && py + tx <= src.height {
-                    pixels::subtract(tx, &src.planes[plane][py * src.stride + px..], src.stride, &recon[py * stride + lx..], stride, &mut residual[..area]);
-                } else {
-                    // Past the picture's edge the source repeats its last
-                    // pixel.
-                    for r in 0..tx {
-                        let srow = &src.planes[plane][(py + r).min(src.height - 1) * src.stride..][..src.width];
-                        let prow = &recon[(py + r) * stride + lx..][..tx];
-                        for c in 0..tx {
-                            residual[r * tx + c] = i32::from(srow[(px + c).min(src.width - 1)]) - i32::from(prow[c]);
-                        }
+                let eob = if fresh {
+                    if mode == Mode::Intra {
+                        let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8, above: y > 0 || mi_row > 0, left: x > 0 || mi_col > self.mi_col_start };
+                        predict::dc(&mut self.recon.planes[plane], stride, lx, py, tx, &edges);
                     }
-                }
-                transform::forward(tx, &residual[..area], &mut coeffs[..area]);
-                let levels = &mut self.levels[plane][i * area..][..area];
-                let eob = self.quantizer.quantize(tx, &coeffs[..area], levels);
+                    self.transform(plane, px, py, tx);
+                    let levels = &mut self.levels[plane][i * area..][..area];
+                    let eob = self.quantizer.quantize(tx, &self.coeffs[..area], levels);
+                    self.eobs[plane].push(eob);
+                    eob
+                } else {
+                    self.eobs[plane][i]
+                };
                 if eob > 0 {
-                    self.quantizer.dequantize(tx, levels, scan, eob, &mut coeffs[..area]);
-                    transform::inverse_add(tx, &coeffs[..area], eob, &mut recon[py * stride + lx..], stride);
+                    let levels = &self.levels[plane][i * area..][..area];
+                    self.quantizer.dequantize(tx, levels, scan, eob, &mut self.coeffs[..area]);
+                    transform::inverse_add(tx, &self.coeffs[..area], eob, &mut self.recon.planes[plane][py * stride + lx..], stride);
                 }
-                self.eobs[plane].push(eob);
             }
         }
     }
@@ -799,18 +946,16 @@ impl<'a> Tile<'a> {
     /// any 4×4 column above it or row left of it had a coefficient, and it
     /// leaves its own answer behind over the columns and rows inside the
     /// frame, and none past it.
-    fn tokens(&mut self, mi_row: usize, mi_col: usize, n: u32, inter: bool) {
+    fn tokens(&mut self, mi_row: usize, mi_col: usize, n: u32, inter: bool, tx: usize) {
         let g = self.geometry;
-        let (tx, blocks) = self.transform_blocks(mi_row, mi_col, n);
-        let blocks: Vec<_> = blocks.collect();
-        let tx_log2 = tx.ilog2() as usize - 2;
+        let (tx_log2, tx) = (tx, 4 << tx);
         let n4 = tx / 4;
         let area = tx * tx;
         // In 4×4 units, from the block's corner, how far the frame reaches.
         let wide4 = (2 << n).min((g.mi_cols - mi_col) * 2);
         let high4 = (2 << n).min((g.mi_rows - mi_row) * 2);
         for plane in 0..3 {
-            for (i, &(x, y)) in blocks.iter().enumerate() {
+            for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx_log2).1.enumerate() {
                 let (col4, row4) = (x / 4, y / 4);
                 let ax = (mi_col - self.mi_col_start) * 2 + col4;
                 let ly = ((mi_row * 2) & 15) + row4;
@@ -818,7 +963,8 @@ impl<'a> Tile<'a> {
                 let left = self.left_nonzero[plane][ly..ly + n4].iter().any(|&l| l != 0);
                 let eob = self.eobs[plane][i];
                 let kind = tokens::Kind { tx: tx_log2, chroma: plane > 0, inter };
-                tokens::write(&mut self.w, kind, usize::from(above) + usize::from(left), &self.levels[plane][i * area..][..area], eob, &mut self.energy);
+                let ctx = usize::from(above) + usize::from(left);
+                tokens::write(&mut self.contexts.tape, kind, ctx, &self.levels[plane][i * area..][..area], eob, &mut self.energy);
                 let coded = u8::from(eob > 0);
                 for k in 0..n4 {
                     self.contexts.above_nonzero[plane][ax + k] = if col4 + k < wide4 { coded } else { 0 };
