@@ -30,6 +30,21 @@ impl Quantizer {
     /// return the end of block: one past the last nonzero level in the
     /// scan.
     pub(super) fn quantize(&self, n: usize, coeffs: &[i32], levels: &mut [i32]) -> usize {
+        self.quantize_in::<false>(n, coeffs, levels).0
+    }
+
+    /// `quantize`, and the squared error of the levels as a decoder
+    /// dequantizes them against `coeffs`, in the scale of a transform below
+    /// 32×32: 64 times the squared error in pixels. A 32×32 transform's
+    /// coefficients are half that scale.
+    pub(super) fn quantize_with_error(&self, n: usize, coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {
+        let (eob, error) = self.quantize_in::<true>(n, coeffs, levels);
+        (eob, error << (2 * u32::from(n == 32)))
+    }
+
+    /// `quantize`, with the squared error on the coefficients' own scale
+    /// where `ERROR`, otherwise 0.
+    fn quantize_in<const ERROR: bool>(&self, n: usize, coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {
         let iscan: &[u16] = match n {
             4 => &ISCAN_4X4,
             8 => &ISCAN_8X8,
@@ -38,27 +53,27 @@ impl Quantizer {
         };
         let terms = self.terms(n);
         #[cfg(target_arch = "aarch64")]
-        return neon::quantize(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]);
+        return neon::quantize::<ERROR>(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]);
         #[cfg(target_arch = "x86_64")]
-        return avx2::quantize(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]);
+        return avx2::quantize::<ERROR>(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]);
     }
 
     /// How a coefficient of an `n`×`n` transform is quantized. At 32×32 a
     /// decoder halves the dequantized level, so a level there counts half
     /// steps, and below a quarter step is nothing.
     fn terms(&self, n: usize) -> Terms {
+        let dequant = self.dequant;
         if n == 32 {
-            Terms { least: self.dequant.map(|d| d >> 2), round: self.round.map(|r| (r + 1) >> 1), quant: self.quant, shift: 15 }
+            Terms { least: dequant.map(|d| d >> 2), round: self.round.map(|r| (r + 1) >> 1), quant: self.quant, shift: 15, dequant, half: 1 }
         } else {
-            Terms { least: [0; 2], round: self.round, quant: self.quant, shift: 16 }
+            Terms { least: [0; 2], round: self.round, quant: self.quant, shift: 16, dequant, half: 0 }
         }
     }
 
-    /// The squared error of `levels` as a decoder dequantizes them against
-    /// the `coeffs` they were quantized from, `n`×`n` in raster order, in the
-    /// scale of a transform below 32×32: 64 times the squared error in
-    /// pixels. A 32×32 transform's coefficients are half that scale.
-    pub(super) fn error(&self, n: usize, coeffs: &[i32], levels: &[i32]) -> i64 {
+    /// The error `quantize_with_error` gives, one coefficient at a time
+    /// from the levels it left, the reference its kernels are held to.
+    #[cfg(test)]
+    fn error(&self, n: usize, coeffs: &[i32], levels: &[i32]) -> i64 {
         let shift = u32::from(n == 32);
         // A coefficient of 8-bit pixels is within 32640 of zero, so an error
         // squares within 32 bits.
@@ -88,12 +103,15 @@ impl Quantizer {
 
 /// How each coefficient is quantized, `[DC, AC]` each: below `least` it is
 /// nothing; otherwise its magnitude plus `round`, held to 16 bits, times
-/// `quant`, shifted right `shift`.
+/// `quant`, shifted right `shift`. A decoder takes a level back as its
+/// magnitude times `dequant`, shifted right `half`.
 struct Terms {
     least: [i32; 2],
     round: [i32; 2],
     quant: [i32; 2],
     shift: u32,
+    dequant: [i32; 2],
+    half: u32,
 }
 
 /// `Quantizer::quantize` one coefficient at a time, in raster order.
@@ -118,8 +136,8 @@ mod neon {
 
     use super::Terms;
 
-    /// `Quantizer::quantize` four coefficients at a time.
-    pub(super) fn quantize(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> usize {
+    /// `Quantizer::quantize_in` four coefficients at a time.
+    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> (usize, i64) {
         // NEON is in every arm64 target's baseline, and every load and store
         // is of four values inside slices of whole fours, `coeffs` and
         // `levels` as long as `iscan`.
@@ -129,8 +147,9 @@ mod neon {
             // the AC's.
             let lanes = |t: [i32; 2], first: bool| if first { vsetq_lane_s32::<0>(t[0], vdupq_n_s32(t[1])) } else { vdupq_n_s32(t[1]) };
             let shift = vdupq_n_s32(-(terms.shift as i32));
+            let half = vdupq_n_s32(-(terms.half as i32));
             let most = vdupq_n_s32(i32::from(i16::MAX));
-            let mut eob = vdupq_n_u32(0);
+            let (mut eob, mut error) = (vdupq_n_u32(0), vdupq_n_s64(0));
             for at in (0..iscan.len()).step_by(4) {
                 let first = at == 0;
                 let c = vld1q_s32(coeffs.as_ptr().add(at));
@@ -140,8 +159,16 @@ mod neon {
                 vst1q_s32(levels.as_mut_ptr().add(at), vbslq_s32(vcltzq_s32(c), vnegq_s32(level), level));
                 let ends = vmovl_u16(vld1_u16(iscan.as_ptr().add(at)));
                 eob = vmaxq_u32(eob, vandq_u32(vtstq_s32(level, level), ends));
+                if ERROR {
+                    // A level has its coefficient's sign, so the error is
+                    // in the magnitudes; it squares within 32 bits and is
+                    // summed in 64.
+                    let d = vsubq_s32(abs, vshlq_s32(vmulq_s32(level, lanes(terms.dequant, first)), half));
+                    error = vmlal_s32(error, vget_low_s32(d), vget_low_s32(d));
+                    error = vmlal_high_s32(error, d, d);
+                }
             }
-            vmaxvq_u32(eob) as usize
+            (vmaxvq_u32(eob) as usize, vaddvq_s64(error))
         }
     }
 }
@@ -152,8 +179,8 @@ mod avx2 {
 
     use super::Terms;
 
-    /// `Quantizer::quantize` eight coefficients at a time.
-    pub(super) fn quantize(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> usize {
+    /// `Quantizer::quantize_in` eight coefficients at a time.
+    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> (usize, i64) {
         // The crate is built for AVX2, but its intrinsics are still `unsafe`
         // to call from a function not marked for it; and every load and store
         // is of eight values inside slices of whole eights, `coeffs` and
@@ -164,8 +191,9 @@ mod avx2 {
             // AC's.
             let lanes = |t: [i32; 2], first: bool| if first { _mm256_blend_epi32::<1>(_mm256_set1_epi32(t[1]), _mm256_set1_epi32(t[0])) } else { _mm256_set1_epi32(t[1]) };
             let shift = _mm_cvtsi32_si128(terms.shift as i32);
+            let half = _mm_cvtsi32_si128(terms.half as i32);
             let most = _mm256_set1_epi32(i32::from(i16::MAX));
-            let mut eob = _mm256_setzero_si256();
+            let (mut eob, mut error) = (_mm256_setzero_si256(), _mm256_setzero_si256());
             for at in (0..iscan.len()).step_by(8) {
                 let first = at == 0;
                 let c = _mm256_loadu_si256(coeffs.as_ptr().add(at).cast());
@@ -177,10 +205,20 @@ mod avx2 {
                 _mm256_storeu_si256(levels.as_mut_ptr().add(at).cast(), _mm256_sub_epi32(_mm256_xor_si256(level, sign), sign));
                 let ends = _mm256_cvtepu16_epi32(_mm_loadu_si128(iscan.as_ptr().add(at).cast()));
                 eob = _mm256_max_epu32(eob, _mm256_andnot_si256(_mm256_cmpeq_epi32(level, _mm256_setzero_si256()), ends));
+                if ERROR {
+                    // A level has its coefficient's sign, so the error is
+                    // in the magnitudes; it squares within 32 bits and is
+                    // summed in 64, the even lanes and then the odd.
+                    let d = _mm256_sub_epi32(abs, _mm256_srl_epi32(_mm256_mullo_epi32(level, lanes(terms.dequant, first)), half));
+                    let odd = _mm256_srli_epi64::<32>(d);
+                    error = _mm256_add_epi64(error, _mm256_add_epi64(_mm256_mul_epi32(d, d), _mm256_mul_epi32(odd, odd)));
+                }
             }
+            let error = _mm_add_epi64(_mm256_castsi256_si128(error), _mm256_extracti128_si256::<1>(error));
+            let error = _mm_cvtsi128_si64(_mm_add_epi64(error, _mm_unpackhi_epi64(error, error)));
             let eob = _mm_max_epu32(_mm256_castsi256_si128(eob), _mm256_extracti128_si256::<1>(eob));
             let eob = _mm_max_epu32(eob, _mm_shuffle_epi32::<0b01_00_11_10>(eob));
-            _mm_cvtsi128_si32(_mm_max_epu32(eob, _mm_shuffle_epi32::<0b10_11_00_01>(eob))) as usize
+            (_mm_cvtsi128_si32(_mm_max_epu32(eob, _mm_shuffle_epi32::<0b10_11_00_01>(eob))) as usize, error)
         }
     }
 }
@@ -212,6 +250,7 @@ mod tests {
             q.dequantize(n, &levels, &scan, n * n, &mut back);
             let squared: i64 = coeffs.iter().zip(&back).map(|(&c, &b)| i64::from(c - b).pow(2)).sum();
             assert_eq!(q.error(n, &coeffs, &levels), if n == 32 { squared * 4 } else { squared }, "{n}x{n}");
+            assert_eq!(q.quantize_with_error(n, &coeffs, &mut levels), (q.quantize(n, &coeffs, &mut levels), q.error(n, &coeffs, &levels)), "{n}x{n}");
         }
     }
 
@@ -251,9 +290,11 @@ mod tests {
                         })
                         .collect();
                     let (mut got, mut want) = (vec![0; n * n], vec![0; n * n]);
-                    let eob = q.quantize(n, &coeffs, &mut got);
+                    let (eob, error) = q.quantize_with_error(n, &coeffs, &mut got);
                     assert_eq!(eob, quantize_scalar(&q.terms(n), &coeffs, iscan, &mut want), "{n}x{n} at {q_index}, spread {spread}");
                     assert_eq!(got, want, "{n}x{n} at {q_index}, spread {spread}");
+                    assert_eq!(error, q.error(n, &coeffs, &want), "{n}x{n} at {q_index}, spread {spread}");
+                    assert_eq!(q.quantize(n, &coeffs, &mut got), eob, "{n}x{n} at {q_index}, spread {spread}");
                 }
             }
         }

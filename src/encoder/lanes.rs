@@ -231,7 +231,19 @@ pub(super) mod neon {
 
         fn add_shifted(values: &[i32], shift: u32, dst: &mut [u8]) {
             let right = unsafe { vdupq_n_s32(-(shift as i32)) };
+            // A 4×4's row, the four pixels as the low half of eight.
+            if let Ok(dst) = <&mut [u8; 4]>::try_from(&mut *dst) {
+                unsafe {
+                    let v = vmovn_s32(vrshlq_s32(Self::load(values).0, right));
+                    let pixels = vreinterpret_s16_u16(vget_low_u16(vmovl_u8(vcreate_u8(u64::from(u32::from_le_bytes(*dst))))));
+                    let sum = vqmovun_s16(vcombine_s16(vadd_s16(pixels, v), vdup_n_s16(0)));
+                    *dst = vget_lane_u32::<0>(vreinterpret_u32_u8(sum)).to_le_bytes();
+                }
+                return;
+            }
+            // Otherwise rows of whole eights.
             let (eights, rest) = dst.as_chunks_mut::<8>();
+            debug_assert!(rest.is_empty(), "{} pixels past whole eights", rest.len());
             for (i, dst) in eights.iter_mut().enumerate() {
                 // A rounding shift, then the pixels widened, added and
                 // narrowed back with saturation.
@@ -244,8 +256,6 @@ pub(super) mod neon {
                     vst1_u8(dst.as_mut_ptr(), vqmovun_s16(sum));
                 }
             }
-            let done = eights.len() * 8;
-            <i32 as Lanes>::add_shifted(&values[done..], shift, rest);
         }
     }
 }
@@ -385,7 +395,9 @@ pub(super) mod avx2 {
 
         #[inline(always)]
         fn add_shifted(values: &[i32], shift: u32, dst: &mut [u8]) {
+            // An `I32x8` transforms rows of whole eights.
             let (eights, rest) = dst.as_chunks_mut::<8>();
+            debug_assert!(rest.is_empty(), "{} pixels past whole eights", rest.len());
             unsafe {
             let (round, count) = (_mm256_set1_epi32(1 << (shift - 1)), _mm_cvtsi32_si128(shift as i32));
             for (i, dst) in eights.iter_mut().enumerate() {
@@ -399,8 +411,6 @@ pub(super) mod avx2 {
                 _mm_storel_epi64(dst.as_mut_ptr().cast(), _mm_packus_epi16(sum, sum));
             }
             }
-            let done = eights.len() * 8;
-            <i32 as Lanes>::add_shifted(&values[done..], shift, rest);
         }
     }
 
@@ -513,7 +523,9 @@ pub(super) mod avx2 {
 
         #[inline(always)]
         fn add_shifted(values: &[i32], shift: u32, dst: &mut [u8]) {
+            // An `I32x4` transforms only a 4×4.
             let (fours, rest) = dst.as_chunks_mut::<4>();
+            debug_assert!(rest.is_empty(), "{} pixels past whole fours", rest.len());
             unsafe {
             let (round, count) = (_mm_set1_epi32(1 << (shift - 1)), _mm_cvtsi32_si128(shift as i32));
             for (i, dst) in fours.iter_mut().enumerate() {
@@ -525,8 +537,6 @@ pub(super) mod avx2 {
                 *dst = _mm_cvtsi128_si32(_mm_packus_epi16(sum, sum)).to_le_bytes();
             }
             }
-            let done = fours.len() * 4;
-            <i32 as Lanes>::add_shifted(&values[done..], shift, rest);
         }
     }
 }

@@ -679,12 +679,12 @@ impl<'a> Tile<'a> {
             for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx).1.enumerate() {
                 self.transform(0, mi_col * 8 + x, mi_row * 8 + y, side);
                 let levels = &mut self.levels[0][i * area..][..area];
-                let eob = self.quantizer.quantize(side, &self.coeffs[..area], levels);
+                let (eob, error) = self.quantizer.quantize_with_error(side, &self.coeffs[..area], levels);
                 let kind = tokens::Kind { tx, chroma: false, inter: true };
                 let bits = tokens::estimate(self.costs, kind, 0, levels, eob, &mut self.energy);
                 // In 256000ths of the squared error on the coefficients'
                 // scale, which is 64 times that in pixels.
-                cost += self.quantizer.error(side, &self.coeffs[..area], levels) * 256_000 + RATE_WEIGHT * ac * ac * i64::from(bits);
+                cost += error * 256_000 + RATE_WEIGHT * ac * ac * i64::from(bits);
                 self.eobs[0].push(eob);
             }
             if cost < best.0 {
