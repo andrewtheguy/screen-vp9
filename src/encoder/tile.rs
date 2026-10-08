@@ -1,6 +1,12 @@
 //! One tile column of a frame: its superblocks in raster order, each a
 //! partition tree down to the blocks that are coded, and each block's
 //! reconstruction made as a decoder makes it.
+//!
+//! The tree is chosen from the source alone, as libvpx's real-time encoder
+//! chooses a keyframe's (`choose_partitioning`): a square is coded whole when
+//! its pixels vary little against the quantizer's step, and split when they
+//! vary more, since a smaller block's DC prediction comes from nearer pixels
+//! and its transform keeps an edge's energy to itself.
 
 use super::bool_writer::BoolWriter;
 use super::predict::{self, Edges};
@@ -13,6 +19,14 @@ const DC_PRED: usize = 0;
 
 /// A superblock's side in mode info units of 8×8, as log2.
 const SB_LOG2: u32 = 3;
+
+/// The variance per pixel, summed over the planes, above which a square is
+/// split, as a fraction of the AC step: `1 / SPLIT_VARIANCE`. Measured on the
+/// plan's captures, a keyframe's bytes and PSNR barely move between splitting
+/// everything with any variance and keeping squares whole up to half a step,
+/// and around an eighth was best; keeping every square whole cost up to a
+/// third more bytes and 1–3 dB.
+const SPLIT_VARIANCE: i64 = 8;
 
 /// The partition contexts a decoder keeps (libvpx's
 /// `partition_context_lookup`): bit `n` of an entry is set when the block
@@ -58,6 +72,14 @@ impl FrameContexts {
     }
 }
 
+/// What the partition decision reads of an 8×8 of the source: each plane's
+/// sum, and the sum of the squares of all three.
+#[derive(Clone, Copy, Default)]
+struct Moments {
+    sums: [i64; 3],
+    squares: i64,
+}
+
 /// The coder of one tile of a keyframe.
 pub(super) struct Tile<'a> {
     geometry: &'a Geometry,
@@ -70,6 +92,10 @@ pub(super) struct Tile<'a> {
     recon: &'a mut Reconstruction,
     source: &'a Source<'a>,
     quantizer: &'a Quantizer,
+    /// The variance a square is split above, `SPLIT_VARIANCE` of the step.
+    split_variance: i64,
+    /// The superblock being coded, per 8×8 in raster order.
+    moments: [Moments; 64],
     w: BoolWriter,
     /// The block being coded: per plane, the levels of its transform blocks
     /// one after another, each in raster order, and their ends of block.
@@ -96,6 +122,8 @@ impl<'a> Tile<'a> {
             recon,
             source,
             quantizer,
+            split_variance: i64::from(quantizer.ac_step()) / SPLIT_VARIANCE,
+            moments: [Moments::default(); 64],
             w: BoolWriter::new(),
             levels: std::array::from_fn(|_| vec![0; 64 * 64]),
             eobs: std::array::from_fn(|_| Vec::with_capacity(16)),
@@ -108,15 +136,71 @@ impl<'a> Tile<'a> {
             self.left_partition = [0; 8];
             self.left_nonzero = [[0; 16]; 3];
             for mi_col in (self.mi_col_start..self.mi_col_end).step_by(8) {
+                self.measure(mi_row, mi_col);
                 self.partition(mi_row, mi_col, SB_LOG2);
             }
         }
         self.w.finish()
     }
 
-    /// The partition of the square of `1 << n` 8×8s at `(mi_row, mi_col)`.
-    /// The block is whole where the frame holds all of it and split where it
-    /// reaches past the edge.
+    /// The moments of every 8×8 of the superblock at `(mi_row, mi_col)` that
+    /// the frame holds, of the source as it is coded: past the picture's
+    /// edge, its last pixel repeated.
+    fn measure(&mut self, mi_row: usize, mi_col: usize) {
+        let g = self.geometry;
+        let src = self.source;
+        for r in 0..8.min(g.mi_rows - mi_row) {
+            for c in 0..8.min(g.mi_cols - mi_col) {
+                let (px, py) = ((mi_col + c) * 8, (mi_row + r) * 8);
+                let mut m = Moments::default();
+                for (plane, sum) in src.planes.iter().zip(&mut m.sums) {
+                    for y in py..py + 8 {
+                        let row = &plane[y.min(src.height - 1) * src.stride..][..src.width];
+                        if px + 8 <= src.width {
+                            for &v in &row[px..px + 8] {
+                                *sum += i64::from(v);
+                                m.squares += i64::from(v) * i64::from(v);
+                            }
+                        } else {
+                            for x in px..px + 8 {
+                                let v = i64::from(row[x.min(src.width - 1)]);
+                                *sum += v;
+                                m.squares += v * v;
+                            }
+                        }
+                    }
+                }
+                self.moments[r * 8 + c] = m;
+            }
+        }
+    }
+
+    /// Whether the square of `1 << n` 8×8s at `(mi_row, mi_col)` varies
+    /// more than a square is coded whole at, over the part of it the frame
+    /// holds.
+    fn busy(&self, mi_row: usize, mi_col: usize, n: u32) -> bool {
+        let g = self.geometry;
+        let (r0, c0) = (mi_row & 7, mi_col & 7);
+        let bw = 1 << n;
+        let mut total = Moments::default();
+        let mut count = 0;
+        for r in r0..r0 + bw.min(g.mi_rows - mi_row) {
+            for m in &self.moments[r * 8 + c0..][..bw.min(g.mi_cols - mi_col)] {
+                for (t, s) in total.sums.iter_mut().zip(m.sums) {
+                    *t += s;
+                }
+                total.squares += m.squares;
+                count += 64;
+            }
+        }
+        // The variance against the threshold, both times the count squared.
+        let means: i64 = total.sums.iter().map(|s| s * s).sum();
+        total.squares * count - means > self.split_variance * count * count
+    }
+
+    /// The partition of the square of `1 << n` 8×8s at `(mi_row, mi_col)`:
+    /// split where its second half in either direction lies past the frame's
+    /// edge, or where it is `busy`; otherwise whole.
     fn partition(&mut self, mi_row: usize, mi_col: usize, n: u32) {
         let g = self.geometry;
         if mi_row >= g.mi_rows || mi_col >= g.mi_cols {
@@ -125,7 +209,7 @@ impl<'a> Tile<'a> {
         let half = (1 << n) >> 1;
         let has_rows = mi_row + half < g.mi_rows;
         let has_cols = mi_col + half < g.mi_cols;
-        let split = !(has_rows && has_cols);
+        let split = !(has_rows && has_cols) || (n > 0 && self.busy(mi_row, mi_col, n));
         let probs = KF_PARTITION_PROBS[self.partition_context(mi_row, mi_col, n)];
         match (has_rows, has_cols) {
             // PARTITION_NONE is the tree's first leaf; PARTITION_SPLIT its last.

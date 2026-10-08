@@ -2,10 +2,10 @@
 //! 4:4:4, profile 1, the subset of VP9 the plan's table names and no more.
 //! Reachable only from tests until it passes the plan's gate.
 //!
-//! So far it writes keyframes and nothing else: every block DC predicted at
-//! the largest transform that fits it, its residual coded at the dial's
-//! quantizer, and the frame reconstructed exactly as libvpx's decoder
-//! reconstructs it.
+//! So far it writes keyframes and nothing else: each superblock split as far
+//! as its source varies, every block DC predicted at the largest transform
+//! that fits it, its residual coded at the dial's quantizer, and the frame
+//! reconstructed exactly as libvpx's decoder reconstructs it.
 
 mod bool_writer;
 mod dct;
@@ -253,6 +253,19 @@ mod tests {
     }
 
     #[test]
+    fn a_flat_picture_is_coded_in_whole_superblocks() {
+        let (w, h) = (640, 384);
+        let mut flat = Picture::new(w, h, Chroma::Full).expect("a picture");
+        flat.read_rgb(&[40, 90, 200].repeat(usize::from(w) * usize::from(h))).expect("its own picture");
+        let (bytes, mse) = round_trip(&flat, 100, 1);
+        // Sixty superblocks of a partition symbol, a skip flag and two modes
+        // each, and the first one's residual; split to 8×8 it is thousands
+        // of blocks.
+        assert!(bytes < 120, "{bytes} bytes");
+        assert!(mse < 1.0, "squared error {mse}");
+    }
+
+    #[test]
     fn tile_columns_follow_the_width_and_the_threads() {
         // 3456 wide on 4 threads is two columns of 27 superblocks; on 1, one.
         let two = Encoder::new(3456, 8, 90, 4).expect("an encoder");
@@ -277,6 +290,97 @@ mod tests {
             let mut frame = Vec::new();
             encoder.keyframe(&noise(w, h), &mut frame).expect("a keyframe");
             decoder.decode(&frame).expect("a decode");
+        }
+    }
+
+    /// The 4:4:4 captures `docs/rust-encoder-plan.md` measures on, each
+    /// with the quality it was made at.
+    const CAPTURES: [(&str, u8); 6] = [
+        ("desktop-q100-444", 100),
+        ("proxmox-q100-444", 100),
+        ("proxmox-hidpi-q100-444", 100),
+        ("mac-hp-444", 90),
+        ("mac-recording-q100-444", 100),
+        ("mac-recording-q90-444", 90),
+    ];
+
+    /// Every `step`th frame of an IVF capture, up to `count` of them, as the
+    /// pictures a user would hand an encoder.
+    fn sample(ivf: &[u8], step: usize, count: usize) -> Vec<Picture> {
+        assert_eq!(&ivf[..4], b"DKIF", "not an IVF file");
+        let mut decoder = Decoder::new(4).expect("a decoder");
+        let mut pictures = Vec::new();
+        let mut at = 32;
+        let mut n = 0;
+        while at + 12 <= ivf.len() && pictures.len() < count {
+            let len = u32::from_le_bytes(ivf[at..at + 4].try_into().expect("four bytes")) as usize;
+            let decoded = decoder.decode(&ivf[at + 12..at + 12 + len]).expect("a capture libvpx decodes");
+            if n % step == 0 {
+                let (w, h) = decoded.size();
+                let mut bgrx = vec![0; w as usize * h as usize * 4];
+                decoded.write_bgrx(&mut bgrx, w as usize * 4).expect("a buffer of the frame's size");
+                let mut picture = Picture::new(w as u16, h as u16, Chroma::Full).expect("a picture");
+                picture.read_bgrx(&bgrx, w as usize * 4).expect("a buffer of the picture's size");
+                pictures.push(picture);
+            }
+            at += 12 + len;
+            n += 1;
+        }
+        pictures
+    }
+
+    fn psnr(mse: f64) -> f64 {
+        10.0 * (255.0 * 255.0 / mse).log10()
+    }
+
+    /// Keyframes of frames sampled from the captures in `tmp/`, coded by this
+    /// encoder and by libvpx on one thread each: bytes, the least time over
+    /// three runs, and the PSNR of libvpx's decode of each. A measurement,
+    /// not a check; run it in release:
+    ///
+    /// ```text
+    /// cargo test --release keyframes_against_libvpx -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "reads the captures in tmp/ and wants a release build"]
+    fn keyframes_against_libvpx() {
+        for (name, quality) in CAPTURES {
+            let Ok(ivf) = std::fs::read(format!("tmp/{name}.ivf")) else {
+                println!("{name}: not in tmp/");
+                continue;
+            };
+            let pictures = sample(&ivf, 60, 8);
+            let (w, h) = pictures[0].size();
+            let mut libvpx = crate::Encoder::new(w, h, Chroma::Full, quality, 1).expect("a libvpx encoder");
+            let mut rust = Encoder::new(w, h, quality, 1).expect("an encoder");
+            let mut totals = [(0usize, 0.0f64, 0.0f64); 2];
+            for picture in &pictures {
+                let mut frames = [Vec::new(), Vec::new()];
+                for (c, frame) in frames.iter_mut().enumerate() {
+                    let mut least = f64::INFINITY;
+                    for _ in 0..3 {
+                        frame.clear();
+                        let started = std::time::Instant::now();
+                        if c == 0 {
+                            libvpx.encode(picture, true, frame).expect("an encode").expect("a frame");
+                        } else {
+                            rust.keyframe(picture, frame).expect("a keyframe");
+                        }
+                        least = least.min(started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    let mut decoder = Decoder::new(1).expect("a decoder");
+                    let decoded = decoder.decode(frame).expect("a frame libvpx decodes");
+                    totals[c].0 += frame.len();
+                    totals[c].1 += least;
+                    totals[c].2 += psnr(mse(picture, &decoded));
+                }
+            }
+            let n = pictures.len() as f64;
+            println!(
+                "{name} {w}x{h} q{quality}, {} keyframes | libvpx {} B {:.1} ms {:.2} dB | rust {} B {:.1} ms {:.2} dB | bytes {:.3} time {:.3}",
+                pictures.len(), totals[0].0, totals[0].1 / n, totals[0].2 / n, totals[1].0, totals[1].1 / n, totals[1].2 / n,
+                totals[1].0 as f64 / totals[0].0 as f64, totals[1].1 / totals[0].1,
+            );
         }
     }
 

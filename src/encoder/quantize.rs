@@ -20,6 +20,11 @@ impl Quantizer {
         Self { dequant, round, quant: dequant.map(|d| (1 << 16) / d) }
     }
 
+    /// The step of every coefficient but the DC.
+    pub(super) fn ac_step(&self) -> i32 {
+        self.dequant[1]
+    }
+
     /// Quantize the `n`×`n` `coeffs` into `levels`, both raster order, and
     /// return the end of block: one past the last nonzero level in `scan`.
     pub(super) fn quantize(&self, n: usize, coeffs: &[i32], scan: &[u16], levels: &mut [i32]) -> usize {
