@@ -121,7 +121,11 @@ row's second column is built only if the first fails the gate on a capture.
    AVX2: it cut the bytes 3–10% where it pays, for 30–45% more
    time there, and is searched only on frames it has been paying on. Then
    the loop filter (6–20%), the golden frame (2–9%) and 4×4 blocks (19% on
-   desktop alone). V, H and TM bought nothing.
+   desktop alone). V, H and TM bought nothing. Besides these, motion the
+   hash search cannot match, because the captures are decodes and what
+   moves in them never arrives exactly: each changed superblock's row and
+   column sums matched against the frame before, 64 pixels each way, done.
+   It cut desktop's bytes 23% and proxmox-hidpi's 9%, for 5–9% more time.
 6. **Switch over.** The libvpx encoder, `Chroma::Subsampled` and `Speed`
    removed behind the same API, a release tagged, the pins bumped in wlshare
    and remotex as they drop 4:2:0, and `AGENTS.md` reworded: the crate then

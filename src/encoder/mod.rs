@@ -301,7 +301,7 @@ impl Encoder {
         let keyframe = keyframe || !self.started;
         let everything = keyframe || self.requantize;
         self.compare(picture, everything);
-        let vectors = self.search.update(&self.previous[0], (!everything).then_some(&self.unchanged[..]), !keyframe);
+        let vectors = self.search.update(&self.previous[0], (!everything).then_some(&self.unchanged[..]), (!keyframe).then_some(&self.reference));
         for contexts in &mut self.contexts {
             contexts.start(self.last_inter);
         }
@@ -830,6 +830,26 @@ mod tests {
         let (bytes, keyframe, mse) = stream.frame(&picture(w, h, &scrolled), false);
         assert!(!keyframe);
         assert!(bytes * 10 < key_bytes, "{bytes} bytes against a keyframe of {key_bytes}");
+        assert!(mse < 4.0, "squared error {mse}");
+    }
+
+    #[test]
+    fn a_scroll_that_arrives_with_noise_is_coded_as_motion() {
+        let (w, h) = (640, 384);
+        let mut stream = Stream::new(w, h, 100, 1);
+        let rgb = desktop_rgb(w, h);
+        let (key_bytes, _, _) = stream.frame(&picture(w, h, &rgb), false);
+        // Two of a terminal's rows, and every value a step or two off, as a
+        // picture that was coded with loss has them: no window of it is
+        // the same as one before.
+        let mut scrolled = scroll(&rgb, w, 38);
+        for (v, n) in scrolled.iter_mut().zip(noise_rgb(w, h, 7)) {
+            *v = v.saturating_add(n % 3).saturating_sub(1);
+        }
+        let (bytes, keyframe, mse) = stream.frame(&picture(w, h, &scrolled), false);
+        assert!(!keyframe);
+        // Coded as it is, it costs nearly a keyframe.
+        assert!(bytes * 5 < key_bytes, "{bytes} bytes against a keyframe of {key_bytes}");
         assert!(mse < 4.0, "squared error {mse}");
     }
 

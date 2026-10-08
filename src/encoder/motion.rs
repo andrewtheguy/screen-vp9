@@ -17,16 +17,29 @@
 //! Hashes are kept per 8×8 of the frame and taken again only where the
 //! source changed, so a frame that changes little costs little; they are
 //! taken and looked up in a band of 8×8 rows on each thread.
+//!
+//! What moves but does not arrive whole, which a hash cannot match, each
+//! superblock that changed finds by its projections (libvpx's
+//! `vp9_int_pro_motion_estimation`): its rows' sums matched against the
+//! frame before's down the superblock's column, and then its columns' sums
+//! across the rows that matched. Text scrolled in a picture coded with loss
+//! is never the same twice, and that is how the plan's captures have it.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 use super::mv::{MAX_PIXELS, Mv};
-use super::{Geometry, on_threads};
+use super::{Geometry, Reconstruction, on_threads};
 
-/// The vectors a superblock offers: its own anchors' best two, then the
-/// frame's best two.
-pub(super) const VECTORS: usize = 4;
+/// The vectors a superblock offers: its own anchors' best two, then its
+/// projections', then the frame's best two.
+pub(super) const VECTORS: usize = 5;
+
+/// How far each way, in whole pixels, a superblock's projections are
+/// matched. libvpx matches half a superblock, which misses a terminal
+/// scrolling two of its rows, 38 pixels; on the plan's captures twice this
+/// found next to nothing more.
+const REACH: usize = 64;
 
 /// A window is an anchor when the top `ANCHOR_BITS` bits of its hash times
 /// `SCRAMBLE` are zero.
@@ -93,11 +106,13 @@ struct Shape {
 }
 
 /// What one thread hashes into: the row hashes of a row of 8×8s and the
-/// window hashes taken from them.
+/// window hashes taken from them; and where it copies the frame before out
+/// to project a superblock against it.
 #[derive(Default)]
 struct Scratch {
     rows: Vec<u32>,
     windows: Vec<u32>,
+    patch: Vec<u8>,
 }
 
 /// The search's memory of the source coded last.
@@ -136,12 +151,14 @@ impl Search {
     /// Take the anchors of `luma`, the source being coded at the picture's
     /// width, where it differs from the source coded last: in every 8×8 not
     /// marked in `unchanged`, or all of them when it is `None`. In an inter
-    /// frame (`inter`), give back per superblock in raster order the vectors
-    /// it offers, the zero vector where it has fewer than `VECTORS`.
-    pub(super) fn update(&mut self, luma: &[u8], unchanged: Option<&[bool]>, inter: bool) -> Vec<[Mv; VECTORS]> {
+    /// frame, coded against `reference`, give back per superblock in raster
+    /// order the vectors it offers, the zero vector where it has fewer than
+    /// `VECTORS`.
+    pub(super) fn update(&mut self, luma: &[u8], unchanged: Option<&[bool]>, reference: Option<&Reconstruction>) -> Vec<[Mv; VECTORS]> {
+        let inter = reference.is_some();
         let shape = &self.shape;
         let mi_cols = shape.mi_cols;
-        let changed = |r: usize, c: usize| r < shape.mi_rows && c < mi_cols && !unchanged.is_some_and(|u| u[r * mi_cols + c]);
+        let changed = |r, c| shape.changed(unchanged, r, c);
         // An 8×8's anchors are taken again when a window starting in it
         // reaches a changed pixel: one in it, or right of it, or below.
         let stale: Vec<bool> = (0..shape.mi_rows * mi_cols)
@@ -195,9 +212,21 @@ impl Search {
             }
             (found, looked_up)
         });
-        if !inter {
+        let Some(reference) = reference else {
             return Vec::new();
-        }
+        };
+        // Per superblock, its projections' vector where it changed.
+        let sbs = shape.sb_rows.div_ceil(self.threads);
+        let projected = on_threads(self.threads, (0..shape.sb_rows).step_by(sbs).zip(&mut self.scratch), |(first, scratch)| {
+            let mut projected = Vec::new();
+            for sb_row in first..(first + sbs).min(shape.sb_rows) {
+                for sb_col in 0..shape.sb_cols {
+                    let moved = (0..8).any(|r| (0..8).any(|c| shape.changed(unchanged, sb_row * 8 + r, sb_col * 8 + c)));
+                    projected.push(if moved { shape.project(luma, reference, (sb_row, sb_col), &mut scratch.patch) } else { Mv::ZERO });
+                }
+            }
+            projected
+        });
         let looked_up: usize = found.iter().map(|f| f.1).sum();
         let mut found: Vec<(usize, Mv)> = found.into_iter().flat_map(|f| f.0).collect();
         let frame = most(found.iter().map(|&(_, mv)| mv).collect(), FRAME_VOTES.max(looked_up / FRAME_SHARE), 2);
@@ -207,9 +236,9 @@ impl Search {
             let own = most(votes.iter().map(|&(_, mv)| mv).collect(), OWN_VOTES, 2);
             vectors[votes[0].0][..own.len()].copy_from_slice(&own);
         }
-        for v in &mut vectors {
+        for (v, projected) in vectors.iter_mut().zip(projected.into_iter().flatten()) {
             let mut at = v.iter().position(|&mv| mv == Mv::ZERO).unwrap_or(VECTORS);
-            for &mv in &frame {
+            for &mv in std::iter::once(&projected).chain(&frame) {
                 if at < VECTORS && !v.contains(&mv) {
                     v[at] = mv;
                     at += 1;
@@ -236,6 +265,49 @@ impl Search {
 }
 
 impl Shape {
+    /// Whether the source differs from the source coded last in the 8×8 at
+    /// `(r, c)`, one the frame holds, by `unchanged` (all of them when it is
+    /// `None`).
+    fn changed(&self, unchanged: Option<&[bool]>, r: usize, c: usize) -> bool {
+        r < self.mi_rows && c < self.mi_cols && !unchanged.is_some_and(|u| u[r * self.mi_cols + c])
+    }
+
+    /// The vector of whole pixels, at most `REACH` each way, from the
+    /// superblock at `(sb_row, sb_col)` of `luma` to where `reference` best
+    /// matches its rows' sums, and then its columns' sums in the rows that
+    /// matched; zero for a superblock the picture does not hold whole.
+    fn project(&self, luma: &[u8], reference: &Reconstruction, (sb_row, sb_col): (usize, usize), patch: &mut Vec<u8>) -> Mv {
+        let (x, y) = (sb_col * 64, sb_row * 64);
+        if x + 64 > self.width || y + 64 > self.height {
+            return Mv::ZERO;
+        }
+        let (mut rows, mut cols) = ([0u32; 64], [0u32; 64]);
+        for (r, sum) in rows.iter_mut().enumerate() {
+            let row = &luma[(y + r) * self.width + x..][..64];
+            *sum = row.iter().map(|&v| u32::from(v)).sum();
+            for (c, &v) in cols.iter_mut().zip(row) {
+                *c += u32::from(v);
+            }
+        }
+        let frame = (self.width, self.height);
+        let reach = REACH as isize;
+        let mut sums = [0u32; 64 + 2 * REACH];
+        let (strip, stride) = reference.block(0, (x as isize, y as isize - reach), (64, sums.len()), frame, patch);
+        for (r, sum) in sums.iter_mut().enumerate() {
+            *sum = strip[r * stride..][..64].iter().map(|&v| u32::from(v)).sum();
+        }
+        let down = offset(&rows, &sums);
+        let (strip, stride) = reference.block(0, (x as isize - reach, y as isize + down), (sums.len(), 64), frame, patch);
+        sums.fill(0);
+        for row in strip.chunks(stride).take(64) {
+            for (sum, &v) in sums.iter_mut().zip(row) {
+                *sum += u32::from(v);
+            }
+        }
+        let across = offset(&cols, &sums);
+        Mv::pixels(down as i32, across as i32)
+    }
+
     /// Where in the frame an anchor kept in 8×8 `i` starts.
     fn place(&self, i: usize, (_, offset): (u32, u8)) -> (usize, usize) {
         let offset = usize::from(offset);
@@ -258,7 +330,7 @@ impl Shape {
         // Row hashes of the 8 pixels from each x in x0..=x1, rows y0..y1 + 8.
         let across = x1 + 1 - x0;
         let row_count = y1 + 8 - y0;
-        let Scratch { rows, windows } = scratch;
+        let Scratch { rows, windows, .. } = scratch;
         rows.clear();
         rows.resize(across * row_count, 0);
         // Each the polynomial of its eight pixels, taken whole rather than
@@ -303,6 +375,15 @@ impl Shape {
             }
         }
     }
+}
+
+/// Where in `sums` the run as long as `block` differs least from it, the
+/// nearer the middle the better among equals, as an offset from the middle.
+fn offset(block: &[u32; 64], sums: &[u32; 64 + 2 * REACH]) -> isize {
+    let at = (0..=2 * REACH)
+        .min_by_key(|&o| (block.iter().zip(&sums[o..]).map(|(&a, &b)| a.abs_diff(b)).sum::<u32>(), o.abs_diff(REACH)))
+        .expect("an offset");
+    at as isize - REACH as isize
 }
 
 /// The `count` vectors of `votes` found most often, at least `least` times
