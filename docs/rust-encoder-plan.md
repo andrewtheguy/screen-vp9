@@ -23,7 +23,7 @@ and nothing more. Decoding stays with libvpx permanently.
 - **No fallback:** when the Rust encoder passes the gate, the libvpx encoder
   path is deleted, not kept behind a feature. Until then the module is reachable
   only from tests and the benchmark.
-- **Acceptance gate**, on each of the ten 4:4:4 captures, at the capture's own
+- **Acceptance gate**, on each of the twelve 4:4:4 captures, at the capture's own
   quality and thread count:
   - median paired encode time at or below libvpx;
   - total bytes at most 15% above libvpx.
@@ -133,7 +133,7 @@ row's second column is built only if the first fails the gate on a capture.
 
 ## Test material
 
-Ten 4:4:4 IVF captures, kept out of git in `tmp/`. Where a machine keeps the
+Twelve 4:4:4 IVF captures, kept out of git in `tmp/`. Where a machine keeps the
 copies they come from is in that machine's `CLAUDE.local.md`, not here. The
 directory's own `README.md` describes the files; the 4:2:0 captures beside them
 are not used, and neither are the two made from a Mac screen recording, whose
@@ -151,11 +151,13 @@ colour was never finer than 4:2:0 and which neither program ever sent.
 | `windows-elite-…-1440x900-444` | the same desktop | 1440×900 | 90 | 5 | 1797 |
 | `windows-elite-…-1280x800-444` | the same desktop | 1280×800 | 90 | 5 | 1898 |
 | `macvmhighperf-…-3840x2160-444` | remotex gateway from a virtual Mac, the same four panes, at HiDPI | 3840×2160 | 90 | 5 | 1443 |
+| `macvmhighperf-…-2560x1600-444` | the same Mac, at HiDPI | 2560×1600 | 90 | 5 | 1986 |
+| `macvmhighperf-…-2880x1800-444` | the same Mac, at HiDPI | 2880×1800 | 90 | 5 | 2245 |
 
 The thread counts are what each program picks on the six-core machine the
 baseline is measured on: wlshare the cores less two, remotex the cores less
 one. The frames fed to an encoder are libvpx decodes of these captures, so
-they are near the source, not the source. The last six were written by the
+they are near the source, not the source. The last eight were written by the
 gateway as it coded them, each its own session; their full names carry the
 session's start, and the first frame of each is black, the desktop not yet
 painted. The 3456×2168 one's quality fell as low as 80 late in the session,

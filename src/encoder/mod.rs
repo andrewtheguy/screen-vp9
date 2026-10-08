@@ -894,7 +894,7 @@ mod tests {
 
     /// The 4:4:4 captures `docs/rust-encoder-plan.md` measures on, each
     /// with the quality it was made at and the threads its program codes on.
-    const CAPTURES: [(&str, u8, usize); 10] = [
+    const CAPTURES: [(&str, u8, usize); 12] = [
         ("desktop-q100-444", 100, 4),
         ("proxmox-q100-444", 100, 4),
         ("proxmox-hidpi-q100-444", 100, 4),
@@ -905,6 +905,8 @@ mod tests {
         ("windows-elite-20261008-202726.077-1440x900-444", 90, 5),
         ("windows-elite-20261008-203015.519-1280x800-444", 90, 5),
         ("macvmhighperf-20261008-203729.907-3840x2160-444", 90, 5),
+        ("macvmhighperf-20261008-210446.075-2560x1600-444", 90, 5),
+        ("macvmhighperf-20261008-210735.075-2880x1800-444", 90, 5),
     ];
 
     /// Hand `f` each frame of an IVF capture in turn, as the picture a user
