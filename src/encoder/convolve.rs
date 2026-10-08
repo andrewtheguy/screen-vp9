@@ -1,8 +1,8 @@
 //! Inter prediction between whole pixels: VP9's eight-tap filter, EIGHTTAP,
 //! the frame's one filter, across, down or both, the pass across rounded to
 //! pixels before the pass down, as a decoder filters (libvpx's
-//! `vpx_convolve8`). NEON on arm64, and held by its tests to the scalar
-//! reference beside it, which amd64 runs until it has AVX2 of its own.
+//! `vpx_convolve8`). NEON on arm64 and AVX2 on amd64, and held by its tests
+//! to the scalar reference beside it.
 
 use super::tables::SUBPEL_FILTERS;
 
@@ -29,32 +29,32 @@ pub(super) fn predict(src: &[u8], stride: usize, (fx, fy): (usize, usize), w: us
     #[cfg(target_arch = "aarch64")]
     return neon::predict(src, stride, (fx, fy), (w, h), out, out_stride);
     #[cfg(target_arch = "x86_64")]
-    return scalar::predict(src, stride, (fx, fy), (w, h), out, out_stride);
+    return avx2::predict(src, stride, (fx, fy), (w, h), out, out_stride);
 }
 
 /// The pass across of `predict` alone: fill the `w`×`h` at the start of
 /// `out` with the pixels `f` sixteenths right of those `BEFORE` columns into
-/// `src`, each row's; `w` is a multiple of 8.
+/// `src`, each row's; `f` is 1 to 15 and `w` a multiple of 8.
 pub(super) fn across(src: &[u8], stride: usize, f: usize, (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
-    debug_assert!(w.is_multiple_of(8), "{w}×{h}");
+    debug_assert!((1..16).contains(&f) && w.is_multiple_of(8), "{w}×{h} at {f}");
     #[cfg(target_arch = "aarch64")]
     return neon::across(src, stride, f, (w, h), out, out_stride);
     #[cfg(target_arch = "x86_64")]
-    return scalar::across(src, stride, f, w, h, out, out_stride);
+    return avx2::across(src, stride, f, (w, h), out, out_stride);
 }
 
 /// The pass down of `predict` alone: fill the `w`×`h` at the start of `out`
-/// with the pixels `f` sixteenths below those `BEFORE` rows into `src`; `w`
-/// is a multiple of 8.
+/// with the pixels `f` sixteenths below those `BEFORE` rows into `src`; `f`
+/// is 1 to 15 and `w` a multiple of 8.
 pub(super) fn down(src: &[u8], stride: usize, f: usize, (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
-    debug_assert!(w.is_multiple_of(8), "{w}×{h}");
+    debug_assert!((1..16).contains(&f) && w.is_multiple_of(8), "{w}×{h} at {f}");
     #[cfg(target_arch = "aarch64")]
     return neon::down(src, stride, f, (w, h), out, out_stride);
     #[cfg(target_arch = "x86_64")]
-    return scalar::down(src, stride, f, w, h, out, out_stride);
+    return avx2::down(src, stride, f, (w, h), out, out_stride);
 }
 
-#[cfg(any(test, target_arch = "x86_64"))]
+#[cfg(test)]
 mod scalar {
     use super::{BEFORE, SUBPEL_FILTERS, TAPS};
 
@@ -199,6 +199,175 @@ mod neon {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+mod avx2 {
+    use std::arch::x86_64::*;
+
+    use super::{BEFORE, SUBPEL_FILTERS};
+
+    // The crate is built for AVX2, but its intrinsics are still `unsafe` to
+    // call from a function not marked for it; each `unsafe` here is for
+    // that and for loads and stores inside the slices bounds-checked just
+    // before them.
+
+    /// Eight pixels of `a` from `at`, in the low half.
+    #[inline(always)]
+    fn eight(a: &[u8], at: usize) -> __m128i {
+        let a = &a[at..][..8];
+        unsafe { _mm_loadl_epi64(a.as_ptr().cast()) }
+    }
+
+    /// The low eight pixels of `v` into `out` from `at`.
+    #[inline(always)]
+    fn store(out: &mut [u8], at: usize, v: __m128i) {
+        let out = &mut out[at..][..8];
+        unsafe { _mm_storel_epi64(out.as_mut_ptr().cast(), v) }
+    }
+
+    /// `lo` and `hi` as the lanes of one vector.
+    #[inline(always)]
+    fn lanes(lo: __m128i, hi: __m128i) -> __m256i {
+        unsafe { _mm256_set_m128i(hi, lo) }
+    }
+
+    /// The taps `f` as `maddubs` takes them: the pair `2k` and `2k + 1`
+    /// throughout the `k`th. Each is a byte at every fraction but none,
+    /// whose 128 the passes are not asked for.
+    #[inline(always)]
+    fn pairs(f: usize) -> [__m256i; 4] {
+        let t = SUBPEL_FILTERS[f];
+        std::array::from_fn(|k| unsafe { _mm256_set1_epi16(i16::from_le_bytes([t[2 * k] as i8 as u8, t[2 * k + 1] as i8 as u8])) })
+    }
+
+    /// The taps `f` of sixteen sets of eight pixels, `p[k]` the pixels the
+    /// `k`th pair of taps takes, each pixel beside the one after it, rounded
+    /// to pixels, the low eight of each lane. As libvpx's AVX2 sums them, in
+    /// 16 bits: no pair of taps, nor the first and third pairs or the second
+    /// and fourth with the rounding, can take a sum of pixels out of 16 bits
+    /// (the taps' signs bound each), and a sum the last addition saturates is
+    /// a pixel of 0 or 255 either way.
+    #[inline(always)]
+    fn taps(p: [__m256i; 4], f: &[__m256i; 4]) -> __m256i {
+        unsafe {
+            let x: [__m256i; 4] = std::array::from_fn(|k| _mm256_maddubs_epi16(p[k], f[k]));
+            let first = _mm256_add_epi16(_mm256_add_epi16(x[0], x[2]), _mm256_set1_epi16(64));
+            let sum = _mm256_adds_epi16(first, _mm256_add_epi16(x[1], x[3]));
+            let sum = _mm256_srai_epi16::<7>(sum);
+            _mm256_packus_epi16(sum, sum)
+        }
+    }
+
+    /// Per pair of taps, where in the sixteen bytes `chunk` gathers each
+    /// pixel the eight across take, each beside the one after it.
+    const ACROSS: [[i8; 16]; 4] = {
+        let mut masks = [[0; 16]; 4];
+        let mut k = 0;
+        while k < 4 {
+            let mut i = 0;
+            while i < 16 {
+                // Pixel `m` from the first is byte `m` up to 7, and `m + 1`
+                // after: the second eight are loaded from the seventh.
+                let m = i / 2 + 2 * k + i % 2;
+                masks[k][i] = (if m < 8 { m } else { m + 1 }) as i8;
+                i += 1;
+            }
+            k += 1;
+        }
+        masks
+    };
+
+    /// The fifteen pixels from `at` that eight across take: the eight from
+    /// `at` and the eight from `at + 7`, so as not to read past them.
+    #[inline(always)]
+    fn chunk(src: &[u8], at: usize) -> __m128i {
+        unsafe { _mm_unpacklo_epi64(eight(src, at), eight(src, at + 7)) }
+    }
+
+    /// The taps `f` across the eight pixels from `at` and the seven after,
+    /// in the low lane, and from `at2` in the high.
+    #[inline(always)]
+    fn across16(src: &[u8], at: usize, at2: usize, f: &[__m256i; 4]) -> __m256i {
+        unsafe {
+            let v = lanes(chunk(src, at), chunk(src, at2));
+            taps(std::array::from_fn(|k| _mm256_shuffle_epi8(v, _mm256_set_m128i(_mm_loadu_si128(ACROSS[k].as_ptr().cast()), _mm_loadu_si128(ACROSS[k].as_ptr().cast())))), f)
+        }
+    }
+
+    pub(super) fn across(src: &[u8], stride: usize, f: usize, (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
+        let f = pairs(f);
+        // The eights of every row in turn, two at a time.
+        let eights = w / 8;
+        let at = |i: usize| (i / eights, i % eights * 8);
+        let count = eights * h;
+        for i in (0..count).step_by(2) {
+            let ((r, c), (r2, c2)) = (at(i), at((i + 1).min(count - 1)));
+            let v = across16(src, r * stride + c, r2 * stride + c2, &f);
+            unsafe {
+                store(out, r * out_stride + c, _mm256_castsi256_si128(v));
+                store(out, r2 * out_stride + c2, _mm256_extracti128_si256::<1>(v));
+            }
+        }
+    }
+
+    /// The taps `f` down the eight columns `rows` gives two rows at a time,
+    /// as `rows(r)` gives rows `r` and `r + 1` of the `h + 7`, into the `h`
+    /// rows of eight at the start of `out`; `rows` gives nothing it is asked
+    /// for past them.
+    #[inline(always)]
+    fn down8(mut rows: impl FnMut(usize) -> [__m128i; 2], f: &[__m256i; 4], h: usize, out: &mut [u8], out_stride: usize) {
+        unsafe {
+            let u = |a, b| _mm_unpacklo_epi8(a, b);
+            let ([s0, s1], [s2, s3], [s4, s5], [mut a, mut b]) = (rows(0), rows(2), rows(4), rows(6));
+            // Per pair of taps, the rows it takes for row `r` in the low lane
+            // and `r + 1` in the high.
+            let mut p = [lanes(u(s0, s1), u(s1, s2)), lanes(u(s2, s3), u(s3, s4)), lanes(u(s4, s5), u(s5, a)), _mm256_setzero_si256()];
+            for r in (0..h).step_by(2) {
+                let [c, d] = rows(r + 8);
+                p[3] = lanes(u(a, b), u(b, c));
+                let v = taps(p, f);
+                store(out, r * out_stride, _mm256_castsi256_si128(v));
+                if r + 1 < h {
+                    store(out, (r + 1) * out_stride, _mm256_extracti128_si256::<1>(v));
+                }
+                p = [p[1], p[2], p[3], p[3]];
+                (a, b) = (c, d);
+            }
+        }
+    }
+
+    pub(super) fn down(src: &[u8], stride: usize, f: usize, (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
+        let f = pairs(f);
+        let rows = h + 7;
+        for c in (0..w).step_by(8) {
+            let row = |r: usize| if r < rows { eight(src, r * stride + c) } else { unsafe { _mm_setzero_si128() } };
+            down8(|r| [row(r), row(r + 1)], &f, h, &mut out[c..], out_stride);
+        }
+    }
+
+    pub(super) fn predict(src: &[u8], stride: usize, (fx, fy): (usize, usize), (w, h): (usize, usize), out: &mut [u8], out_stride: usize) {
+        match (fx, fy) {
+            (fx, 0) => across(&src[BEFORE * stride..], stride, fx, (w, h), out, out_stride),
+            (0, fy) => down(&src[BEFORE..], stride, fy, (w, h), out, out_stride),
+            (fx, fy) => {
+                let (x_taps, y_taps) = (pairs(fx), pairs(fy));
+                let rows = h + 7;
+                for c in (0..w).step_by(8) {
+                    // Two rows filtered across at a time, and rounded to
+                    // pixels as a decoder rounds them.
+                    let filtered = |r: usize| {
+                        if r >= rows {
+                            return unsafe { [_mm_setzero_si128(); 2] };
+                        }
+                        let v = across16(src, r * stride + c, (r + 1).min(rows - 1) * stride + c, &x_taps);
+                        unsafe { [_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v)] }
+                    };
+                    down8(filtered, &y_taps, h, &mut out[c..], out_stride);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,7 +427,7 @@ mod tests {
             for (w, h) in [(8, 8), (16, 9), (24, 17), (64, 64)] {
                 let stride = w + TAPS - 1;
                 let src = noise(stride * (h + TAPS - 1), seed);
-                for f in 0..16 {
+                for f in 1..16 {
                     let (mut got, mut want) = (vec![0; w * h], vec![0; w * h]);
                     across(&src, stride, f, (w, h), &mut got, w);
                     scalar::across(&src, stride, f, w, h, &mut want, w);

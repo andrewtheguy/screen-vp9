@@ -107,8 +107,8 @@ row's second column is built only if the first fails the gate on a capture.
    2. **NEON.** Done: transforms, quantization, block difference and the
       moments the partition decision reads, each tested against its scalar
       reference. DC prediction and block copy are not hot and stay scalar.
-   3. **AVX2.** Done, on an amd64 machine, since Rosetta does not translate
-      AVX2: the same kernels, a 4×4's in AVX2's lower half, with the crate
+   3. **AVX2.** Done, timed on an amd64 machine, which runs the whole test
+      suite as well: the same kernels, a 4×4's in AVX2's lower half, with the crate
       built for AVX2 rather than choosing it at run time, so there is no
       scalar path on amd64. Scalar, NEON and AVX2 code the same streams to
       the byte, and the whole test suite passes on amd64.
@@ -117,8 +117,8 @@ row's second column is built only if the first fails the gate on a capture.
    worth to libvpx held to this subset, measured by switching libvpx's
    features off one at a time: forward probability updates (12–32% of the
    bytes) and per-block transform size (up to 28%), done; sub-pixel motion
-   (up to 36% on video, nothing on desktop), done on NEON, its filter still
-   to come on AVX2: it cut the bytes 3–10% where it pays, for 30–45% more
+   (up to 36% on video, nothing on desktop), done, its filter in NEON and
+   AVX2: it cut the bytes 3–10% where it pays, for 30–45% more
    time there, and is searched only on frames it has been paying on. Then
    the loop filter (6–20%), the golden frame (2–9%) and 4×4 blocks (19% on
    desktop alone). V, H and TM bought nothing.
