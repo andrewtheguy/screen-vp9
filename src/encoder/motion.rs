@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 use super::mv::{MAX_PIXELS, Mv};
-use super::{Geometry, Reconstruction, on_threads};
+use super::{Geometry, Reconstruction, on_threads, on_workers};
 
 /// The vectors a superblock offers: its own anchors' best two, then its
 /// projections', then the frame's best two.
@@ -91,6 +91,12 @@ type Places = (usize, [(u16, u16); MAX_REPEATS]);
 
 type Table = HashMap<u32, Places, BuildHasherDefault<Identity>>;
 
+/// Which of the tables, one per thread so that each thread fills one, holds
+/// the anchors whose hash is `hash`.
+fn shard(hash: u32, shards: usize) -> usize {
+    (hash >> 16) as usize % shards
+}
+
 /// An 8×8's anchors: each one's hash and where in the 8×8 it starts,
 /// `8 * y + x`.
 type Anchors = [(u32, u8); PER_8X8];
@@ -118,11 +124,12 @@ struct Scratch {
 /// The search's memory of the source coded last.
 pub(super) struct Search {
     shape: Shape,
-    threads: usize,
     /// Per 8×8, the anchors whose windows start in it, and how many.
     anchors: Vec<Anchors>,
     counts: Vec<u8>,
-    table: Table,
+    /// The anchors of the source coded last by hash, in a table per thread
+    /// (`shard`).
+    tables: Vec<Table>,
     /// Per thread.
     scratch: Vec<Scratch>,
 }
@@ -140,10 +147,9 @@ impl Search {
                 sb_cols: geometry.sb_cols,
                 sb_rows: geometry.sb_rows,
             },
-            threads,
             anchors: vec![[(0, 0); PER_8X8]; mis],
             counts: vec![0; mis],
-            table: HashMap::default(),
+            tables: (0..threads).map(|_| HashMap::default()).collect(),
             scratch: (0..threads).map(|_| Scratch::default()).collect(),
         }
     }
@@ -171,39 +177,34 @@ impl Search {
             self.index();
         }
         let shape = &self.shape;
-        let table = inter.then_some(&self.table);
-        let band = shape.mi_rows.div_ceil(self.threads) * mi_cols;
-        let bands = self.anchors.chunks_mut(band).zip(self.counts.chunks_mut(band)).zip(stale.chunks(band)).zip(&mut self.scratch).enumerate();
-        let found = on_threads(self.threads, bands, |(b, (((anchors, counts), stale), scratch))| {
+        let tables = inter.then_some(&self.tables[..]);
+        // A row of 8×8s at a time, as each thread is free for one: what
+        // changed lies in some rows and not others.
+        let rows = self.anchors.chunks_mut(mi_cols).zip(self.counts.chunks_mut(mi_cols)).zip(stale.chunks(mi_cols)).enumerate();
+        let found = on_workers(rows, &mut self.scratch, |(r, ((anchors, counts), stale)), scratch| {
             let mut found = Vec::new();
             let mut looked_up = 0;
-            let first = b * band;
-            for (k, stale) in stale.chunks(mi_cols).enumerate() {
-                let r = first / mi_cols + k;
-                let row = k * mi_cols..(k + 1) * mi_cols;
-                let (anchors, counts) = (&mut anchors[row.clone()], &mut counts[row]);
-                let mut c = 0;
-                while c < mi_cols {
-                    if !stale[c] {
-                        c += 1;
-                        continue;
-                    }
-                    let start = c;
-                    while c < mi_cols && stale[c] {
-                        c += 1;
-                    }
-                    shape.hash_run(luma, r, start..c, scratch, anchors, counts);
-                    let Some(table) = table else { continue };
-                    for i in start..c {
-                        for &a in &anchors[i][..usize::from(counts[i])] {
-                            let (x, y) = shape.place(r * mi_cols + i, a);
-                            looked_up += 1;
-                            if let Some(&(count, places)) = table.get(&a.0).filter(|p| p.0 <= MAX_REPEATS) {
-                                for &(px, py) in &places[..count] {
-                                    let mv = (i32::from(py) - y as i32, i32::from(px) - x as i32);
-                                    if mv != (0, 0) && mv.0.abs() <= MAX_PIXELS && mv.1.abs() <= MAX_PIXELS {
-                                        found.push(((y / 64) * shape.sb_cols + x / 64, Mv::pixels(mv.0, mv.1)));
-                                    }
+            let mut c = 0;
+            while c < mi_cols {
+                if !stale[c] {
+                    c += 1;
+                    continue;
+                }
+                let start = c;
+                while c < mi_cols && stale[c] {
+                    c += 1;
+                }
+                shape.hash_run(luma, r, start..c, scratch, anchors, counts);
+                let Some(tables) = tables else { continue };
+                for i in start..c {
+                    for &a in &anchors[i][..usize::from(counts[i])] {
+                        let (x, y) = shape.place(r * mi_cols + i, a);
+                        looked_up += 1;
+                        if let Some(&(count, places)) = tables[shard(a.0, tables.len())].get(&a.0).filter(|p| p.0 <= MAX_REPEATS) {
+                            for &(px, py) in &places[..count] {
+                                let mv = (i32::from(py) - y as i32, i32::from(px) - x as i32);
+                                if mv != (0, 0) && mv.0.abs() <= MAX_PIXELS && mv.1.abs() <= MAX_PIXELS {
+                                    found.push(((y / 64) * shape.sb_cols + x / 64, Mv::pixels(mv.0, mv.1)));
                                 }
                             }
                         }
@@ -215,17 +216,15 @@ impl Search {
         let Some(reference) = reference else {
             return Vec::new();
         };
-        // Per superblock, its projections' vector where it changed.
-        let sbs = shape.sb_rows.div_ceil(self.threads);
-        let projected = on_threads(self.threads, (0..shape.sb_rows).step_by(sbs).zip(&mut self.scratch), |(first, scratch)| {
-            let mut projected = Vec::new();
-            for sb_row in first..(first + sbs).min(shape.sb_rows) {
-                for sb_col in 0..shape.sb_cols {
+        // Per superblock, its projections' vector where it changed, a row
+        // of superblocks at a time.
+        let projected = on_workers(0..shape.sb_rows, &mut self.scratch, |sb_row, scratch| {
+            (0..shape.sb_cols)
+                .map(|sb_col| {
                     let moved = (0..8).any(|r| (0..8).any(|c| shape.changed(unchanged, sb_row * 8 + r, sb_col * 8 + c)));
-                    projected.push(if moved { shape.project(luma, reference, (sb_row, sb_col), &mut scratch.patch) } else { Mv::ZERO });
-                }
-            }
-            projected
+                    if moved { shape.project(luma, reference, (sb_row, sb_col), &mut scratch.patch) } else { Mv::ZERO }
+                })
+                .collect::<Vec<_>>()
         });
         let looked_up: usize = found.iter().map(|f| f.1).sum();
         let mut found: Vec<(usize, Mv)> = found.into_iter().flat_map(|f| f.0).collect();
@@ -248,19 +247,34 @@ impl Search {
         vectors
     }
 
-    /// Index the anchors kept, which are the source coded last's, by hash.
+    /// Index the anchors kept, which are the source coded last's, by hash,
+    /// each thread filling a table.
     fn index(&mut self) {
-        self.table.clear();
-        for i in 0..self.anchors.len() {
-            for &a in &self.anchors[i][..usize::from(self.counts[i])] {
-                let (x, y) = self.shape.place(i, a);
-                let (count, places) = self.table.entry(a.0).or_insert((0, [(0, 0); MAX_REPEATS]));
+        let Self { shape, anchors, counts, tables, .. } = self;
+        let shards = tables.len();
+        // Each thread sorts a band's anchors by table, and then fills a
+        // table from every band's, in order.
+        let band = anchors.len().div_ceil(shards);
+        let sorted = on_threads(shards, anchors.chunks(band).zip(counts.chunks(band)).enumerate(), |(b, (anchors, counts))| {
+            let mut sorted = vec![Vec::new(); shards];
+            for (i, (anchors, &count)) in anchors.iter().zip(counts).enumerate() {
+                for &a in &anchors[..usize::from(count)] {
+                    let (x, y) = shape.place(b * band + i, a);
+                    sorted[shard(a.0, shards)].push((a.0, x as u16, y as u16));
+                }
+            }
+            sorted
+        });
+        on_threads(shards, tables.iter_mut().enumerate(), |(s, table)| {
+            table.clear();
+            for &(hash, x, y) in sorted.iter().flat_map(|sorted| &sorted[s]) {
+                let (count, places) = table.entry(hash).or_insert((0, [(0, 0); MAX_REPEATS]));
                 if *count < MAX_REPEATS {
-                    places[*count] = (x as u16, y as u16);
+                    places[*count] = (x, y);
                 }
                 *count = (*count + 1).min(MAX_REPEATS + 1);
             }
-        }
+        });
     }
 }
 

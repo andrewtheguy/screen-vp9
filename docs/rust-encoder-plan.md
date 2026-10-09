@@ -70,7 +70,7 @@ row's second column is built only if the first fails the gate on a capture.
 | Transforms | A size per block, which it signals: an inter block's the one whose luma costs least in error and bits, quantized at each; an intra block's 4×4 where it varies, otherwise the largest up to 16×16; an intra block's luma below 32×32 in the DCT and ADST its mode pairs | — |
 | Loop filter | libvpx's filter at the level its real-time encoder takes from the quantizer, an intra block's one more by the deltas a decoder starts with; none in four tile columns, where the libvpx encoder leaves it out for a decoder's threads | — |
 | Probabilities | The coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools, and kept for the next; no backward adaptation, which libvpx's real-time encoder does not use either | Updates to the other probabilities |
-| Tiles and threads | Tile columns by the width rule the crate has now, their superblock rows a wavefront over the threads; the source compared and hashed in a band of rows per thread | — |
+| Tiles and threads | Tile columns by the width rule the crate has now, their superblock rows a wavefront over the threads; the source compared in a band of rows per thread, and hashed and projected a row at a time as each thread is free | — |
 | Segmentation, resizing, altref, lossless, high bit depth, error-resilient mode | Never | — |
 
 ## Where the speed should come from
@@ -86,9 +86,10 @@ row's second column is built only if the first fails the gate on a capture.
   against: block difference, forward and inverse transforms, quantization.
 - **Threading:** the superblock rows of every tile column as a wavefront
   over the threads, each a superblock behind the row above it, which leaves
-  it what a block below reads across its top edge; and the comparison with
-  the previous source and the motion search's hashing in a band of rows per
-  thread.
+  it what a block below reads across its top edge; the comparison with the
+  previous source in a band of rows per thread; and the motion search's
+  hashing and projections a row at a time as each thread is free, its
+  index of the frame before a table per thread.
 
 ## Phases
 
@@ -156,7 +157,11 @@ row's second column is built only if the first fails the gate on a capture.
    residual's squares rather than its variance, done, since a mean the
    vector leaves is coded too: 6% of the busy samples in one and two
    columns, and 0.6 dB. And an inter block no larger than 32×32, done,
-   1–2% of the quiet ones in four.
+   1–2% of the quiet ones in four. The trial of transform sizes stops at
+   the first that costs more than the one above it, and the search hashes
+   and projects a row at a time as threads are free, which took a quarter
+   of quiet-2560's time to a fifth. With these all eighteen samples pass
+   on the Mac: bytes 0.92–1.15× libvpx's, median time 0.48–0.95×.
 6. **Switch over.** The libvpx encoder, `Chroma::Subsampled` and `Speed`
    removed behind the same API, a release tagged, the pins bumped in wlshare
    and remotex as they drop 4:2:0, and `AGENTS.md` reworded: the crate then

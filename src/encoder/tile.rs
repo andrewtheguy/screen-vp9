@@ -1179,6 +1179,10 @@ impl<'a> Tile<'a> {
                 best = (cost, tx);
                 std::mem::swap(&mut self.levels[0], &mut self.best_levels);
                 std::mem::swap(&mut self.eobs[0], &mut self.best_eobs);
+            } else {
+                // Below a size that costs more than the one above it, the
+                // sizes cost more again.
+                break;
             }
         }
         std::mem::swap(&mut self.levels[0], &mut self.best_levels);

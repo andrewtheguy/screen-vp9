@@ -73,6 +73,35 @@ fn on_threads<J: Send, R: Send>(threads: usize, mut jobs: impl ExactSizeIterator
     })
 }
 
+/// Run `work` on each of `jobs` on as many threads as there are `scratch`es,
+/// this one among them, each with a scratch of its own and taking the next
+/// job as it finishes one, so that a thread whose jobs have little to do
+/// takes more of them; and give back what each gives, in order.
+fn on_workers<J: Send, S: Send, R: Send>(jobs: impl Iterator<Item = J> + Send, scratch: &mut [S], work: impl Fn(J, &mut S) -> R + Sync) -> Vec<R> {
+    let queue = std::sync::Mutex::new(jobs.enumerate());
+    // The lock is let go of before the job is worked on.
+    let next = || queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).next();
+    let run = |scratch: &mut S| {
+        let mut done = Vec::new();
+        while let Some((i, job)) = next() {
+            done.push((i, work(job, scratch)));
+        }
+        done
+    };
+    let run = &run;
+    let (first, others) = scratch.split_first_mut().expect("a scratch");
+    let mut done = std::thread::scope(|scope| {
+        let others: Vec<_> = others.iter_mut().map(|scratch| scope.spawn(move || run(scratch))).collect();
+        let mut done = run(first);
+        for other in others {
+            done.extend(other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+        }
+        done
+    });
+    done.sort_unstable_by_key(|&(i, _)| i);
+    done.into_iter().map(|(_, r)| r).collect()
+}
+
 /// A frame's measures in the units the bitstream counts in: mode info units
 /// of 8×8 and superblocks of 64×64.
 pub(super) struct Geometry {
