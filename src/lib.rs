@@ -10,6 +10,13 @@
 //! back, for every test here and in a user, which reads what the encoder made
 //! with the other half of the same archive.
 //!
+//! The stream's shape is chosen for whoever decodes it. Tile columns follow the
+//! picture's width, one under 1440, two from 1440, four from 2048 and eight
+//! from 5760, and never outnumber the encoder's threads. A 4:4:4 stream in four
+//! columns or more is coded without the loop filter, which is what a software
+//! decoder's threads wait on there; 4:2:0, which a browser decodes itself,
+//! always keeps it. The measurements are at `TILE_WIDTHS` and `loop_filtered`.
+//!
 //! Frame metadata is handled here too: [`frame_header`] reads the profile and
 //! keyframe bit of a frame this process did not encode, and [`codec_string`]
 //! builds the WebCodecs string a browser's `VideoDecoder` is configured with
@@ -82,21 +89,29 @@ impl Speed {
     }
 }
 
-/// A tile column is about this wide, so libvpx's `tile_columns` is the log2 of
-/// how many of them the picture holds: one under 1440 pixels, two from 1440
-/// through 1080p and 1440p, four from 2880 and at 4K. The width rather than the
-/// thread count decides it because a tile is a cost as well as a split — the
-/// columns are coded apart, which costs bytes, and at 1080p four of them coded
-/// slower than two whatever the threads — while at 4K four were worth having.
-/// Two at 1440 are what a decoder's threads have to split: libvpx's own
-/// decoder, which is the browser's, parses and reconstructs a one-column frame
-/// on one thread and gives the others only the loop filter, and vp9-wasm, which
-/// reconstructs by rows whatever the tiles, still parses a column in order. A
-/// 1440×900 desktop re-encoded with two columns cost 8% more bytes and vp9-wasm
-/// decoded it 10% faster on four threads; a busy Mac screen of that size cost
-/// 0.1% more and decoded 21% faster. Never more than the threads can fill,
-/// since a tile no thread is free for is bytes for nothing.
-const TILE_WIDTH: usize = 720;
+/// The widths from which a picture is coded in two tile columns, in four and
+/// in eight, so libvpx's `tile_columns` is the log2 of that: one column under
+/// 1440 pixels, two from 1440 through 1080p, four from 2048 and at 4K. The
+/// width rather than the thread count decides it because a tile is a cost as
+/// well as a split — the columns are coded apart, which costs bytes, and at
+/// 1080p four of them coded slower than two whatever the threads — while at 4K
+/// four were worth having. Two at 1440 are what a decoder's threads have to
+/// split: libvpx's own decoder, which is the browser's, parses and reconstructs
+/// a one-column frame on one thread and gives the others only the loop filter,
+/// and vp9-wasm, which reconstructs by rows whatever the tiles, still parses a
+/// column in order. A 1440×900 desktop re-encoded with two columns cost 8% more
+/// bytes and vp9-wasm decoded it 10% faster on four threads; a busy Mac screen
+/// of that size cost 0.1% more and decoded 21% faster. Four from 2048 and not
+/// 2880 were measured on the gateway's own Mac captures at 2048×1536 and
+/// 2560×1600, at quality 90 on four threads, on the 300 quietest frames of each
+/// and the 300 busiest: four columns cost 0.1% more bytes than two on the quiet
+/// frames and 1.4% and 1.0% on the busy, under 0.1 dB, this encoder coded them
+/// 9% to 14% faster, and libvpx's four decoding threads, with a column each,
+/// took 30.4 ms a busy frame for 51.9 and 30.9 for 54.3. Not from 1920: the
+/// busy frames of a 1920×1080 Windows capture cost 15% more bytes in four.
+/// Never more than the
+/// threads can fill, since a tile no thread is free for is bytes for nothing.
+const TILE_WIDTHS: [u16; 3] = [1440, 2048, 5760];
 
 /// The most threads libvpx takes for one encoder.
 const MAX_THREADS: usize = 64;
@@ -112,7 +127,7 @@ fn quality_to_q(quality: u8) -> u32 {
 
 /// libvpx's `tile_columns` for a `width`-wide picture coded by `threads`.
 fn tile_columns_log2(width: u16, threads: usize) -> u32 {
-    (usize::from(width) / TILE_WIDTH).max(1).ilog2().min(threads.max(1).ilog2())
+    (TILE_WIDTHS.iter().filter(|&&from| width >= from).count() as u32).min(threads.max(1).ilog2())
 }
 
 /// Whether libvpx is left to loop filter a stream's frames: all but 4:4:4 in
@@ -129,10 +144,16 @@ fn tile_columns_log2(width: u16, threads: usize) -> u32 {
 /// parsing: 7.2 ms for 7.5 at 1280 wide, 5.7 for 5.8 at 1440, 6.1 for 6.4 at
 /// 1600, 9.8 for 9.0 at 1920, 9.5 for 10.3 at 2560. In four: 6.4 for 10.4 at
 /// 2880, 14.2 for 21.3 at 3456, 12.1 for 17.4 at 3840. An earlier 3456-wide
-/// desktop coded in two columns: 27.4 for 29.0. So the filter goes where the
-/// columns have left it as what a decoder's threads wait on, which is also
-/// where a frame is slowest to decode, and stays where it would be bytes and
-/// picture given for no time. A 4:2:0 stream keeps it whatever its size: that
+/// desktop coded in two columns: 27.4 for 29.0, and the 2560-wide capture in
+/// four: 6.1 for 9.0, a 2048-wide one: 5.3 for 7.8. Those are each capture's
+/// first 300 frames, its quietest; on its 300 busiest the filter is less of a
+/// frame and of the stream, 11% to 16% of one thread's cycles for 0.2% to 1.3%
+/// of the bytes and 0.3 to 0.6 dB, and four threads gain 14% to 27% in four
+/// columns and nothing to speak of in one or two. So the filter goes where the
+/// columns have left it as what a
+/// decoder's threads wait on, which is also where a frame is slowest to decode,
+/// and stays where it would be bytes and picture given for no time. A 4:2:0
+/// stream keeps it whatever its size: that
 /// is the profile a browser decodes itself, often in hardware, and nothing
 /// here was measured on one.
 fn loop_filtered(chroma: Chroma, width: u16, threads: usize) -> bool {
@@ -413,7 +434,9 @@ impl Encoder {
     /// An encoder for a `width`×`height` picture at `chroma`, starting at
     /// `quality` (1–100, clamped), coded by `threads` threads. The thread count
     /// is the caller's: how many cores a machine can spare is a question about
-    /// what else it runs.
+    /// what else it runs. It also bounds the tile columns, and so decides with
+    /// the width whether a 4:4:4 stream is loop filtered: from 2048 wide on four
+    /// threads or more it is not.
     pub fn new(width: u16, height: u16, chroma: Chroma, quality: u8, threads: usize) -> Result<Self, Error> {
         if width == 0 || height == 0 {
             return Err(Error::Empty(width, height));
@@ -1076,17 +1099,22 @@ mod tests {
     }
 
     /// Tile columns follow the width — one under 1440, two from 1440 through
-    /// 1440p, four from 2880 and at 4K and 5K — and never outnumber the threads.
+    /// 1080p, four from 2048 and at 4K and 5K, eight from 5760 — and never
+    /// outnumber the threads.
     #[test]
     fn tile_columns_follow_the_width_and_never_outnumber_the_threads() {
         assert_eq!(tile_columns_log2(1280, 8), 0);
         assert_eq!(tile_columns_log2(1439, 8), 0);
         assert_eq!(tile_columns_log2(1440, 8), 1);
         assert_eq!(tile_columns_log2(1920, 8), 1);
-        assert_eq!(tile_columns_log2(2560, 8), 1);
+        assert_eq!(tile_columns_log2(2047, 8), 1);
+        assert_eq!(tile_columns_log2(2048, 8), 2);
+        assert_eq!(tile_columns_log2(2560, 8), 2);
         assert_eq!(tile_columns_log2(2880, 8), 2);
         assert_eq!(tile_columns_log2(3840, 8), 2);
         assert_eq!(tile_columns_log2(5120, 8), 2);
+        assert_eq!(tile_columns_log2(5760, 8), 3);
+        assert_eq!(tile_columns_log2(5760, 4), 2);
         assert_eq!(tile_columns_log2(3840, 2), 1);
         assert_eq!(tile_columns_log2(3840, 1), 0);
         assert_eq!(tile_columns_log2(3840, 0), 0);
@@ -1133,13 +1161,13 @@ mod tests {
     /// that is not says so in every frame's header and decodes as any other.
     #[test]
     fn the_loop_filter_is_left_out_of_444_in_four_tile_columns() {
-        assert!(loop_filtered(Chroma::Full, 2879, 8));
-        assert!(!loop_filtered(Chroma::Full, 2880, 8));
+        assert!(loop_filtered(Chroma::Full, 2047, 8));
+        assert!(!loop_filtered(Chroma::Full, 2048, 8));
         assert!(!loop_filtered(Chroma::Full, 3840, 4));
         assert!(loop_filtered(Chroma::Full, 3840, 3));
         assert!(loop_filtered(Chroma::Subsampled, 3840, 8));
 
-        for (w, chroma, threads, filtered) in [(1440, Chroma::Full, 4, true), (2880, Chroma::Full, 4, false), (2880, Chroma::Full, 2, true), (2880, Chroma::Subsampled, 4, true)] {
+        for (w, chroma, threads, filtered) in [(1440, Chroma::Full, 4, true), (2048, Chroma::Full, 4, false), (2048, Chroma::Full, 2, true), (2048, Chroma::Subsampled, 4, true)] {
             let mut encoder = Encoder::new(w, 64, chroma, 50, threads).expect("an encoder");
             let frames: Vec<Vec<u8>> = [[30, 60, 90], [200, 30, 30], [40, 180, 70]].iter().map(|colour| encode(&mut encoder, &picture(w, 64, chroma, &flat(w, 64, *colour)), false).0).collect();
             for (n, frame) in frames.iter().enumerate() {

@@ -6,6 +6,12 @@ and the [remotex](https://github.com/andrewtheguy/remotex) gateway both code it.
 - One libvpx encoder configuration: a quantizer pinned to a 1–100 quality dial
   rather than a bitrate, screen-content tuning, no lag, no dropped frames, and
   the colour matrix and range declared in the bitstream.
+- The stream's shape follows the picture's width and the threads, for the
+  decoder's sake: one tile column under 1440 wide, two from 1440, four from
+  2048 and eight from 5760, never more than the threads. A 4:4:4 stream in
+  four columns or more, 2048 wide on four threads, is coded without the loop
+  filter, which a software decoder's threads otherwise wait on; that costs 2%
+  to 4% more bytes and 0.5 to 0.9 dB of luma. 4:2:0 always keeps the filter.
 - `Picture`: the 8-bit 4:2:0 or 4:4:4 BT.601 studio-swing planes libvpx reads,
   converted from packed RGB or `B, G, R, X`.
 - `Decoder`: the planes back, for every test here and in a user.
@@ -23,5 +29,5 @@ nothing is configured or installed at build time.
 Use it by release tag:
 
 ```toml
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.9" }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.10" }
 ```
