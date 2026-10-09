@@ -1447,6 +1447,346 @@ mod tests {
         }
     }
 
+    /// One frame of a wlshare capture, what a session handed its stream:
+    /// the file `crates/wlshare-rfb/src/capture.rs` writes there, read here
+    /// from its documented layout.
+    struct Captured<'a> {
+        size: (u16, u16),
+        quality: u8,
+        keyframe: bool,
+        changed: Option<&'a [Rect]>,
+        /// The whole picture as it stands with this frame, `B, G, R, X`,
+        /// rows tight at the width.
+        pixels: &'a [u8],
+    }
+
+    /// The rows `rects` span of a picture `height` high, each once, merged
+    /// and in order: the rows a frame of rectangles carries.
+    fn spans(rects: &[Rect], height: u16) -> Vec<std::ops::Range<u16>> {
+        let mut spans: Vec<std::ops::Range<u16>> = rects.iter().map(|r| r.y.min(height)..r.y.saturating_add(r.height).min(height)).filter(|s| !s.is_empty()).collect();
+        spans.sort_by_key(|s| s.start);
+        let mut merged: Vec<std::ops::Range<u16>> = Vec::new();
+        for span in spans {
+            match merged.last_mut() {
+                Some(last) if span.start <= last.end => last.end = last.end.max(span.end),
+                _ => merged.push(span),
+            }
+        }
+        merged
+    }
+
+    /// Hand `f` each frame of the capture at `path`: a `.wlcap`, or one
+    /// `zstd` compressed as `.wlcap.zst`, read through `zstd -dc`.
+    fn each_captured(path: &std::path::Path, mut f: impl FnMut(&Captured<'_>)) {
+        use std::io::Read as _;
+        let file = std::fs::File::open(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let mut zstd = None;
+        let mut input: Box<dyn std::io::Read> = if path.extension().is_some_and(|e| e == "zst") {
+            let mut child = std::process::Command::new("zstd").args(["-dc", "-q"]).stdin(file).stdout(std::process::Stdio::piped()).spawn().expect("zstd on the path");
+            let out = child.stdout.take().expect("piped");
+            zstd = Some(child);
+            Box::new(std::io::BufReader::with_capacity(1 << 20, out))
+        } else {
+            Box::new(std::io::BufReader::with_capacity(1 << 20, file))
+        };
+        let mut magic = [0; 8];
+        input.read_exact(&mut magic).expect("a capture's magic");
+        assert_eq!(&magic, b"WLSHCAP1", "{}: not a wlshare capture", path.display());
+        let (mut pixels, mut rects, mut size) = (Vec::new(), Vec::new(), (0u16, 0u16));
+        let mut header = [0u8; 16];
+        loop {
+            match input.read_exact(&mut header) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => panic!("{}: {e}", path.display()),
+            }
+            let u16_at = |at: usize| u16::from_le_bytes([header[at], header[at + 1]]);
+            let (w, h, quality, flags, count) = (u16_at(8), u16_at(10), header[12], header[13], u16_at(14));
+            rects.clear();
+            for _ in 0..count {
+                let mut r = [0; 8];
+                input.read_exact(&mut r).expect("a rectangle");
+                let field = |at: usize| u16::from_le_bytes([r[at], r[at + 1]]);
+                rects.push(Rect { x: field(0), y: field(2), width: field(4), height: field(6) });
+            }
+            let row = usize::from(w) * 4;
+            let spans = if flags & 2 == 0 {
+                if size != (w, h) {
+                    size = (w, h);
+                    pixels.clear();
+                    pixels.resize(row * usize::from(h), 0);
+                }
+                std::iter::once(0..h).collect()
+            } else {
+                assert_eq!(size, (w, h), "rectangles of a picture no frame before holds");
+                spans(&rects, h)
+            };
+            for span in spans {
+                input.read_exact(&mut pixels[usize::from(span.start) * row..usize::from(span.end) * row]).expect("a whole frame");
+            }
+            f(&Captured { size, quality, keyframe: flags & 1 != 0, changed: (flags & 2 != 0).then_some(&rects[..]), pixels: &pixels });
+        }
+        if let Some(mut child) = zstd {
+            let _ = child.wait();
+        }
+    }
+
+    /// The mean squared error of a decode's luma against `picture`'s.
+    fn luma_mse(picture: &Picture, decoded: &crate::Decoded<'_>) -> f64 {
+        let (w, h) = picture.size();
+        let (w, h) = (usize::from(w), usize::from(h));
+        let (source, plane, stride) = (picture.planes()[0], decoded.planes()[0], decoded.strides()[0]);
+        let mut sum = 0.0;
+        for y in 0..h {
+            for (a, b) in source[y * w..][..w].iter().zip(&plane[y * stride..][..w]) {
+                sum += (f64::from(*a) - f64::from(*b)).powi(2);
+            }
+        }
+        sum / (w * h) as f64
+    }
+
+    /// What a captured frame was, the kinds the gate reads apart.
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Kind {
+        /// A keyframe: asked, or the first at a size.
+        Key,
+        /// The whole picture as an inter frame: a settle, or a frame after
+        /// one libvpx made nothing of.
+        Whole,
+        /// Rectangles within a superblock's area.
+        Small,
+        /// Rectangles within a sixteenth of the picture.
+        Mid,
+        /// Rectangles over more.
+        Large,
+    }
+
+    impl Kind {
+        fn name(self) -> &'static str {
+            match self {
+                Kind::Key => "key",
+                Kind::Whole => "whole",
+                Kind::Small => "small",
+                Kind::Mid => "mid",
+                Kind::Large => "large",
+            }
+        }
+    }
+
+    /// Both encoders' bytes, times and luma PSNRs over the frames of one kind.
+    #[derive(Default)]
+    struct Tally {
+        frames: usize,
+        bytes: [usize; 2],
+        times: [Vec<f64>; 2],
+        psnr: [f64; 2],
+        ratios: Vec<f64>,
+    }
+
+    fn median(v: &mut [f64]) -> f64 {
+        if v.is_empty() {
+            return f64::NAN;
+        }
+        v.sort_unstable_by(f64::total_cmp);
+        v[v.len() / 2]
+    }
+
+    /// Play the capture at `path` into this encoder and, with `against`, into
+    /// libvpx too, as the session played it into its stream: the same
+    /// rectangles, the same dial, a keyframe where one was asked, which of
+    /// them goes first alternating, on `threads`. Per kind of frame, what
+    /// each made of it.
+    fn play(path: &std::path::Path, threads: usize, against: bool) -> (std::collections::BTreeMap<Kind, Tally>, (u16, u16), usize) {
+        let mut encoders: Option<(crate::Encoder, Encoder, [Decoder; 2])> = None;
+        let mut picture: Option<Picture> = None;
+        let mut tallies: std::collections::BTreeMap<Kind, Tally> = std::collections::BTreeMap::new();
+        let (mut n, mut size, mut libvpx_carried) = (0usize, (0u16, 0u16), false);
+        each_captured(path, |frame| {
+            let (w, h) = frame.size;
+            let fresh = size != (w, h);
+            if fresh {
+                size = (w, h);
+                picture = Some(Picture::new(w, h, Chroma::Full).expect("a picture"));
+                encoders = Some((
+                    crate::Encoder::new(w, h, Chroma::Full, frame.quality, threads).expect("a libvpx encoder"),
+                    Encoder::new(w, h, frame.quality, threads).expect("an encoder"),
+                    [Decoder::new(1).expect("a decoder"), Decoder::new(1).expect("a decoder")],
+                ));
+            }
+            let (libvpx, rust, decoders) = encoders.as_mut().expect("made above");
+            let picture = picture.as_mut().expect("made above");
+            let stride = usize::from(w) * 4;
+            match frame.changed {
+                Some(rects) => {
+                    for r in rects {
+                        picture.read_bgrx_rows(frame.pixels, stride, r.y.min(h)..r.y.saturating_add(r.height).min(h)).expect("rows of the picture");
+                    }
+                }
+                None => picture.read_bgrx(frame.pixels, stride).expect("the picture"),
+            }
+            if libvpx.quality() != frame.quality {
+                libvpx.set_quality(frame.quality).expect("the dial");
+            }
+            if rust.quality() != frame.quality {
+                rust.set_quality(frame.quality);
+            }
+            let kind = match frame.changed {
+                _ if frame.keyframe || fresh => Kind::Key,
+                None => Kind::Whole,
+                Some(rects) => {
+                    let area: usize = rects.iter().map(|r| usize::from(r.width.min(w.saturating_sub(r.x))) * usize::from(r.height.min(h.saturating_sub(r.y)))).sum();
+                    if area <= 64 * 64 {
+                        Kind::Small
+                    } else if area * 16 <= usize::from(w) * usize::from(h) {
+                        Kind::Mid
+                    } else {
+                        Kind::Large
+                    }
+                }
+            };
+            let changed = frame.changed;
+            let mut out = [Vec::new(), Vec::new()];
+            let mut times = [0.0; 2];
+            let mut produced = true;
+            for c in if n % 2 == 0 { [0, 1] } else { [1, 0] } {
+                if c == 0 && !against {
+                    continue;
+                }
+                let started = std::time::Instant::now();
+                if c == 0 {
+                    // libvpx is handed the rectangles as its stream would be:
+                    // not after a frame it produced nothing for.
+                    produced = libvpx.encode(picture, frame.keyframe, changed.filter(|_| libvpx_carried), &mut out[0]).expect("an encode").is_some();
+                } else {
+                    rust.encode(picture, frame.keyframe, changed, &mut out[1]).expect("a frame");
+                }
+                times[c] = started.elapsed().as_secs_f64() * 1000.0;
+            }
+            libvpx_carried = produced;
+            let tally = tallies.entry(kind).or_default();
+            tally.frames += 1;
+            for c in 0..2 {
+                if c == 0 && (!against || !produced) {
+                    continue;
+                }
+                let decoded = decoders[c].decode(&out[c]).expect("a frame libvpx decodes");
+                tally.bytes[c] += out[c].len();
+                tally.times[c].push(times[c]);
+                tally.psnr[c] += psnr(luma_mse(picture, &decoded).max(1e-3));
+            }
+            if against && produced {
+                tally.ratios.push(times[1] / times[0]);
+            }
+            n += 1;
+        });
+        (tallies, size, n)
+    }
+
+    /// The captures in the directory `CAPTURES` names (`tmp/captures` if
+    /// unset), in name order.
+    fn captures() -> Vec<std::path::PathBuf> {
+        let dir = std::env::var_os("CAPTURES").map_or_else(|| std::path::PathBuf::from("tmp/captures"), std::path::PathBuf::from);
+        let only = std::env::var("ONLY").ok();
+        let mut paths: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .map(|entry| entry.expect("an entry").path())
+            .filter(|p| p.to_str().is_some_and(|s| s.ends_with(".wlcap") || s.ends_with(".wlcap.zst")))
+            .filter(|p| only.as_ref().is_none_or(|only| p.to_str().is_some_and(|s| s.contains(only.as_str()))))
+            .collect();
+        paths.sort();
+        assert!(!paths.is_empty(), "no captures in {}", dir.display());
+        paths
+    }
+
+    fn capture_name(path: &std::path::Path) -> String {
+        path.file_name().expect("a file").to_string_lossy().trim_end_matches(".zst").trim_end_matches(".wlcap").to_owned()
+    }
+
+    /// Every frame of each wlshare capture in `tmp/captures/` (or the
+    /// directory `CAPTURES` names; `ONLY` keeps the captures whose name
+    /// holds it), played into this encoder and into libvpx as the session
+    /// played it into its stream, on `THREADS` threads (4 if unset). Per
+    /// capture, for the frames of each kind — keyframes, whole inter frames,
+    /// and rectangles within a superblock, within a sixteenth of the picture
+    /// and over more — bytes, median time and luma PSNR of libvpx's decode
+    /// of each, and the ratios the plan's gate reads. A measurement, not a
+    /// check; run it in release:
+    ///
+    /// ```text
+    /// cargo test --release captures_against_libvpx -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
+    fn captures_against_libvpx() {
+        let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
+        for path in captures() {
+            let (mut tallies, size, n) = play(&path, threads, true);
+            println!("{} {}x{} on {threads}, {n} frames", capture_name(&path), size.0, size.1);
+            let mut all = Tally::default();
+            for (kind, tally) in &mut tallies {
+                let f = tally.frames as f64;
+                let produced = tally.times[0].len().max(1) as f64;
+                println!(
+                    "  {:<5} {:>5} | libvpx {:>9} B {:>6.2} ms {:>5.2} dB | rust {:>9} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time median {:.3}",
+                    kind.name(),
+                    tally.frames,
+                    tally.bytes[0],
+                    median(&mut tally.times[0]),
+                    tally.psnr[0] / produced,
+                    tally.bytes[1],
+                    median(&mut tally.times[1]),
+                    tally.psnr[1] / f,
+                    tally.bytes[1] as f64 / tally.bytes[0].max(1) as f64,
+                    median(&mut tally.ratios),
+                );
+                all.frames += tally.frames;
+                for c in 0..2 {
+                    all.bytes[c] += tally.bytes[c];
+                    all.times[c].extend_from_slice(&tally.times[c]);
+                    all.psnr[c] += tally.psnr[c];
+                }
+                all.ratios.extend_from_slice(&tally.ratios);
+            }
+            let f = all.frames as f64;
+            println!(
+                "  all   {:>5} | libvpx {:>9} B {:>6.2} ms {:>5.2} dB | rust {:>9} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time median {:.3} total {:.3}",
+                all.frames,
+                all.bytes[0],
+                all.times[0].iter().sum::<f64>() / all.times[0].len().max(1) as f64,
+                all.psnr[0] / all.times[0].len().max(1) as f64,
+                all.bytes[1],
+                all.times[1].iter().sum::<f64>() / f,
+                all.psnr[1] / f,
+                all.bytes[1] as f64 / all.bytes[0].max(1) as f64,
+                median(&mut all.ratios),
+                all.times[1].iter().sum::<f64>() / all.times[0].iter().sum::<f64>().max(1e-9),
+            );
+        }
+    }
+
+    /// The captures played into this encoder alone, `PASSES` times over (1
+    /// if unset), for a profiler to watch; the same knobs as
+    /// `captures_against_libvpx`. Run it in release:
+    ///
+    /// ```text
+    /// ONLY=terminal cargo test --release captures_rust_alone -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
+    fn captures_rust_alone() {
+        let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
+        let passes: usize = std::env::var("PASSES").map_or(1, |p| p.parse().expect("a pass count"));
+        for path in captures() {
+            for _ in 0..passes {
+                let (mut tallies, size, n) = play(&path, threads, false);
+                println!("{} {}x{} on {threads}, {n} frames", capture_name(&path), size.0, size.1);
+                for (kind, tally) in &mut tallies {
+                    println!("  {:<5} {:>5} | rust {:>9} B median {:>6.2} ms mean {:>6.2} ms {:>5.2} dB", kind.name(), tally.frames, tally.bytes[1], median(&mut tally.times[1]), tally.times[1].iter().sum::<f64>() / tally.frames as f64, tally.psnr[1] / tally.frames as f64);
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_picture_that_is_not_the_encoders_is_refused() {
         let mut encoder = Encoder::new(64, 64, 90, 1).expect("an encoder");
