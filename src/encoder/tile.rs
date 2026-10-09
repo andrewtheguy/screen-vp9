@@ -57,7 +57,8 @@ const SPLIT_VARIANCE: i64 = 8;
 const RATE_WEIGHT: i64 = 140;
 
 /// A vector the search offers is taken over the vectors a decoder predicts
-/// only where it leaves `1 / NEW_VECTOR_GAIN` less variance than they do.
+/// only where its residual's squares are `1 / NEW_VECTOR_GAIN` less than
+/// theirs.
 const NEW_VECTOR_GAIN: i64 = 4;
 
 /// An intra mode other than DC is taken only where its residual varies
@@ -879,10 +880,12 @@ impl<'a> Tile<'a> {
             Some(previous) => {
                 // Zero first, then the vectors a decoder predicts, then the
                 // search's, which are new vectors to code and so have to do
-                // clearly better than the others to be taken.
+                // clearly better than the others to be taken. Each is ranked
+                // by the squares of its residual, its mean with them: what a
+                // vector leaves as an offset is coded too.
                 let searched = previous.vectors[(mi_row >> SB_LOG2) * self.geometry.sb_cols + (mi_col >> SB_LOG2)];
                 let predicted = self.candidates(mi_row, mi_col, n);
-                let mut best = (Mv::ZERO, total.residual.variance(count), total.residual);
+                let mut best = (Mv::ZERO, total.residual.squares, total.residual);
                 let mut tried = [Mv::ZERO; 1 + 2 + motion::VECTORS];
                 for (i, mv) in predicted.into_iter().chain(searched).enumerate() {
                     if best.1 == 0 || tried.contains(&mv) {
@@ -890,12 +893,12 @@ impl<'a> Tile<'a> {
                     }
                     tried[1 + i] = mv;
                     let moments = self.square_residual(mi_row, mi_col, n, mv);
-                    let variance = moments.variance(count);
-                    let better = if i < predicted.len() { variance < best.1 } else { variance < best.1 - best.1 / NEW_VECTOR_GAIN };
+                    let better = if i < predicted.len() { moments.squares < best.1 } else { moments.squares < best.1 - best.1 / NEW_VECTOR_GAIN };
                     if better {
-                        best = (mv, variance, moments);
+                        best = (mv, moments.squares, moments);
                     }
                 }
+                let best = (best.0, best.2.variance(count), best.2);
                 // The other intra modes are tried only where the previous
                 // frame cannot code the square whole, or DC does better.
                 let (intra, variance, moments) =
@@ -913,6 +916,13 @@ impl<'a> Tile<'a> {
         // got wrong there. What moved takes the unchanged part with it: it
         // is as likely to be where the motion left it as where it was.
         if partly && matches!(mode, Mode::Intra(_) | Mode::Inter(Mv::ZERO)) {
+            return None;
+        }
+        // A 64×64 is predicted from the previous frame in its four 32×32s,
+        // each with a vector of its own: on the shader animations of the
+        // quiet samples, whose light moves over a pattern that stays, one
+        // vector for the whole cost 1–2% of their bytes.
+        if n == 3 && matches!(mode, Mode::Inter(_)) {
             return None;
         }
         (n == 0 || variance <= self.split_variance * count * count).then_some((mode, moments))

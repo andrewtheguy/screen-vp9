@@ -64,7 +64,7 @@ row's second column is built only if the first fails the gate on a capture.
 |---|---|---|
 | Profile and colour | Profile 1, 8-bit 4:4:4; the keyframe header says BT.601, studio swing | — |
 | Reference frames | The previous frame only: the keyframe refreshes every slot, an inter frame refreshes one and reads it as `LAST` | Golden frame, compound |
-| Block sizes | 64×64 down to 8×8, partition chosen by the encoder | 4×4 blocks |
+| Block sizes | 64×64 down to 8×8, partition chosen by the encoder; an inter block 32×32 at most | 4×4 blocks |
 | Intra modes | DC, V, H and TM, each costed from the sums of its square's rows and columns and the pixels along its edges; in an inter frame tried only where the previous frame does not code the square whole | The six diagonal modes |
 | Inter modes | Zero, nearest, near and new motion vectors to a quarter pixel, at EIGHTTAP_SMOOTH, the frame's one filter; the skip flag for a block that did not change | Eighth-pixel vectors |
 | Transforms | A size per block, which it signals: an inter block's the one whose luma costs least in error and bits, quantized at each; an intra block's 4×4 where it varies, otherwise the largest up to 16×16; an intra block's luma below 32×32 in the DCT and ADST its mode pairs | — |
@@ -152,7 +152,11 @@ row's second column is built only if the first fails the gate on a capture.
    predicts between pixels, smoothed. EIGHTTAP_SMOOTH as the frame's one
    filter, done: it cut their bytes 7–12% and cost nothing elsewhere; and
    libvpx coded at it alone comes out no bigger than at its filter per
-   block, which is therefore not built.
+   block, which is therefore not built. Then each vector ranked by its
+   residual's squares rather than its variance, done, since a mean the
+   vector leaves is coded too: 6% of the busy samples in one and two
+   columns, and 0.6 dB. And an inter block no larger than 32×32, done,
+   1–2% of the quiet ones in four.
 6. **Switch over.** The libvpx encoder, `Chroma::Subsampled` and `Speed`
    removed behind the same API, a release tagged, the pins bumped in wlshare
    and remotex as they drop 4:2:0, and `AGENTS.md` reworded: the crate then
