@@ -367,7 +367,12 @@ impl Picture {
     /// [`Self::read_bgrx`] takes it, and leave every other row as the last
     /// conversion made it: what a picture that changed in a few places costs is
     /// those rows and not the screen. Rows past the picture's last are not
-    /// part of it. A 4:2:0 chroma row is two rows' average, so both are read.
+    /// part of it.
+    ///
+    /// A 4:2:0 chroma row is two rows' average, an even row's and the odd one
+    /// under it, so `rows` is read out to whole pairs: the row that shares a
+    /// pair with a row of `rows` must hold the picture too, though it is not
+    /// named. No other row is read.
     pub fn read_bgrx_rows(&mut self, pixels: &[u8], stride: usize, rows: std::ops::Range<u16>) -> Result<(), Error> {
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         if !fits(w, h, stride, pixels.len()) {
@@ -720,6 +725,9 @@ impl Encoder {
     /// frame does at once — what a caller that settles a quiet picture asks
     /// before deciding it owes one. Before the first frame, the dial.
     pub fn coarsest(&self) -> u8 {
+        if !self.begun {
+            return self.quality;
+        }
         self.coded_at.iter().copied().min().unwrap_or(self.quality)
     }
 
@@ -975,8 +983,12 @@ impl Stream {
     ///
     /// `changed` is where the picture differs from the one the last frame
     /// carried, or `None` for one that may differ anywhere. With it only the
-    /// rows the rectangles span are read, the other rows of `pixels` being
-    /// whatever they are, and only the blocks the rectangles touch are coded.
+    /// rows the rectangles span are read, and only the blocks the rectangles
+    /// touch are coded. At 4:4:4 the other rows of `pixels` may be whatever
+    /// they are. At 4:2:0 the rows are read out to whole pairs, an even row
+    /// and the odd one under it ([`Picture::read_bgrx_rows`]), so the row
+    /// sharing a pair with a changed one must hold the picture as well: it is
+    /// in a block this frame codes, and what it holds reaches the decoder.
     /// A keyframe, the stream's first frame and the frame after one the
     /// encoder produced nothing for are the whole picture whatever `changed`
     /// says, and read all of `pixels`.
@@ -1404,7 +1416,11 @@ mod tests {
         };
 
         let mut encoder = Encoder::new(w, h, Chroma::Subsampled, QUALITY_MIN, 2).expect("an encoder");
-        assert_eq!(encoder.coarsest(), QUALITY_MIN, "before a frame, the dial");
+        // Before a frame nothing is coded at any dial, wherever it has been.
+        let mut unused = Encoder::new(w, h, Chroma::Subsampled, 20, 2).expect("an encoder");
+        unused.set_quality(90).expect("the encoder to accept a new quantizer");
+        assert_eq!(unused.coarsest(), 90, "before a frame, the dial as it stands");
+        assert_eq!(encoder.coarsest(), QUALITY_MIN);
         let mut frames = vec![encode(&mut encoder, &source, false).0];
         let coarse = error(&decode_chain(&frames, wu, hu));
         assert_eq!(encoder.coarsest(), QUALITY_MIN);
@@ -1497,7 +1513,8 @@ mod tests {
         const BACK: [u8; 3] = [20, 40, 80];
         const LIT: [u8; 3] = [240, 240, 240];
         const JUNK: [u8; 3] = [170, 85, 170];
-        let named = Rect { x: 32, y: 16, width: 32, height: 16 };
+        // On an odd row, so that at 4:2:0 the row above shares its chroma.
+        let named = Rect { x: 32, y: 17, width: 32, height: 15 };
         // `rgb` in the byte order a stream is fed: packed RGB, or `B, G, R, X`.
         let packed = |rgb: &[u8], bgrx: bool| -> Vec<u8> { if bgrx { rgb.chunks(3).flat_map(|px| [px[2], px[1], px[0], 0]).collect() } else { rgb.to_vec() } };
         let paint = |rgb: &mut [u8], rect: Rect, colour: [u8; 3]| {
@@ -1525,13 +1542,16 @@ mod tests {
             let (key, back) = step(&mut stream, &whole, Some(&[named]), false);
             assert!(key && near(rgb_at(&back, wu, 4, 70), BACK) && near(rgb_at(&back, wu, 48, 24), BACK), "{chroma:?}: the first frame was not the whole picture");
 
-            // A change, in a buffer whose other rows are not the picture.
+            // A change, in a buffer whose other rows are not the picture: all
+            // but the changed rows at 4:4:4, and at 4:2:0 all but those and the
+            // row that shares the first one's chroma, which is read with it.
             let mut rows = flat(w, h, JUNK);
-            paint(&mut rows, Rect { x: 0, y: named.y, width: w, height: named.height }, BACK);
+            let held = if chroma == Chroma::Subsampled { named.y - 1 } else { named.y };
+            paint(&mut rows, Rect { x: 0, y: held, width: w, height: named.y + named.height - held }, BACK);
             paint(&mut rows, named, LIT);
             let (key, back) = step(&mut stream, &rows, Some(&[named]), false);
             assert!(!key && near(rgb_at(&back, wu, 48, 24), LIT), "{chroma:?}: the change came back {:?}", rgb_at(&back, wu, 48, 24));
-            for (x, y) in [(4, 4), (4, 24), (90, 24), (48, 4), (48, 70)] {
+            for (x, y) in [(4, 4), (4, 24), (90, 24), (48, 4), (48, 15), (48, 16), (48, 32), (48, 70)] {
                 assert!(near(rgb_at(&back, wu, x, y), BACK), "{chroma:?}: ({x}, {y}), outside the change, came back {:?}", rgb_at(&back, wu, x, y));
             }
 
