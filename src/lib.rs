@@ -139,10 +139,11 @@ fn tile_columns_log2(width: u16, threads: usize) -> u32 {
 /// 2880, 14.2 for 21.3 at 3456, 12.1 for 17.4 at 3840. An earlier 3456-wide
 /// desktop coded in two columns: 27.4 for 29.0, and the 2560-wide capture in
 /// four: 6.1 for 9.0, a 2048-wide one: 5.3 for 7.8. Those are each capture's
-/// first 300 frames, its quietest; on its 300 busiest the filter is less of a frame and of the stream, 11% to
-/// 16% of one thread's cycles for 0.2% to 1.3% of the bytes and 0.3 to 0.6 dB,
-/// and four threads gain 14% to 27% in four columns and nothing to speak of in
-/// one or two. So the filter goes where the columns have left it as what a
+/// first 300 frames, its quietest; on its 300 busiest the filter is less of a
+/// frame and of the stream, 11% to 16% of one thread's cycles for 0.2% to 1.3%
+/// of the bytes and 0.3 to 0.6 dB, and four threads gain 14% to 27% in four
+/// columns and nothing to speak of in one or two. So the filter goes where the
+/// columns have left it as what a
 /// decoder's threads wait on, which is also where a frame is slowest to decode,
 /// and stays where it would be bytes and picture given for no time. A 4:2:0
 /// stream keeps it whatever its size: that
