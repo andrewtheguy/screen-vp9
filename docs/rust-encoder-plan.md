@@ -65,9 +65,9 @@ row's second column is built only if the first fails the gate on a capture.
 | Profile and colour | Profile 1, 8-bit 4:4:4; the keyframe header says BT.601, studio swing | — |
 | Reference frames | The previous frame only: the keyframe refreshes every slot, an inter frame refreshes one and reads it as `LAST` | Golden frame, compound |
 | Block sizes | 64×64 down to 8×8, partition chosen by the encoder | 4×4 blocks |
-| Intra modes | DC only, which keeps every transform a DCT | V, H and TM, which bring ADST with them |
+| Intra modes | DC, V, H and TM, each costed from the sums of its square's rows and columns and the pixels along its edges; in an inter frame tried only where the previous frame does not code the square whole | The six diagonal modes |
 | Inter modes | Zero, nearest, near and new motion vectors to a quarter pixel, at EIGHTTAP, the frame's one filter; the skip flag for a block that did not change | Eighth-pixel vectors, a filter per block |
-| Transforms | A size per block, which it signals: an inter block's the one whose luma costs least in error and bits, quantized at each; an intra block's 4×4 where it varies, otherwise the largest up to 16×16 | — |
+| Transforms | A size per block, which it signals: an inter block's the one whose luma costs least in error and bits, quantized at each; an intra block's 4×4 where it varies, otherwise the largest up to 16×16; an intra block's luma below 32×32 in the DCT and ADST its mode pairs | — |
 | Loop filter | libvpx's filter at the level its real-time encoder takes from the quantizer, an intra block's one more by the deltas a decoder starts with; none in four tile columns, where the libvpx encoder leaves it out for a decoder's threads | — |
 | Probabilities | The coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools, and kept for the next; no backward adaptation, which libvpx's real-time encoder does not use either | Updates to the other probabilities |
 | Tiles and threads | Tile columns by the width rule the crate has now, their superblock rows a wavefront over the threads; the source compared and hashed in a band of rows per thread | — |
@@ -128,7 +128,7 @@ row's second column is built only if the first fails the gate on a capture.
    filtered on a thread of its own. Leaving a block at the zero vector
    unfiltered, so that an unchanged block is not filtered again frame after
    frame, moved nothing. Then the golden frame (2–9%) and 4×4 blocks (19%
-   on desktop alone). V, H and TM bought nothing. Besides these, motion the
+   on desktop alone). V, H and TM bought nothing on the captures. Besides these, motion the
    hash search cannot match, because the captures are decodes and what
    moves in them never arrives exactly: each changed superblock's row and
    column sums matched against the frame before, 64 pixels each way, done.
@@ -138,7 +138,16 @@ row's second column is built only if the first fails the gate on a capture.
    wavefront, done, as vp9-wasm reconstructs and libvpx's row-based
    multithreading codes. It took the quiet samples' median time on the Mac
    from 1.07–1.64× libvpx's to 0.84–1.01×, and the busy samples' from
-   0.75–1.19× to 0.48–0.73×.
+   0.75–1.19× to 0.48–0.73×. Four tile columns cost no bytes themselves:
+   coded in one, the four-column samples come out the same size. What
+   costs is the loop filter they leave out: libvpx's own encoder leaves
+   it out too, and its 4×4 blocks and a filter per block make up more
+   of it there. Then V, H
+   and TM, done, with the ADST: they cut every sample's bytes 1–10%, the
+   four-column quiet ones' most, for up to 5% more time, and fourteen of
+   the eighteen samples pass on the Mac. The four that do not are quiet,
+   in four columns: 2048, 2560, 3456 and 3840 wide, at 1.17–1.29×
+   libvpx's bytes.
 6. **Switch over.** The libvpx encoder, `Chroma::Subsampled` and `Speed`
    removed behind the same API, a release tagged, the pins bumped in wlshare
    and remotex as they drop 4:2:0, and `AGENTS.md` reworded: the crate then

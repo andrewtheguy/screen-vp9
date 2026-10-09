@@ -2,6 +2,50 @@
 //! exactly: a block is predicted from pixels already reconstructed, and any
 //! difference compounds down and right through the frame.
 
+use super::transform::TxType;
+
+/// The intra modes this encoder codes, by their index among VP9's ten.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(super) enum IntraMode {
+    /// The mean of the pixels above and to the left.
+    #[default]
+    Dc = 0,
+    /// The row above, down every row.
+    V = 1,
+    /// The column to the left, along every column.
+    H = 2,
+    /// Each pixel the one above it and the one left of it less the one
+    /// above and left of the block ("true motion").
+    Tm = 9,
+}
+
+impl IntraMode {
+    pub(super) const ALL: [IntraMode; 4] = [IntraMode::Dc, IntraMode::V, IntraMode::H, IntraMode::Tm];
+
+    /// The transforms of a luma block predicted this way, below 32×32
+    /// (libvpx's `intra_mode_to_tx_type_lookup`): an ADST across the
+    /// direction the prediction runs from its edge.
+    pub(super) fn tx_type(self) -> TxType {
+        match self {
+            IntraMode::Dc => TxType::DctDct,
+            IntraMode::V => TxType::AdstDct,
+            IntraMode::H => TxType::DctAdst,
+            IntraMode::Tm => TxType::AdstAdst,
+        }
+    }
+
+    /// The bools of the intra mode tree (libvpx's `vp9_intra_mode_tree`)
+    /// down to this leaf, each with its node.
+    pub(super) fn bits(self) -> &'static [(bool, usize)] {
+        match self {
+            IntraMode::Dc => &[(false, 0)],
+            IntraMode::Tm => &[(true, 0), (false, 1)],
+            IntraMode::V => &[(true, 0), (true, 1), (false, 2)],
+            IntraMode::H => &[(true, 0), (true, 1), (true, 2), (false, 3), (false, 4)],
+        }
+    }
+}
+
 /// What a transform block may read around it.
 pub(super) struct Edges {
     /// The plane's width rounded up to 8, and its height so rounded less the
@@ -15,22 +59,59 @@ pub(super) struct Edges {
 }
 
 /// Fill the `size`×`size` block at column `x` of the rows of `plane` from
-/// its first with the DC prediction: the rounded mean of `above`, the row
-/// above the block when there is one, and the column to the left, of
-/// whichever of them there is, or 128 with neither (libvpx's
-/// `build_intra_predictors` and `vpx_dc_*predictor`).
-pub(super) fn dc(above: Option<&[u8]>, plane: &mut [u8], stride: usize, x: usize, size: usize, edges: &Edges) {
-    let log2 = size.ilog2();
-    let above = above.map(|row| (0..size).map(|i| usize::from(row[(x + i).min(edges.width - 1)])).sum::<usize>());
-    let left = || -> usize { (0..size).map(|i| usize::from(plane[i.min(edges.height - 1) * stride + x - 1])).sum() };
-    let dc = match (above, edges.left) {
-        (Some(above), true) => (above + left() + size) >> (log2 + 1),
-        (Some(above), false) => (above + size / 2) >> log2,
-        (None, true) => (left() + size / 2) >> log2,
-        (None, false) => 128,
-    };
-    for row in 0..size {
-        plane[row * stride + x..][..size].fill(dc as u8);
+/// its first with its prediction in `mode` from `above`, the row above the
+/// block when there is one, and the column to the left when `edges` says
+/// it is there (libvpx's `build_intra_predictors` and its predictors):
+///
+/// - DC: the rounded mean of the row above and the column to the left, of
+///   whichever of them there is, or 128 with neither;
+/// - V, H and TM: a missing row above as 127s and a missing column to the
+///   left as 129s, and TM's corner from the row above, 129 there without
+///   the column and 127 without the row.
+pub(super) fn intra(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8], stride: usize, x: usize, size: usize, edges: &Edges) {
+    let top = |i: usize| above.map_or(127, |row| i32::from(row[(x + i).min(edges.width - 1)]));
+    let left = |plane: &[u8], i: usize| if edges.left { i32::from(plane[i.min(edges.height - 1) * stride + x - 1]) } else { 129 };
+    match mode {
+        IntraMode::Dc => {
+            let log2 = size.ilog2();
+            let above = above.map(|_| (0..size).map(top).sum::<i32>());
+            let left = || -> i32 { (0..size).map(|i| left(plane, i)).sum() };
+            let dc = match (above, edges.left) {
+                (Some(above), true) => (above + left() + size as i32) >> (log2 + 1),
+                (Some(above), false) => (above + size as i32 / 2) >> log2,
+                (None, true) => (left() + size as i32 / 2) >> log2,
+                (None, false) => 128,
+            };
+            for row in 0..size {
+                plane[row * stride + x..][..size].fill(dc as u8);
+            }
+        }
+        IntraMode::V => {
+            let row: [u8; 32] = std::array::from_fn(|i| if i < size { top(i) as u8 } else { 0 });
+            for r in 0..size {
+                plane[r * stride + x..][..size].copy_from_slice(&row[..size]);
+            }
+        }
+        IntraMode::H => {
+            for r in 0..size {
+                let v = left(plane, r) as u8;
+                plane[r * stride + x..][..size].fill(v);
+            }
+        }
+        IntraMode::Tm => {
+            let corner = match above {
+                Some(row) if edges.left => i32::from(row[x - 1]),
+                Some(_) => 129,
+                None => 127,
+            };
+            let row: [i32; 32] = std::array::from_fn(|i| if i < size { top(i) - corner } else { 0 });
+            for r in 0..size {
+                let l = left(plane, r);
+                for (p, &t) in plane[r * stride + x..][..size].iter_mut().zip(&row) {
+                    *p = (l + t).clamp(0, 255) as u8;
+                }
+            }
+        }
     }
 }
 
@@ -56,17 +137,17 @@ mod tests {
         }
         // Above: 40, 80, then 80 twice past the edge.
         let (above, rows) = at(&mut plane, stride, 4);
-        dc(Some(&above), rows, stride, 8, 4, &edges(4, false));
+        intra(IntraMode::Dc, Some(&above), rows, stride, 8, 4, &edges(4, false));
         assert_eq!(plane[4 * stride + 8], ((40 + 80 * 3 + 2) / 4) as u8);
         // Left: rows 4 to 7, inside the frame.
-        dc(None, &mut plane[4 * stride..], stride, 8, 4, &edges(4, true));
+        intra(IntraMode::Dc, None, &mut plane[4 * stride..], stride, 8, 4, &edges(4, true));
         assert_eq!(plane[7 * stride + 11], ((40 + 50 + 60 + 70 + 2) / 4) as u8);
         // Both at row 8: above, column 9 repeated; left, row 9 repeated.
         plane[7 * stride + 8..][..4].copy_from_slice(&[1, 2, 3, 4]);
         let (above, rows) = at(&mut plane, stride, 8);
-        dc(Some(&above), rows, stride, 8, 4, &edges(8, true));
+        intra(IntraMode::Dc, Some(&above), rows, stride, 8, 4, &edges(8, true));
         assert_eq!(plane[8 * stride + 8], ((1 + 2 + 2 + 2 + 80 + 90 + 90 + 90 + 4) / 8) as u8);
-        dc(None, &mut plane[8 * stride..], stride, 8, 4, &edges(8, false));
+        intra(IntraMode::Dc, None, &mut plane[8 * stride..], stride, 8, 4, &edges(8, false));
         assert!(plane[8 * stride + 8..][..4].iter().all(|&p| p == 128));
     }
 }

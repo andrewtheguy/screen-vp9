@@ -852,6 +852,45 @@ mod tests {
         }
     }
 
+    /// A `w`×`h` in RGB of thirds that one intra mode each predicts best:
+    /// stripes down, which V predicts; stripes across, H; and a plane
+    /// sloping both ways, TM. Each `k` makes others, none of them in
+    /// another's picture.
+    fn lines_rgb(w: u16, h: u16, k: usize) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity(usize::from(w) * usize::from(h) * 3);
+        for y in 0..usize::from(h) {
+            for x in 0..usize::from(w) {
+                let v = match (x * 3 / usize::from(w) + k) % 3 {
+                    0 => (x * (37 + 6 * k)) % 251,
+                    1 => (y * (53 + 10 * k)) % 241,
+                    _ => (x % 64) * (k + 1) + (2 + k) * (y % 32),
+                } as u8;
+                rgb.extend([v, v / 2 + 40, 255 - v]);
+            }
+        }
+        rgb
+    }
+
+    #[test]
+    fn the_intra_modes_decode_where_they_predict_best() {
+        // In a keyframe, and in an inter frame whose picture the frame
+        // before has nothing of; in one tile column and in four, whose
+        // blocks along a column's left edge have no column to their left.
+        for (w, h, threads) in [(203, 141, 1), (2048, 72, 4)] {
+            let mut stream = Stream::new(w, h, 90, threads);
+            for (i, keyframe) in [true, false].into_iter().enumerate() {
+                stream.frame(&picture(w, h, &lines_rgb(w, h, i)), keyframe);
+                let mut used = [0; 4];
+                for contexts in &stream.encoder.contexts {
+                    for mode in contexts.intra_modes() {
+                        used[predict::IntraMode::ALL.iter().position(|&m| m == mode).expect("a mode")] += 1;
+                    }
+                }
+                assert!(used[1..].iter().all(|&n| n > 0), "{w}x{h}, frame {i}: DC, V, H and TM coded {used:?} times");
+            }
+        }
+    }
+
     /// A `w`×`h` in RGB of soft waves, as video is and a desktop is not,
     /// moved `shift` pixels right and down: what only a vector between
     /// pixels predicts well.

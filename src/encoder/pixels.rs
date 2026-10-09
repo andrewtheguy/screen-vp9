@@ -1,5 +1,5 @@
-//! Kernels over 8-bit pixels: the moments the partition decision reads, and
-//! a residual. Each is NEON on arm64 and AVX2 on amd64, and held by its
+//! Kernels over 8-bit pixels: the moments and the sums of rows and columns
+//! the partition decision reads, and a residual. Each is NEON on arm64 and AVX2 on amd64, and held by its
 //! tests to the scalar reference beside it.
 
 /// The sum and the sum of squares of the 8×8 at the start of `a`, rows
@@ -9,6 +9,15 @@ pub(super) fn moments(a: &[u8], stride: usize) -> (i32, i32) {
     return neon::moments(a, stride);
     #[cfg(target_arch = "x86_64")]
     return avx2::moments(a, stride);
+}
+
+/// The sums of each row and of each column of the 8×8 at the start of `a`,
+/// rows `stride` apart.
+pub(super) fn line_sums(a: &[u8], stride: usize) -> ([u16; 8], [u16; 8]) {
+    #[cfg(target_arch = "aarch64")]
+    return neon::line_sums(a, stride);
+    #[cfg(target_arch = "x86_64")]
+    return avx2::line_sums(a, stride);
 }
 
 /// The sum and the sum of squares of the 8×8 at the start of `a` less the
@@ -40,6 +49,17 @@ mod scalar {
             }
         }
         (sum, squares)
+    }
+
+    pub(super) fn line_sums(a: &[u8], stride: usize) -> ([u16; 8], [u16; 8]) {
+        let (mut rows, mut cols) = ([0; 8], [0; 8]);
+        for r in 0..8 {
+            for (c, &v) in a[r * stride..][..8].iter().enumerate() {
+                rows[r] += u16::from(v);
+                cols[c] += u16::from(v);
+            }
+        }
+        (rows, cols)
     }
 
     pub(super) fn difference_moments(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> (i32, i32) {
@@ -88,6 +108,21 @@ mod neon {
             }
             (vaddlvq_u16(sum) as i32, vaddvq_u32(squares) as i32)
         }
+    }
+
+    pub(super) fn line_sums(a: &[u8], stride: usize) -> ([u16; 8], [u16; 8]) {
+        let (mut rows, mut cols) = ([0; 8], [0; 8]);
+        unsafe {
+            let mut sum = vdupq_n_u16(0);
+            for (r, row) in rows.iter_mut().enumerate() {
+                let v = eight(a, r * stride);
+                sum = vaddw_u8(sum, v);
+                *row = vaddlv_u8(v);
+            }
+            // SAFETY: `cols` is eight values.
+            vst1q_u16(cols.as_mut_ptr(), sum);
+        }
+        (rows, cols)
     }
 
     pub(super) fn difference_moments(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> (i32, i32) {
@@ -174,6 +209,25 @@ mod avx2 {
         }
     }
 
+    pub(super) fn line_sums(a: &[u8], stride: usize) -> ([u16; 8], [u16; 8]) {
+        let (mut rows, mut cols) = ([0; 8], [0; 8]);
+        unsafe {
+            let mut sum = _mm256_setzero_si256();
+            for r in (0..8).step_by(2) {
+                let pair = _mm_unpacklo_epi64(eight(a, r * stride), eight(a, (r + 1) * stride));
+                sum = _mm256_add_epi16(sum, _mm256_cvtepu8_epi16(pair));
+                // Each row's eight pixels summed into its own half.
+                let rows_of = _mm_sad_epu8(pair, _mm_setzero_si128());
+                rows[r] = _mm_extract_epi16::<0>(rows_of) as u16;
+                rows[r + 1] = _mm_extract_epi16::<4>(rows_of) as u16;
+            }
+            let sum = _mm_add_epi16(_mm256_castsi256_si128(sum), _mm256_extracti128_si256::<1>(sum));
+            // SAFETY: `cols` is eight values.
+            _mm_storeu_si128(cols.as_mut_ptr().cast(), sum);
+        }
+        (rows, cols)
+    }
+
     pub(super) fn difference_moments(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> (i32, i32) {
         unsafe {
             let (mut sum, mut squares) = (_mm256_setzero_si256(), _mm256_setzero_si256());
@@ -238,6 +292,7 @@ mod tests {
             let (sa, sb) = (33 + seed as usize % 7, 35);
             let at = seed as usize % 5;
             assert_eq!(moments(&a[at..], sa), scalar::moments(&a[at..], sa), "seed {seed}");
+            assert_eq!(line_sums(&a[at..], sa), scalar::line_sums(&a[at..], sa), "seed {seed}");
             assert_eq!(difference_moments(&a[at..], sa, &b, sb), scalar::difference_moments(&a[at..], sa, &b, sb), "seed {seed}");
             assert_eq!(difference_moments(&b, sb, &a[at..], sa), scalar::difference_moments(&b, sb, &a[at..], sa), "seed {seed}");
             for n in [4, 8, 16, 32] {

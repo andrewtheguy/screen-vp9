@@ -2,7 +2,7 @@
 //! libvpx's realtime rounding (`vp9_quantize_fp`). Quantizing is NEON on
 //! arm64 and AVX2 on amd64, held by its tests to the scalar reference
 //! beside it.
-use super::tables::{AC_QLOOKUP, DC_QLOOKUP, ISCAN_4X4, ISCAN_8X8, ISCAN_16X16, ISCAN_32X32};
+use super::tables::{AC_QLOOKUP, DC_QLOOKUP};
 
 /// The steps and roundings at one q index, `[DC, AC]` each.
 pub(super) struct Quantizer {
@@ -27,30 +27,24 @@ impl Quantizer {
     }
 
     /// Quantize the `n`×`n` `coeffs` into `levels`, both raster order, and
-    /// return the end of block: one past the last nonzero level in the
-    /// scan.
-    pub(super) fn quantize(&self, n: usize, coeffs: &[i32], levels: &mut [i32]) -> usize {
-        self.quantize_in::<false>(n, coeffs, levels).0
+    /// return the end of block: one past the last nonzero level in the scan
+    /// whose inverse is `iscan`.
+    pub(super) fn quantize(&self, n: usize, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> usize {
+        self.quantize_in::<false>(n, iscan, coeffs, levels).0
     }
 
     /// `quantize`, and the squared error of the levels as a decoder
     /// dequantizes them against `coeffs`, in the scale of a transform below
     /// 32×32: 64 times the squared error in pixels. A 32×32 transform's
     /// coefficients are half that scale.
-    pub(super) fn quantize_with_error(&self, n: usize, coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {
-        let (eob, error) = self.quantize_in::<true>(n, coeffs, levels);
+    pub(super) fn quantize_with_error(&self, n: usize, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {
+        let (eob, error) = self.quantize_in::<true>(n, iscan, coeffs, levels);
         (eob, error << (2 * u32::from(n == 32)))
     }
 
     /// `quantize`, with the squared error on the coefficients' own scale
     /// where `ERROR`, otherwise 0.
-    fn quantize_in<const ERROR: bool>(&self, n: usize, coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {
-        let iscan: &[u16] = match n {
-            4 => &ISCAN_4X4,
-            8 => &ISCAN_8X8,
-            16 => &ISCAN_16X16,
-            _ => &ISCAN_32X32,
-        };
+    fn quantize_in<const ERROR: bool>(&self, n: usize, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {
         let terms = self.terms(n);
         #[cfg(target_arch = "aarch64")]
         return neon::quantize::<ERROR>(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]);
@@ -226,7 +220,7 @@ mod avx2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoder::tables::SCAN_4X4;
+    use crate::encoder::tables::{ISCAN_4X4, ISCAN_8X8, ISCAN_16X16, ISCAN_32X32, SCAN_4X4};
 
     #[test]
     fn the_error_is_what_dequantizing_leaves() {
@@ -240,7 +234,7 @@ mod tests {
                 16 => &ISCAN_16X16[..],
                 _ => &ISCAN_32X32[..],
             };
-            q.quantize(n, &coeffs, &mut levels);
+            q.quantize(n, iscan, &coeffs, &mut levels);
             // The scan is the inverse scan's inverse: every level is in it.
             let mut scan = vec![0u16; n * n];
             for (rc, &at) in iscan.iter().enumerate() {
@@ -250,7 +244,7 @@ mod tests {
             q.dequantize(n, &levels, &scan, n * n, &mut back);
             let squared: i64 = coeffs.iter().zip(&back).map(|(&c, &b)| i64::from(c - b).pow(2)).sum();
             assert_eq!(q.error(n, &coeffs, &levels), if n == 32 { squared * 4 } else { squared }, "{n}x{n}");
-            assert_eq!(q.quantize_with_error(n, &coeffs, &mut levels), (q.quantize(n, &coeffs, &mut levels), q.error(n, &coeffs, &levels)), "{n}x{n}");
+            assert_eq!(q.quantize_with_error(n, iscan, &coeffs, &mut levels), (q.quantize(n, iscan, &coeffs, &mut levels), q.error(n, &coeffs, &levels)), "{n}x{n}");
         }
     }
 
@@ -259,7 +253,7 @@ mod tests {
         let q = Quantizer::new(120);
         let coeffs: Vec<i32> = (0..16).map(|i| (i * 37 - 300) * if i % 3 == 0 { -1 } else { 1 }).collect();
         let mut levels = vec![0; 16];
-        let eob = q.quantize(4, &coeffs, &mut levels);
+        let eob = q.quantize(4, &ISCAN_4X4, &coeffs, &mut levels);
         let mut back = vec![0; 16];
         q.dequantize(4, &levels, &SCAN_4X4, eob, &mut back);
         for (rc, (c, b)) in coeffs.iter().zip(&back).enumerate() {
@@ -290,11 +284,11 @@ mod tests {
                         })
                         .collect();
                     let (mut got, mut want) = (vec![0; n * n], vec![0; n * n]);
-                    let (eob, error) = q.quantize_with_error(n, &coeffs, &mut got);
+                    let (eob, error) = q.quantize_with_error(n, iscan, &coeffs, &mut got);
                     assert_eq!(eob, quantize_scalar(&q.terms(n), &coeffs, iscan, &mut want), "{n}x{n} at {q_index}, spread {spread}");
                     assert_eq!(got, want, "{n}x{n} at {q_index}, spread {spread}");
                     assert_eq!(error, q.error(n, &coeffs, &want), "{n}x{n} at {q_index}, spread {spread}");
-                    assert_eq!(q.quantize(n, &coeffs, &mut got), eob, "{n}x{n} at {q_index}, spread {spread}");
+                    assert_eq!(q.quantize(n, iscan, &coeffs, &mut got), eob, "{n}x{n} at {q_index}, spread {spread}");
                 }
             }
         }

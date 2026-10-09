@@ -195,6 +195,7 @@ mod tests {
     use super::super::tables::{COEF_PROBS, SKIP_PROBS, TX_PROBS_8X8, TX_PROBS_16X16, TX_PROBS_32X32};
     use super::super::tape::Tape;
     use super::super::tokens;
+    use super::super::transform::TxType;
     use super::*;
 
     #[test]
@@ -319,7 +320,7 @@ mod tests {
         levels[0] = 3;
         let mut energy = [0; 1024];
         for _ in 0..2000 {
-            tokens::write(&mut tape, tokens::Kind { tx: 1, chroma: false, inter: false }, 0, &levels, 1, &mut energy);
+            tokens::write(&mut tape, tokens::Kind { tx: 1, tx_type: TxType::DctDct, chroma: false, inter: false }, 0, &levels, 1, &mut energy);
         }
         let before = Probs::default();
         let mut probs = before.clone();

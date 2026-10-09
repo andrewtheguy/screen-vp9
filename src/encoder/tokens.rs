@@ -9,10 +9,13 @@
 use super::bool_writer::{Run, cost};
 use super::probs::{CONTEXTS, NODES, Probs, token_context};
 use super::tables::{
-    CAT1_PROB, CAT2_PROB, CAT3_PROB, CAT4_PROB, CAT5_PROB, CAT6_PROB, COEFBAND_4X4, COEFBAND_8X8PLUS, PARETO8_FULL, PT_ENERGY_CLASS, SCAN_4X4, SCAN_4X4_NEIGHBORS, SCAN_8X8,
-    SCAN_8X8_NEIGHBORS, SCAN_16X16, SCAN_16X16_NEIGHBORS, SCAN_32X32, SCAN_32X32_NEIGHBORS,
+    CAT1_PROB, CAT2_PROB, CAT3_PROB, CAT4_PROB, CAT5_PROB, CAT6_PROB, COEFBAND_4X4, COEFBAND_8X8PLUS, COL_ISCAN_4X4, COL_ISCAN_8X8, COL_ISCAN_16X16, COL_SCAN_4X4,
+    COL_SCAN_4X4_NEIGHBORS, COL_SCAN_8X8, COL_SCAN_8X8_NEIGHBORS, COL_SCAN_16X16, COL_SCAN_16X16_NEIGHBORS, ISCAN_4X4, ISCAN_8X8, ISCAN_16X16, ISCAN_32X32, PARETO8_FULL,
+    PT_ENERGY_CLASS, ROW_ISCAN_4X4, ROW_ISCAN_8X8, ROW_ISCAN_16X16, ROW_SCAN_4X4, ROW_SCAN_4X4_NEIGHBORS, ROW_SCAN_8X8, ROW_SCAN_8X8_NEIGHBORS, ROW_SCAN_16X16,
+    ROW_SCAN_16X16_NEIGHBORS, SCAN_4X4, SCAN_4X4_NEIGHBORS, SCAN_8X8, SCAN_8X8_NEIGHBORS, SCAN_16X16, SCAN_16X16_NEIGHBORS, SCAN_32X32, SCAN_32X32_NEIGHBORS,
 };
 use super::tape::Tape;
+use super::transform::TxType;
 
 /// The tokens: `ZERO_TOKEN` to `CATEGORY6_TOKEN` in libvpx's order, then the
 /// end of block.
@@ -38,15 +41,31 @@ const TOKEN_OF: [u8; 68] = {
     table
 };
 
-/// The DCT scan of transform size `tx` (0 for 4×4 to 3 for 32×32): the
-/// coefficient at each position, and the two earlier ones each position's
-/// context is taken from.
-pub(super) fn scan(tx: usize) -> (&'static [u16], &'static [u16]) {
-    match tx {
-        0 => (&SCAN_4X4, &SCAN_4X4_NEIGHBORS),
-        1 => (&SCAN_8X8, &SCAN_8X8_NEIGHBORS),
-        2 => (&SCAN_16X16, &SCAN_16X16_NEIGHBORS),
-        _ => (&SCAN_32X32, &SCAN_32X32_NEIGHBORS),
+/// The order a transform block's coefficients are coded in: the
+/// coefficient at each position, the two earlier ones each position's
+/// context is taken from, and per coefficient one past its position.
+#[derive(Clone, Copy)]
+pub(super) struct Scan {
+    pub(super) order: &'static [u16],
+    pub(super) neighbors: &'static [u16],
+    pub(super) inverse: &'static [u16],
+}
+
+/// The scan of transform size `tx` (0 for 4×4 to 3 for 32×32) and type
+/// `tx_type` (libvpx's `vp9_scan_orders`).
+pub(super) fn scan(tx: usize, tx_type: TxType) -> Scan {
+    let at = |order, neighbors, inverse| Scan { order, neighbors, inverse };
+    match (tx, tx_type) {
+        (0, TxType::AdstDct) => at(&ROW_SCAN_4X4, &ROW_SCAN_4X4_NEIGHBORS, &ROW_ISCAN_4X4),
+        (0, TxType::DctAdst) => at(&COL_SCAN_4X4, &COL_SCAN_4X4_NEIGHBORS, &COL_ISCAN_4X4),
+        (0, _) => at(&SCAN_4X4, &SCAN_4X4_NEIGHBORS, &ISCAN_4X4),
+        (1, TxType::AdstDct) => at(&ROW_SCAN_8X8, &ROW_SCAN_8X8_NEIGHBORS, &ROW_ISCAN_8X8),
+        (1, TxType::DctAdst) => at(&COL_SCAN_8X8, &COL_SCAN_8X8_NEIGHBORS, &COL_ISCAN_8X8),
+        (1, _) => at(&SCAN_8X8, &SCAN_8X8_NEIGHBORS, &ISCAN_8X8),
+        (2, TxType::AdstDct) => at(&ROW_SCAN_16X16, &ROW_SCAN_16X16_NEIGHBORS, &ROW_ISCAN_16X16),
+        (2, TxType::DctAdst) => at(&COL_SCAN_16X16, &COL_SCAN_16X16_NEIGHBORS, &COL_ISCAN_16X16),
+        (2, _) => at(&SCAN_16X16, &SCAN_16X16_NEIGHBORS, &ISCAN_16X16),
+        _ => at(&SCAN_32X32, &SCAN_32X32_NEIGHBORS, &ISCAN_32X32),
     }
 }
 
@@ -175,7 +194,7 @@ impl Costs {
 pub(super) fn estimate(costs: &Costs, kind: Kind, ctx: usize, levels: &[i32], eob: usize, energy: &mut [u8; 1024]) -> u32 {
     let tx = kind.tx;
     let first = token_context(tx, kind.chroma, kind.inter);
-    let (scan, neighbors) = scan(tx);
+    let Scan { order: scan, neighbors, .. } = scan(tx, kind.tx_type);
     let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
     let max = 16 << (2 * tx);
     let mut ctx = ctx;
@@ -201,11 +220,13 @@ pub(super) fn estimate(costs: &Costs, kind: Kind, ctx: usize, levels: &[i32], eo
     total
 }
 
-/// Which probabilities a transform block's tokens are coded at: its size,
-/// as log2 less 2, whether it is chroma, and whether its block is inter.
+/// How a transform block's tokens are coded: the probabilities of its
+/// size, as log2 less 2, whether it is chroma and whether its block is
+/// inter, in the scan of its size and type.
 #[derive(Clone, Copy)]
 pub(super) struct Kind {
     pub(super) tx: usize,
+    pub(super) tx_type: TxType,
     pub(super) chroma: bool,
     pub(super) inter: bool,
 }
@@ -218,7 +239,7 @@ pub(super) struct Kind {
 pub(super) fn write(t: &mut Tape, kind: Kind, ctx: usize, levels: &[i32], eob: usize, energy: &mut [u8; 1024]) {
     let tx = kind.tx;
     let first = token_context(tx, kind.chroma, kind.inter);
-    let (scan, neighbors) = scan(tx);
+    let Scan { order: scan, neighbors, .. } = scan(tx, kind.tx_type);
     let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
     let max = 16 << (2 * tx);
     // The energy of each coefficient coded so far, by raster position: a
@@ -253,9 +274,9 @@ mod tests {
 
     /// libvpx's `decode_coefs`, read with the specification's bool reader:
     /// the levels back in raster order and the end of block.
-    fn read(r: &mut BoolReader, tx: usize, ctx: usize) -> (Vec<i32>, usize) {
+    fn read(r: &mut BoolReader, tx: usize, tx_type: TxType, ctx: usize) -> (Vec<i32>, usize) {
         let probs = &COEF_PROBS[tx][0][0];
-        let (scan, neighbors) = scan(tx);
+        let Scan { order: scan, neighbors, .. } = scan(tx, tx_type);
         let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
         let max = 16 << (2 * tx);
         let mut levels = vec![0; max];
@@ -314,7 +335,7 @@ mod tests {
         let costs = Costs::new(&probs);
         for tx in 0..4 {
             let n = 4 << tx;
-            let (scan, _) = scan(tx);
+            let scan = scan(tx, TxType::DctDct).order;
             let mut state = 0x9e37_79b9_u32;
             let mut tape = Tape::new();
             let mut estimate = 0;
@@ -331,7 +352,7 @@ mod tests {
                     }
                 }
                 let eob = scan.iter().rposition(|&rc| levels[usize::from(rc)] != 0).map_or(0, |i| i + 1);
-                let kind = Kind { tx, chroma: block % 2 == 1, inter: block % 3 == 0 };
+                let kind = Kind { tx, tx_type: TxType::DctDct, chroma: block % 2 == 1, inter: block % 3 == 0 };
                 estimate += super::estimate(&costs, kind, 0, &levels, eob, &mut energy);
                 write(&mut tape, kind, 0, &levels, eob, &mut energy);
             }
@@ -342,10 +363,11 @@ mod tests {
     }
 
     #[test]
-    fn levels_of_every_size_and_token_read_back() {
+    fn levels_of_every_size_type_and_token_read_back() {
         // Every token's range, zeros between, a full block and an empty one.
         let samples = [1, -1, 2, 3, -4, 5, 6, -7, 10, 11, 18, -19, 34, 35, 66, -67, 300, 16_449];
-        for tx in 0..4 {
+        let types = [TxType::DctDct, TxType::AdstDct, TxType::DctAdst, TxType::AdstAdst];
+        for (tx, tx_type) in (0..3).flat_map(|tx| types.map(|t| (tx, t))).chain([(3, TxType::DctDct)]) {
             let n = 4 << tx;
             let mut cases: Vec<Vec<i32>> = vec![vec![0; n * n]];
             let mut sparse = vec![0; n * n];
@@ -355,20 +377,20 @@ mod tests {
             cases.push(sparse);
             cases.push((0..n * n).map(|i| samples[i % samples.len()]).collect());
             for (case, levels) in cases.iter().enumerate() {
-                let (scan, _) = scan(tx);
+                let scan = scan(tx, tx_type).order;
                 let eob = scan.iter().rposition(|&rc| levels[usize::from(rc)] != 0).map_or(0, |i| i + 1);
                 for ctx in 0..3 {
                     let mut t = Tape::new();
                     // Scratch left as another block would leave it.
                     let mut energy = [(case * 3 + ctx) as u8; 1024];
-                    write(&mut t, Kind { tx, chroma: false, inter: false }, ctx, levels, eob, &mut energy);
+                    write(&mut t, Kind { tx, tx_type, chroma: false, inter: false }, ctx, levels, eob, &mut energy);
                     for i in (0..7).rev() {
                         t.write(0x5a >> i & 1 == 1, 128);
                     }
                     let data = super::super::tape::code([&t], &Probs::default().table());
                     let mut r = BoolReader::new(&data);
-                    let (back, back_eob) = read(&mut r, tx, ctx);
-                    assert_eq!((&back, back_eob), (levels, eob), "{n}x{n}, case {case}, context {ctx}");
+                    let (back, back_eob) = read(&mut r, tx, tx_type, ctx);
+                    assert_eq!((&back, back_eob), (levels, eob), "{n}x{n} {tx_type:?}, case {case}, context {ctx}");
                     assert_eq!(r.literal(7), 0x5a, "{n}x{n}, case {case}: what follows the block");
                 }
             }

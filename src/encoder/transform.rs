@@ -1,12 +1,14 @@
-//! Two-dimensional DCTs: forward, to code a residual, and inverse, to
-//! reconstruct it as a decoder does.
+//! Two-dimensional transforms, DCTs and below 32×32 the hybrids of a DCT and
+//! an ADST: forward, to code a residual, and inverse, to reconstruct it as a
+//! decoder does.
 //!
 //! A forward transform is the encoder's own business; these follow libvpx's
-//! `vpx_fdct*_c`, whose scale the inverse expects. The inverse is libvpx's
-//! `vpx_idct*_add_c` and exact: a decoder adds its result to the prediction,
-//! and the encoder predicts later blocks from the same pixels.
+//! `vpx_fdct*_c` and `vp9_fht*_c`, whose scale the inverse expects. The
+//! inverse is libvpx's `vpx_idct*_add_c` and `vp9_iht*_add_c` and exact: a
+//! decoder adds its result to the prediction, and the encoder predicts later
+//! blocks from the same pixels.
 
-use super::dct::{fdct32, idct4, idct8, idct16, idct32};
+use super::dct::{fadst4, fadst8, fadst16, fdct32, iadst4, iadst8, iadst16, idct4, idct8, idct16, idct32};
 use super::lanes::{Lanes, Vector, Vector4};
 
 /// cos(π/4) in 14 bits.
@@ -28,6 +30,16 @@ const COSPI_26_64: i32 = 4756;
 
 fn round14(x: i32) -> i32 {
     (x + (1 << 13)) >> 14
+}
+
+/// Which passes of a transform are ADSTs rather than DCTs, the first named
+/// the one down the columns (VP9's `TX_TYPE`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum TxType {
+    DctDct,
+    AdstDct,
+    DctAdst,
+    AdstAdst,
 }
 
 /// The 4-point forward DCT inside `vpx_fdct4x4_c`.
@@ -146,10 +158,45 @@ one_d! {
     Fdct8 = fdct8(8);
     Fdct16 = fdct16(16);
     Fdct32 = fdct32(32);
+    Fadst4 = fadst4(4);
+    Fadst8 = fadst8(8);
+    Fadst16 = fadst16(16);
     Idct4 = idct4(4);
     Idct8 = idct8(8);
     Idct16 = idct16(16);
     Idct32 = idct32(32);
+    Iadst4 = iadst4(4);
+    Iadst8 = iadst8(8);
+    Iadst16 = iadst16(16);
+}
+
+/// The forward and inverse transforms of `N` points of one kind, DCT or ADST.
+trait Kind<const N: usize> {
+    type Forward: OneD<N>;
+    type Inverse: OneD<N>;
+}
+
+struct Dct;
+struct Adst;
+
+macro_rules! kinds {
+    ($($kind:ident($n:literal) = $forward:ident, $inverse:ident;)*) => {
+        $(
+            impl Kind<$n> for $kind {
+                type Forward = $forward;
+                type Inverse = $inverse;
+            }
+        )*
+    };
+}
+
+kinds! {
+    Dct(4) = Fdct4, Idct4;
+    Dct(8) = Fdct8, Idct8;
+    Dct(16) = Fdct16, Idct16;
+    Adst(4) = Fadst4, Iadst4;
+    Adst(8) = Fadst8, Iadst8;
+    Adst(16) = Fadst16, Iadst16;
 }
 
 /// Run `T` down every column of the `N`×`N` `src`, a vector of columns at a
@@ -226,35 +273,65 @@ impl Scale {
     }
 }
 
-/// The forward DCT of an `n`×`n` residual, `n` 4 to 32, both raster order:
-/// `out[v * n + h]` holds vertical frequency `v` and horizontal `h`.
-pub(super) fn forward(n: usize, residual: &[i32], out: &mut [i32]) {
+/// The forward transform of type `tx_type` of an `n`×`n` residual, `n` 4
+/// to 32 (32 a DCT only), both raster order: `out[v * n + h]` holds
+/// vertical frequency `v` and horizontal `h`.
+pub(super) fn forward(n: usize, tx_type: TxType, residual: &[i32], out: &mut [i32]) {
     if n == 4 {
-        return forward_in::<Vector4>(n, residual, out);
+        return forward_in::<Vector4>(n, tx_type, residual, out);
     }
-    forward_in::<Vector>(n, residual, out);
+    forward_in::<Vector>(n, tx_type, residual, out);
 }
 
 /// `forward` in lanes of `V`: columns, then rows, each pass scaled as
-/// libvpx's `vpx_fdct*_c` scales it.
+/// libvpx's `vpx_fdct*_c` scales it, or for a hybrid `vp9_fht*_c`.
 #[inline(always)]
-fn forward_in<V: Lanes>(n: usize, residual: &[i32], out: &mut [i32]) {
+fn forward_in<V: Lanes>(n: usize, tx_type: TxType, residual: &[i32], out: &mut [i32]) {
     let quarter = Scale::shifted(1, false, false, 2);
+    // Halved toward zero.
+    let half = Scale::shifted(0, false, true, 1);
+    let scales = |n| match n {
+        4 => [Scale::times(16), Scale::KEEP, quarter],
+        8 => [Scale::times(4), Scale::KEEP, half],
+        // A hybrid's quarter rounds a negative half away from zero.
+        _ => [Scale::times(4), if tx_type == TxType::DctDct { quarter } else { Scale::shifted(1, false, true, 2) }, Scale::KEEP],
+    };
+    macro_rules! hybrid {
+        ($n:literal, $area:literal) => {
+            match tx_type {
+                TxType::DctDct => forward_n::<V, Dct, Dct, $n, $area>(residual, out, scales($n)),
+                TxType::AdstDct => forward_n::<V, Adst, Dct, $n, $area>(residual, out, scales($n)),
+                TxType::DctAdst => forward_n::<V, Dct, Adst, $n, $area>(residual, out, scales($n)),
+                TxType::AdstAdst => forward_n::<V, Adst, Adst, $n, $area>(residual, out, scales($n)),
+            }
+        };
+    }
     match n {
-        4 => forward_n::<V, Fdct4, 4, 16>(residual, out, [Scale::times(16), Scale::KEEP, quarter]),
-        // Halved toward zero.
-        8 => forward_n::<V, Fdct8, 8, 64>(residual, out, [Scale::times(4), Scale::KEEP, Scale::shifted(0, false, true, 1)]),
-        16 => forward_n::<V, Fdct16, 16, 256>(residual, out, [Scale::times(4), quarter, Scale::KEEP]),
-        32 => forward_n::<V, Fdct32, 32, 1024>(residual, out, [Scale::times(4), Scale::shifted(1, true, false, 2), Scale::shifted(1, false, true, 2)]),
+        4 => hybrid!(4, 16),
+        8 => hybrid!(8, 64),
+        16 => hybrid!(16, 256),
+        32 => forward_32::<V>(residual, out, [Scale::times(4), Scale::shifted(1, true, false, 2), Scale::shifted(1, false, true, 2)]),
         _ => unreachable!("a {n}-point transform"),
     }
 }
 
-/// The `N`×`N` forward DCT of `AREA` values: the residual scaled by
-/// `before`, `T` down its columns, the result scaled by `between`, `T` down
+/// The `N`×`N` forward transform of `AREA` values: the residual scaled by
+/// `before`, `C` down its columns, the result scaled by `between`, `R` down
 /// its rows and that scaled by `after`.
 #[inline(always)]
-fn forward_n<V: Lanes, T: OneD<N>, const N: usize, const AREA: usize>(residual: &[i32], out: &mut [i32], [before, between, after]: [Scale; 3]) {
+fn forward_n<V: Lanes, C: Kind<N>, R: Kind<N>, const N: usize, const AREA: usize>(residual: &[i32], out: &mut [i32], scales: [Scale; 3]) {
+    forward_passes::<V, C::Forward, R::Forward, N, AREA>(residual, out, scales);
+}
+
+/// The 32×32 forward DCT, as `forward_n`.
+#[inline(always)]
+fn forward_32<V: Lanes>(residual: &[i32], out: &mut [i32], scales: [Scale; 3]) {
+    forward_passes::<V, Fdct32, Fdct32, 32, 1024>(residual, out, scales);
+}
+
+/// `forward_n` of the one-dimensional transforms themselves.
+#[inline(always)]
+fn forward_passes<V: Lanes, C: OneD<N>, R: OneD<N>, const N: usize, const AREA: usize>(residual: &[i32], out: &mut [i32], [before, between, after]: [Scale; 3]) {
     let (mut a, mut b) = ([0; AREA], [0; AREA]);
     b.copy_from_slice(&residual[..AREA]);
     before.apply::<V>(&mut b);
@@ -262,35 +339,54 @@ fn forward_n<V: Lanes, T: OneD<N>, const N: usize, const AREA: usize>(residual: 
     if N == 4 && b[0] != 0 {
         b[0] += 1;
     }
-    down::<V, T, N>(false, &b, &mut a);
+    down::<V, C, N>(false, &b, &mut a);
     between.apply::<V>(&mut a);
     V::transpose(N, &a, &mut b);
-    down::<V, T, N>(false, &b, &mut a);
+    down::<V, R, N>(false, &b, &mut a);
     after.apply::<V>(&mut a);
     // Each pass left its result transposed.
     V::transpose(N, &a, &mut out[..AREA]);
 }
 
-/// Add the inverse DCT of `n`×`n` dequantized `coeffs` to the `n`×`n`
-/// pixels at the start of `dst`, rows `stride` apart. `eob` is how many
-/// coefficients the scan reached; with one, only the DC is there, which
-/// libvpx's decoder takes its own path for, to the same result.
-pub(super) fn inverse_add(n: usize, coeffs: &[i32], eob: usize, dst: &mut [u8], stride: usize) {
+/// Add the inverse transform of type `tx_type` of `n`×`n` dequantized
+/// `coeffs` to the `n`×`n` pixels at the start of `dst`, rows `stride`
+/// apart. `eob` is how many coefficients the scan reached; with one, only a
+/// DCT's DC is there, which libvpx's decoder takes its own path for, to the
+/// same result.
+pub(super) fn inverse_add(n: usize, tx_type: TxType, coeffs: &[i32], eob: usize, dst: &mut [u8], stride: usize) {
     if n == 4 {
-        return inverse_add_in::<Vector4>(n, coeffs, eob, dst, stride);
+        return inverse_add_in::<Vector4>(n, tx_type, coeffs, eob, dst, stride);
     }
-    inverse_add_in::<Vector>(n, coeffs, eob, dst, stride);
+    inverse_add_in::<Vector>(n, tx_type, coeffs, eob, dst, stride);
 }
 
 /// `inverse_add` in lanes of `V`: rows, then columns, then the rounding
-/// shift and the add, as `vpx_idct*_add_c`.
+/// shift and the add, as `vpx_idct*_add_c` and `vp9_iht*_add_c`.
 #[inline(always)]
-fn inverse_add_in<V: Lanes>(n: usize, coeffs: &[i32], eob: usize, dst: &mut [u8], stride: usize) {
+fn inverse_add_in<V: Lanes>(n: usize, tx_type: TxType, coeffs: &[i32], eob: usize, dst: &mut [u8], stride: usize) {
     let shift = match n {
         4 => 4,
         8 => 5,
         _ => 6,
     };
+    macro_rules! hybrid {
+        ($n:literal, $area:literal) => {
+            match tx_type {
+                TxType::DctDct => unreachable!("a DCT taken above"),
+                TxType::AdstDct => inverse_n::<V, <Adst as Kind<$n>>::Inverse, <Dct as Kind<$n>>::Inverse, $n, $area>(shift, coeffs, dst, stride),
+                TxType::DctAdst => inverse_n::<V, <Dct as Kind<$n>>::Inverse, <Adst as Kind<$n>>::Inverse, $n, $area>(shift, coeffs, dst, stride),
+                TxType::AdstAdst => inverse_n::<V, <Adst as Kind<$n>>::Inverse, <Adst as Kind<$n>>::Inverse, $n, $area>(shift, coeffs, dst, stride),
+            }
+        };
+    }
+    if tx_type != TxType::DctDct {
+        return match n {
+            4 => hybrid!(4, 16),
+            8 => hybrid!(8, 64),
+            16 => hybrid!(16, 256),
+            _ => unreachable!("a {n}-point hybrid"),
+        };
+    }
     if eob == 1 {
         let dc = round14(round14(coeffs[0] * COSPI_16_64) as i16 as i32 * COSPI_16_64) as i16 as i32;
         let add = (dc + (1 << (shift - 1))) >> shift;
@@ -302,24 +398,24 @@ fn inverse_add_in<V: Lanes>(n: usize, coeffs: &[i32], eob: usize, dst: &mut [u8]
         return;
     }
     match n {
-        4 => inverse_n::<V, Idct4, 4, 16>(shift, coeffs, dst, stride),
-        8 => inverse_n::<V, Idct8, 8, 64>(shift, coeffs, dst, stride),
-        16 => inverse_n::<V, Idct16, 16, 256>(shift, coeffs, dst, stride),
-        32 => inverse_n::<V, Idct32, 32, 1024>(shift, coeffs, dst, stride),
+        4 => inverse_n::<V, Idct4, Idct4, 4, 16>(shift, coeffs, dst, stride),
+        8 => inverse_n::<V, Idct8, Idct8, 8, 64>(shift, coeffs, dst, stride),
+        16 => inverse_n::<V, Idct16, Idct16, 16, 256>(shift, coeffs, dst, stride),
+        32 => inverse_n::<V, Idct32, Idct32, 32, 1024>(shift, coeffs, dst, stride),
         _ => unreachable!("a {n}-point transform"),
     }
 }
 
-/// The `N`×`N` inverse DCT of `AREA` coefficients, `T` along the rows and
-/// then down the columns, added to `dst`.
+/// The `N`×`N` inverse transform of `AREA` coefficients, `R` along the
+/// rows and then `C` down the columns, added to `dst`.
 #[inline(always)]
-fn inverse_n<V: Lanes, T: OneD<N>, const N: usize, const AREA: usize>(shift: u32, coeffs: &[i32], dst: &mut [u8], stride: usize) {
+fn inverse_n<V: Lanes, C: OneD<N>, R: OneD<N>, const N: usize, const AREA: usize>(shift: u32, coeffs: &[i32], dst: &mut [u8], stride: usize) {
     let (mut a, mut b) = ([0; AREA], [0; AREA]);
     // The rows, as columns; a row of zeros transforms to zeros.
     V::transpose(N, &coeffs[..AREA], &mut a);
-    down::<V, T, N>(true, &a, &mut b);
+    down::<V, R, N>(true, &a, &mut b);
     V::transpose(N, &b, &mut a);
-    down::<V, T, N>(false, &a, &mut b);
+    down::<V, C, N>(false, &a, &mut b);
     for (r, values) in b.as_chunks::<N>().0.iter().enumerate() {
         V::add_shifted(values, shift, &mut dst[r * stride..][..N]);
     }
@@ -366,7 +462,7 @@ mod tests {
             for seed in 1..4 {
                 let x = residual(n, seed * 7919, 255);
                 let mut got = vec![0; n * n];
-                forward(n, &x, &mut got);
+                forward(n, TxType::DctDct, &x, &mut got);
                 for (i, (g, r)) in got.iter().zip(reference(n, &x)).enumerate() {
                     assert!((f64::from(*g) - scale * r).abs() <= tolerance, "{n}x{n} coefficient {i}: {g} against {}", scale * r);
                 }
@@ -374,21 +470,43 @@ mod tests {
         }
     }
 
+    /// Every size and type of transform there is: the hybrids below 32×32.
+    fn transforms() -> impl Iterator<Item = (usize, TxType)> {
+        let types = [TxType::DctDct, TxType::AdstDct, TxType::DctAdst, TxType::AdstAdst];
+        [4, 8, 16].into_iter().flat_map(move |n| types.map(|t| (n, t))).chain([(32, TxType::DctDct)])
+    }
+
     #[test]
     fn the_inverse_undoes_the_forward_transform() {
-        for n in [4, 8, 16, 32] {
+        for (n, tx_type) in transforms() {
             for seed in 1..4 {
                 // On mid grey, and small enough that neither end clips.
                 let x = residual(n, seed * 104_729, 100);
                 let mut coeffs = vec![0; n * n];
-                forward(n, &x, &mut coeffs);
+                forward(n, tx_type, &x, &mut coeffs);
                 let mut dst = vec![128u8; n * n];
-                inverse_add(n, &coeffs, n * n, &mut dst, n);
+                inverse_add(n, tx_type, &coeffs, n * n, &mut dst, n);
                 for (i, (d, r)) in dst.iter().zip(&x).enumerate() {
                     let back = i32::from(*d) - 128;
-                    assert!((back - r).abs() <= 1, "{n}x{n} pixel {i}: {back} for {r}");
+                    assert!((back - r).abs() <= 1, "{n}x{n} {tx_type:?} pixel {i}: {back} for {r}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn an_adst_codes_a_ramp_from_its_edge_in_less_than_the_dct() {
+        // A residual that grows away from the edge it is predicted from,
+        // down the columns, as V leaves: an ADST down them takes less to
+        // code it, in the sum of the coefficients' magnitudes.
+        for n in [4, 8, 16] {
+            let x: Vec<i32> = (0..n * n).map(|i| (i / n + 1) as i32 * 4).collect();
+            let size = |tx_type| {
+                let mut coeffs = vec![0; n * n];
+                forward(n, tx_type, &x, &mut coeffs);
+                coeffs.iter().map(|c| c.abs()).sum::<i32>()
+            };
+            assert!(size(TxType::AdstDct) < size(TxType::DctDct), "{n}x{n}: {} against {}", size(TxType::AdstDct), size(TxType::DctDct));
         }
     }
 
@@ -399,8 +517,8 @@ mod tests {
                 let mut coeffs = vec![0; n * n];
                 coeffs[0] = dc;
                 let (mut fast, mut full) = (vec![100u8; n * n], vec![100u8; n * n]);
-                inverse_add(n, &coeffs, 1, &mut fast, n);
-                inverse_add(n, &coeffs, 2, &mut full, n);
+                inverse_add(n, TxType::DctDct, &coeffs, 1, &mut fast, n);
+                inverse_add(n, TxType::DctDct, &coeffs, 2, &mut full, n);
                 assert_eq!(fast, full, "{n}x{n}, DC {dc}");
             }
         }
@@ -408,25 +526,27 @@ mod tests {
 
     #[test]
     fn the_widest_lanes_transform_as_one_lane_does() {
-        for n in [4, 8, 16, 32] {
+        for (n, tx_type) in transforms() {
             for seed in 1..40 {
                 // Residuals as large as a pixel's, and smaller.
                 let source = residual(n, seed, [255, 40, 3][seed as usize % 3]);
                 let (mut scalar, mut vector) = (vec![0; n * n], vec![0; n * n]);
-                forward_in::<i32>(n, &source, &mut scalar);
-                forward(n, &source, &mut vector);
-                assert_eq!(scalar, vector, "forward {n}x{n}, seed {seed}");
-                // Coefficients anywhere in 16 bits, which wrap inside the
-                // inverse, some rows left empty.
-                let mut coeffs = residual(n, seed + 1000, 32767);
+                forward_in::<i32>(n, tx_type, &source, &mut scalar);
+                forward(n, tx_type, &source, &mut vector);
+                assert_eq!(scalar, vector, "forward {n}x{n} {tx_type:?}, seed {seed}");
+                // A DCT's coefficients anywhere in 16 bits, which wrap inside
+                // the inverse; an ADST's as large as a pixel's residual
+                // makes, whose products libvpx keeps in 32 bits. Some rows
+                // are left empty.
+                let mut coeffs = if tx_type == TxType::DctDct { residual(n, seed + 1000, 32767) } else { scalar };
                 for row in coeffs.chunks_exact_mut(n).skip(seed as usize % n) {
                     row.fill(0);
                 }
                 let pixels: Vec<u8> = source.iter().map(|&v| (v + 128).clamp(0, 255) as u8).collect();
                 let (mut scalar, mut vector) = (pixels.clone(), pixels);
-                inverse_add_in::<i32>(n, &coeffs, n * n, &mut scalar, n);
-                inverse_add(n, &coeffs, n * n, &mut vector, n);
-                assert_eq!(scalar, vector, "inverse {n}x{n}, seed {seed}");
+                inverse_add_in::<i32>(n, tx_type, &coeffs, n * n, &mut scalar, n);
+                inverse_add(n, tx_type, &coeffs, n * n, &mut vector, n);
+                assert_eq!(scalar, vector, "inverse {n}x{n} {tx_type:?}, seed {seed}");
             }
         }
     }

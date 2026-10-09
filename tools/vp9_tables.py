@@ -169,6 +169,15 @@ before to four after (`sub_pel_filters_8`).""", "SUBPEL_FILTERS", "i16", [16, 8]
 coefficients its token context is taken from.""", f"SCAN_{n}X{n}_NEIGHBORS", "u16", [(n * n + 1) * 2], initializer(scan, f"default_scan_{n}x{n}_neighbors"))
         emit(f"""The {n}×{n} DCT scan inverted: for each coefficient, one past its position,
 the end of block it makes when it is the last coded.""", f"ISCAN_{n}X{n}", "u16", [n * n], initializer(scan, f"vp9_default_iscan_{n}x{n}"))
+    # libvpx's `vp9_scan_orders`: a transform with its ADST down the columns
+    # (ADST_DCT) is scanned a row at a time, one with it along the rows
+    # (DCT_ADST) a column at a time, and one with both by the DCT's scan.
+    for kind, adst in (("row", "down the columns"), ("col", "along the rows")):
+        for n in (4, 8, 16):
+            name = f"{kind.upper()}_SCAN_{n}X{n}"
+            emit(f"The {n}×{n} scan of a transform with its ADST {adst}.", name, "u16", [n * n], initializer(scan, f"{kind}_scan_{n}x{n}"))
+            emit(f"`{name}`'s neighbours, as `SCAN_{n}X{n}_NEIGHBORS`.", f"{name}_NEIGHBORS", "u16", [(n * n + 1) * 2], initializer(scan, f"{kind}_scan_{n}x{n}_neighbors"))
+            emit(f"`{name}` inverted, as `ISCAN_{n}X{n}`.", f"{kind.upper()}_ISCAN_{n}X{n}", "u16", [n * n], initializer(scan, f"vp9_{kind}_iscan_{n}x{n}"))
 
 
 main()
