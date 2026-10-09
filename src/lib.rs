@@ -84,7 +84,7 @@ impl Speed {
 
 /// The widths from which a picture is coded in two tile columns, in four and
 /// in eight, so libvpx's `tile_columns` is the log2 of that: one column under
-/// 1440 pixels, two from 1440 through 1080p, four from 2560 and at 4K. The
+/// 1440 pixels, two from 1440 through 1080p, four from 2048 and at 4K. The
 /// width rather than the thread count decides it because a tile is a cost as
 /// well as a split — the columns are coded apart, which costs bytes, and at
 /// 1080p four of them coded slower than two whatever the threads — while at 4K
@@ -94,14 +94,17 @@ impl Speed {
 /// and vp9-wasm, which reconstructs by rows whatever the tiles, still parses a
 /// column in order. A 1440×900 desktop re-encoded with two columns cost 8% more
 /// bytes and vp9-wasm decoded it 10% faster on four threads; a busy Mac screen
-/// of that size cost 0.1% more and decoded 21% faster. Four from 2560 and not
-/// 2880 were measured on the gateway's own 2560×1600 Mac capture, at quality 90
-/// on four threads, on its 300 quietest frames and its 300 busiest: four
-/// columns cost 0.1% and 1.0% more bytes than two and under 0.1 dB, this
-/// encoder coded them 10% and 14% faster, and libvpx's four decoding threads,
-/// with a column each, took 30.9 ms a busy frame for 54.3. Never more than the
+/// of that size cost 0.1% more and decoded 21% faster. Four from 2048 and not
+/// 2880 were measured on the gateway's own Mac captures at 2048×1536 and
+/// 2560×1600, at quality 90 on four threads, on the 300 quietest frames of each
+/// and the 300 busiest: four columns cost 0.1% more bytes than two on the quiet
+/// frames and 1.4% and 1.0% on the busy, under 0.1 dB, this encoder coded them
+/// 9% to 14% faster, and libvpx's four decoding threads, with a column each,
+/// took 30.4 ms a busy frame for 51.9 and 30.9 for 54.3. Not from 1920: the
+/// busy frames of a 1920×1080 Windows capture cost 15% more bytes in four.
+/// Never more than the
 /// threads can fill, since a tile no thread is free for is bytes for nothing.
-const TILE_WIDTHS: [u16; 3] = [1440, 2560, 5760];
+const TILE_WIDTHS: [u16; 3] = [1440, 2048, 5760];
 
 /// The most threads libvpx takes for one encoder.
 const MAX_THREADS: usize = 64;
@@ -135,8 +138,8 @@ fn tile_columns_log2(width: u16, threads: usize) -> u32 {
 /// 1600, 9.8 for 9.0 at 1920, 9.5 for 10.3 at 2560. In four: 6.4 for 10.4 at
 /// 2880, 14.2 for 21.3 at 3456, 12.1 for 17.4 at 3840. An earlier 3456-wide
 /// desktop coded in two columns: 27.4 for 29.0, and the 2560-wide capture in
-/// four: 6.1 for 9.0. Those are each capture's first 300 frames, its quietest;
-/// on its 300 busiest the filter is less of a frame and of the stream, 11% to
+/// four: 6.1 for 9.0, a 2048-wide one: 5.3 for 7.8. Those are each capture's
+/// first 300 frames, its quietest; on its 300 busiest the filter is less of a frame and of the stream, 11% to
 /// 16% of one thread's cycles for 0.2% to 1.3% of the bytes and 0.3 to 0.6 dB,
 /// and four threads gain 14% to 27% in four columns and nothing to speak of in
 /// one or two. So the filter goes where the columns have left it as what a
@@ -1086,7 +1089,7 @@ mod tests {
     }
 
     /// Tile columns follow the width — one under 1440, two from 1440 through
-    /// 1080p, four from 2560 and at 4K and 5K, eight from 5760 — and never
+    /// 1080p, four from 2048 and at 4K and 5K, eight from 5760 — and never
     /// outnumber the threads.
     #[test]
     fn tile_columns_follow_the_width_and_never_outnumber_the_threads() {
@@ -1094,7 +1097,8 @@ mod tests {
         assert_eq!(tile_columns_log2(1439, 8), 0);
         assert_eq!(tile_columns_log2(1440, 8), 1);
         assert_eq!(tile_columns_log2(1920, 8), 1);
-        assert_eq!(tile_columns_log2(2559, 8), 1);
+        assert_eq!(tile_columns_log2(2047, 8), 1);
+        assert_eq!(tile_columns_log2(2048, 8), 2);
         assert_eq!(tile_columns_log2(2560, 8), 2);
         assert_eq!(tile_columns_log2(2880, 8), 2);
         assert_eq!(tile_columns_log2(3840, 8), 2);
@@ -1147,13 +1151,13 @@ mod tests {
     /// that is not says so in every frame's header and decodes as any other.
     #[test]
     fn the_loop_filter_is_left_out_of_444_in_four_tile_columns() {
-        assert!(loop_filtered(Chroma::Full, 2559, 8));
-        assert!(!loop_filtered(Chroma::Full, 2560, 8));
+        assert!(loop_filtered(Chroma::Full, 2047, 8));
+        assert!(!loop_filtered(Chroma::Full, 2048, 8));
         assert!(!loop_filtered(Chroma::Full, 3840, 4));
         assert!(loop_filtered(Chroma::Full, 3840, 3));
         assert!(loop_filtered(Chroma::Subsampled, 3840, 8));
 
-        for (w, chroma, threads, filtered) in [(1440, Chroma::Full, 4, true), (2560, Chroma::Full, 4, false), (2560, Chroma::Full, 2, true), (2560, Chroma::Subsampled, 4, true)] {
+        for (w, chroma, threads, filtered) in [(1440, Chroma::Full, 4, true), (2048, Chroma::Full, 4, false), (2048, Chroma::Full, 2, true), (2048, Chroma::Subsampled, 4, true)] {
             let mut encoder = Encoder::new(w, 64, chroma, 50, threads).expect("an encoder");
             let frames: Vec<Vec<u8>> = [[30, 60, 90], [200, 30, 30], [40, 180, 70]].iter().map(|colour| encode(&mut encoder, &picture(w, 64, chroma, &flat(w, 64, *colour)), false).0).collect();
             for (n, frame) in frames.iter().enumerate() {
