@@ -3,8 +3,8 @@
 //! specification reads them (§6.2, §6.3), each at the one value the subset
 //! the encoder codes allows, but for the probability updates.
 
-use super::bool_writer::BoolWriter;
-use super::probs::{Counts, DIFF_UPDATE_PROB, Probs};
+use super::bool_writer::{self, BoolWriter};
+use super::probs::{Counts, DIFF_UPDATE_PROB, Probs, SegmentCounts, binary_prob};
 
 /// The most a frame's compressed header can say it holds: its size is a
 /// 16-bit field.
@@ -28,6 +28,62 @@ const LAST_SLOT: u32 = 0;
 
 /// `interp_filter`'s literal for EIGHTTAP_SMOOTH, the frame's one filter.
 const EIGHTTAP_SMOOTH: u32 = 0;
+
+/// The segment of a block an inter frame leaves as the previous frame has
+/// it: the previous frame at the zero vector, no residual, and not loop
+/// filtered, as libvpx codes the blocks outside its active map. The segment
+/// tree is three nodes deep for every segment, and segment 4 differs from
+/// segment 0, the active one, at the first node alone: the frame's
+/// probability goes there, and the other six stay at 255. Its features: the
+/// loop filter level `-MAX_LOOP_FILTER`, which is 0 whatever the frame's;
+/// the reference LAST; and skip.
+pub(super) const INACTIVE_SEGMENT: u32 = 4;
+/// The probability of every node of the segment tree but its first.
+pub(super) const SEGMENT_TREE_PROB: u8 = 255;
+const SEGMENTS: usize = 8;
+const ALT_LF_BITS: u32 = 6;
+const MAX_LOOP_FILTER: u32 = 63;
+const REF_FRAME_BITS: u32 = 2;
+const LAST_FRAME: u32 = 1;
+/// What a probability costs the header when it is not 255: its flag and
+/// eight bits.
+const PROB_BITS: u32 = 9;
+
+/// An inter frame's segmentation: its blocks in the active segment or the
+/// inactive one, each saying which, whole or as the map of the frame before
+/// predicts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Segmentation {
+    /// Whether each block first says whether its segment is the last map's
+    /// (libvpx's `temporal_update`), and codes it only where it is not.
+    pub(super) temporal: bool,
+    /// The probability of a coded segment being active, 255 for one in 256.
+    pub(super) tree: u8,
+    /// Per context, the probability of a block's segment not being the last
+    /// map's; unused unless `temporal`.
+    pub(super) pred: [u8; 3],
+    /// Whether the inactive segment's features are written, which the first
+    /// segmented frame after a keyframe does, and the ones after it leave
+    /// in force.
+    pub(super) features: bool,
+}
+
+impl Segmentation {
+    /// The cheaper way of coding the segments `counts` counted, at the
+    /// probabilities they measure, with the header's own bits for the
+    /// probabilities weighed in (libvpx's `vp9_choose_segmap_coding_method`
+    /// for two segments).
+    pub(super) fn choose(counts: &SegmentCounts, features: bool) -> Self {
+        let branch = |ct: [u32; 2], p: u8| u64::from(ct[0]) * u64::from(bool_writer::cost(false, p)) + u64::from(ct[1]) * u64::from(bool_writer::cost(true, p));
+        let header = |p: u8| if p == 255 { 0 } else { u64::from(PROB_BITS) << 8 };
+        let whole = binary_prob(counts.ids);
+        let whole_cost = branch(counts.ids, whole) + header(whole);
+        let pred: [u8; 3] = std::array::from_fn(|ctx| binary_prob(counts.predicted[ctx]));
+        let tree = binary_prob(counts.unpredicted);
+        let temporal_cost = pred.iter().zip(counts.predicted).map(|(&p, ct)| branch(ct, p) + header(p)).sum::<u64>() + branch(counts.unpredicted, tree) + header(tree);
+        if temporal_cost < whole_cost { Self { temporal: true, tree, pred, features } } else { Self { temporal: false, tree: whole, pred: [255; 3], features } }
+    }
+}
 
 /// Bits written most significant first.
 #[derive(Default)]
@@ -65,6 +121,8 @@ pub(super) struct Uncompressed {
     pub(super) tile_cols_log2: u32,
     pub(super) min_log2_tile_cols: u32,
     pub(super) max_log2_tile_cols: u32,
+    /// An inter frame's segments; none on a keyframe.
+    pub(super) segmentation: Option<Segmentation>,
 }
 
 impl Uncompressed {
@@ -141,7 +199,51 @@ impl Uncompressed {
         w.flag(false); // delta_coded, luma DC
         w.flag(false); // delta_coded, chroma DC
         w.flag(false); // delta_coded, chroma AC
-        w.flag(false); // segmentation_enabled
+        // segmentation_params.
+        match &self.segmentation {
+            None => w.flag(false), // segmentation_enabled
+            Some(s) => {
+                w.flag(true); // segmentation_enabled
+                // The map: the tree's first node at the frame's probability,
+                // the rest at 255, which is not written; and, predicted,
+                // the prediction flag's probabilities.
+                w.flag(true); // segmentation_update_map
+                let prob = |w: &mut BitWriter, p: u8| {
+                    w.flag(p != 255);
+                    if p != 255 {
+                        w.put(u32::from(p), 8);
+                    }
+                };
+                prob(w, s.tree); // segmentation_tree_probs[0]
+                for _ in 1..7 {
+                    w.flag(false);
+                }
+                w.flag(s.temporal); // segmentation_temporal_update
+                if s.temporal {
+                    for p in s.pred {
+                        prob(w, p); // segmentation_pred_prob
+                    }
+                }
+                w.flag(s.features); // segmentation_update_data
+                if s.features {
+                    w.flag(false); // segmentation_abs_or_delta_update: deltas
+                    for segment in 0..SEGMENTS as u32 {
+                        let inactive = segment == INACTIVE_SEGMENT;
+                        w.flag(false); // SEG_LVL_ALT_Q
+                        w.flag(inactive); // SEG_LVL_ALT_LF
+                        if inactive {
+                            w.put(MAX_LOOP_FILTER, ALT_LF_BITS);
+                            w.flag(true); // negative
+                        }
+                        w.flag(inactive); // SEG_LVL_REF_FRAME
+                        if inactive {
+                            w.put(LAST_FRAME, REF_FRAME_BITS);
+                        }
+                        w.flag(inactive); // SEG_LVL_SKIP
+                    }
+                }
+            }
+        }
         // tile_info: increments from the fewest columns, a zero ending them
         // short of the most, and one tile row.
         for _ in self.min_log2_tile_cols..self.tile_cols_log2 {
@@ -207,7 +309,7 @@ mod tests {
 
     #[test]
     fn the_keyframe_header_reads_as_profile_1_at_bt601_studio_swing() {
-        let header = Uncompressed { keyframe: true, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2 };
+        let header = Uncompressed { keyframe: true, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2, segmentation: None };
         let bytes = header.write(7);
         let crate::FrameHeader { profile, keyframe } = crate::frame_header(&bytes).expect("a VP9 frame");
         assert_eq!((profile, keyframe), (1, true));
@@ -236,7 +338,7 @@ mod tests {
 
     #[test]
     fn the_inter_header_reads_last_and_refreshes_it() {
-        let header = Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2 };
+        let header = Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2, segmentation: None };
         let bytes = header.write(9);
         let crate::FrameHeader { profile, keyframe } = crate::frame_header(&bytes).expect("a VP9 frame");
         assert_eq!((profile, keyframe), (1, false));
@@ -255,6 +357,83 @@ mod tests {
         assert_eq!(field(59, 6), 0);
         assert_eq!(field(65, 16), 9);
         assert_eq!(bytes.len(), 11);
+    }
+
+    /// The segmented inter header, read bit by bit from the quantizer on: the
+    /// map coded whole at the frame's probability, and the inactive
+    /// segment's three features, written once and then left in force; or
+    /// predicted, with the prediction's probabilities.
+    #[test]
+    fn the_segmented_header_codes_the_map_and_the_inactive_segments_features() {
+        let header = |tree, features| Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2, segmentation: Some(Segmentation { temporal: false, tree, pred: [255; 3], features }) };
+        let bytes = header(200, true).write(9);
+        let bit = |i: usize| bytes[i / 8] >> (7 - i % 8) & 1;
+        let field = |at: usize, n: usize| (at..at + n).fold(0u32, |v, i| v << 1 | u32::from(bit(i)));
+        assert_eq!(field(51, 8), 32, "the q index where it was");
+        assert_eq!(field(59, 3), 0, "no deltas");
+        assert_eq!(field(62, 3), 0b111, "segmentation enabled, the map updated, its first probability coded");
+        assert_eq!(field(65, 8), 200);
+        assert_eq!(field(73, 6), 0, "the other six probabilities 255");
+        assert_eq!(field(79, 2), 0b01, "not temporal, the features updated");
+        assert_eq!(field(81, 1), 0, "deltas");
+        // Four flags for each of segments 0 to 3, then segment 4's: no ALT_Q,
+        // ALT_LF -63, REF_FRAME 1, SKIP; then three segments of four.
+        assert_eq!(field(82, 16), 0);
+        assert_eq!(field(98, 1), 0);
+        assert_eq!(field(99, 8), 0xff, "ALT_LF on, 63, negative");
+        assert_eq!(field(107, 3), 0b101, "REF_FRAME on, LAST");
+        assert_eq!(field(110, 1), 1);
+        assert_eq!(field(111, 12), 0);
+        // One tile column, one tile row, and the size.
+        assert_eq!(field(123, 2), 0);
+        assert_eq!(field(125, 16), 9);
+        assert_eq!(bytes.len(), 18);
+
+        let bytes = header(255, false).write(9);
+        let bit = |i: usize| bytes[i / 8] >> (7 - i % 8) & 1;
+        let field = |at: usize, n: usize| (at..at + n).fold(0u32, |v, i| v << 1 | u32::from(bit(i)));
+        assert_eq!(field(62, 2), 0b11);
+        assert_eq!(field(64, 9), 0, "no probability coded, not temporal, no features");
+        assert_eq!(field(73, 2), 0);
+        assert_eq!(field(75, 16), 9);
+        assert_eq!(bytes.len(), 12);
+
+        let mut predicted = header(255, false);
+        predicted.segmentation = Some(Segmentation { temporal: true, tree: 20, pred: [255, 30, 40], features: false });
+        let bytes = predicted.write(9);
+        let bit = |i: usize| bytes[i / 8] >> (7 - i % 8) & 1;
+        let field = |at: usize, n: usize| (at..at + n).fold(0u32, |v, i| v << 1 | u32::from(bit(i)));
+        assert_eq!(field(62, 3), 0b111);
+        assert_eq!(field(65, 8), 20);
+        assert_eq!(field(73, 7), 1, "six at 255, then temporal");
+        assert_eq!(field(80, 1), 0, "the first prediction probability 255");
+        assert_eq!(field(81, 9), 1 << 8 | 30);
+        assert_eq!(field(90, 9), 1 << 8 | 40);
+        assert_eq!(field(99, 1), 0, "no features");
+        assert_eq!(field(100, 2), 0);
+        assert_eq!(field(102, 16), 9);
+        assert_eq!(bytes.len(), 15);
+    }
+
+    /// A map that is mostly the last frame's is coded against it, and one
+    /// that is not is coded whole, each at the probabilities its counts
+    /// measure.
+    #[test]
+    fn the_map_is_coded_the_cheaper_way() {
+        let mut counts = SegmentCounts { ids: [600, 400], predicted: [[5, 95], [10, 490], [15, 385]], unpredicted: [20, 10] };
+        let s = Segmentation::choose(&counts, true);
+        assert!(s.temporal && s.features);
+        assert_eq!(s.pred, [13, 5, 10]);
+        assert_eq!(s.tree, 171);
+        counts.predicted = [[50, 50], [250, 250], [200, 200]];
+        counts.unpredicted = [300, 200];
+        let s = Segmentation::choose(&counts, false);
+        assert_eq!(s, Segmentation { temporal: false, tree: 154, pred: [255; 3], features: false });
+        // Every block active: nothing predicted says anything cheaper than
+        // a map of one probability the header leaves out.
+        let all = SegmentCounts { ids: [1000, 0], predicted: [[0, 1000], [0, 0], [0, 0]], unpredicted: [0; 2] };
+        let s = Segmentation::choose(&all, false);
+        assert_eq!((s.temporal, s.tree), (false, 255));
     }
 
     /// The transform size probabilities' part of a compressed header as a

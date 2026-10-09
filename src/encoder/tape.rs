@@ -6,11 +6,18 @@
 //! before it, so coding it is the token tree alone.
 
 use super::bool_writer::BoolWriter;
+use super::header::{SEGMENT_TREE_PROB, Segmentation};
 use super::probs::{Counts, MORE, NODES, coef_slot, counted};
 use super::tokens;
 
 /// A token rather than a bool.
 const TOKEN: u32 = 1 << 31;
+/// A block's segment rather than a bool: in its low bits whether the block
+/// is inactive, whether that is what the last map predicts, and the
+/// context of the prediction flag. How it is coded is the frame's choice.
+const SEGMENT: u32 = 1 << 30;
+const PREDICTED: u32 = 2;
+const PREDICTION_CONTEXT_SHIFT: u32 = 2;
 /// A token whose end of block is coded first, as it is unless the token
 /// before was a zero.
 const MORE_FIRST: u32 = 1 << 17;
@@ -23,7 +30,8 @@ const CONTEXT_SHIFT: u32 = 18;
 /// probability is in the frame's table (`probs::Probs::table`); or a token,
 /// as `TOKEN`, its band and context (`probs::token_context`), whether the
 /// end of block is coded first, and the level in its low 16 bits; or an end
-/// of block, as `TOKEN`, `END` and its band and context.
+/// of block, as `TOKEN`, `END` and its band and context; or a block's
+/// segment, as `SEGMENT`.
 pub(super) struct Tape {
     records: Vec<u32>,
     /// The tokens recorded, and the bools whose probabilities the frame
@@ -76,16 +84,46 @@ impl Tape {
         counts[MORE] += 1;
     }
 
+    /// Code a block's segment: `inactive` or not, which the last map
+    /// predicts where `predicted`, the prediction flag's context being
+    /// `ctx`; whole or as predicted, as the frame chooses once every block
+    /// is counted.
+    pub(super) fn segment(&mut self, inactive: bool, predicted: bool, ctx: usize) {
+        self.records.push(SEGMENT | u32::from(inactive) | if predicted { PREDICTED } else { 0 } | (ctx as u32) << PREDICTION_CONTEXT_SHIFT);
+        let counts = &mut self.counts.segments;
+        counts.ids[usize::from(inactive)] += 1;
+        counts.predicted[ctx][usize::from(predicted)] += 1;
+        if !predicted {
+            counts.unpredicted[usize::from(inactive)] += 1;
+        }
+    }
+
 }
 
 /// Everything `tapes` recorded, one after another, coded at the
-/// probabilities of `table` (`probs::Probs::table`).
-pub(super) fn code<'t>(tapes: impl IntoIterator<Item = &'t Tape>, table: &[u8]) -> Vec<u8> {
+/// probabilities of `table` (`probs::Probs::table`), the segments as
+/// `segmentation` says: predicted or not at its prediction probabilities
+/// where it is temporal, and the segment tree where the segment is coded.
+pub(super) fn code<'t>(tapes: impl IntoIterator<Item = &'t Tape>, table: &[u8], segmentation: Option<&Segmentation>) -> Vec<u8> {
     let mut w = BoolWriter::new();
     let mut run = w.run();
     for &r in tapes.into_iter().flat_map(|tape| &tape.records) {
         if r & TOKEN == 0 {
-            run.write(r & 1 == 1, table[(r >> 1) as usize]);
+            if r & SEGMENT == 0 {
+                run.write(r & 1 == 1, table[(r >> 1) as usize]);
+                continue;
+            }
+            let s = segmentation.expect("a frame with segments chose how to code them");
+            let predicted = r & PREDICTED != 0;
+            if s.temporal {
+                run.write(predicted, s.pred[(r >> PREDICTION_CONTEXT_SHIFT & 3) as usize]);
+            }
+            if !s.temporal || !predicted {
+                // Down the tree to `header::INACTIVE_SEGMENT` or segment 0.
+                run.write(r & 1 == 1, s.tree);
+                run.write(false, SEGMENT_TREE_PROB);
+                run.write(false, SEGMENT_TREE_PROB);
+            }
             continue;
         }
         let at = coef_slot((r >> CONTEXT_SHIFT & 0x3ff) as usize);
@@ -125,7 +163,7 @@ mod tests {
         // Two tapes coded one after the other are one stream.
         let mut after = Tape::new();
         after.put(true, skip_slot(1));
-        let data = code([&tape, &after], &table);
+        let data = code([&tape, &after], &table, None);
         let mut r = BoolReader::new(&data);
         let at = coef_slot(context);
         let p = &table[at..at + NODES];

@@ -51,7 +51,14 @@ bad evidence and what is done next, in order, are in
   a skip flag leaves every block edge of a static desktop filtered again
   each frame. And the blocks outside cost a decoder their parse and nothing
   else. The branch's plan had segmentation under "never"; that was written
-  before `main` coded the active map.
+  before `main` coded the active map. Built in phase 7.1: every inter frame
+  is in two segments, the inactive one every block left as the previous
+  frame has it, named or not.
+- **The decoders a stream is held to are the browsers' own**: libvpx, which
+  is Chrome's and this crate's `Decoder`, in every test; and ffvp9, which is
+  Firefox's, through `ffmpeg -c:v vp9 -f framemd5` on the streams the
+  harness writes with `IVF` set. vp9-wasm is checked the same way but is
+  not the gate: it may change, and no browser runs it unless asked to.
 - **Acceptance gate**, on the wlshare captures of
   [Test material](#test-material), each played into both encoders as the
   session played it into its stream (the same rectangles, dial and keyframe
@@ -260,6 +267,19 @@ mean bytes per frame, and the PSNR difference:
 | `flood` | 19 → 13 ms, 1.08×, −0.8 dB | 30 → 16 ms, 1.06×, −0.8 dB | 24 → 18 ms, 1.06×, −0.8 dB | 34 → 25 ms, 1.07×, −0.8 dB | 70 → 30 ms, 1.07×, −0.8 dB |
 | `video` | 10 → 10 ms, 0.95×, −0.7 dB | 13 → 12 ms, 0.93×, −0.6 dB | 15 → 14 ms, 0.92×, −0.7 dB | 18 → 17 ms, 0.89×, −0.6 dB | 20 → 20 ms, 0.91×, −0.7 dB |
 
+After phase 7.1, the frames of a line of text and the drags again, the
+rest of the tables unchanged:
+
+| After 7.1, scale 1 | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 |
+|---|---|---|---|---|
+| `terminal`, a line of text | 0.59 → 0.75 ms, 119 → 126 B, −0.4 dB | 0.80 → 1.00 ms, 126 → 155 B, −0.5 dB | 0.93 → 1.08 ms, 121 → 126 B, −0.6 dB | 1.12 → 1.28 ms, 135 → 138 B, −0.7 dB |
+| `drag`, a quarter of the picture | 4.0 → 2.8 ms, 5750 → 622 B, −0.1 dB | 3.7 → 2.8 ms, 6469 → 695 B, −0.1 dB | 3.9 → 3.0 ms, 6209 → 709 B, −0.2 dB | 4.1 → 3.2 ms, 8944 → 767 B, +0.4 dB |
+
+| After 7.1, scale 2 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3840×2160@2 |
+|---|---|---|---|---|---|
+| `terminal`, a line of text | 1.51 → 1.76 ms, 203 → 190 B, −0.4 dB | 2.08 → 2.11 ms, 196 → 191 B, −0.5 dB | 2.53 → 2.60 ms, 191 → 230 B, −0.6 dB | 3.2 → 3.0 ms, 214 → 221 B, −0.3 dB | 4.1 → 3.7 ms, 222 → 224 B, −0.5 dB |
+| `drag`, a quarter of the picture | 8.2 → 7.8 ms, 7259 → 1669 B, −0.7 dB | 8.9 → 7.7 ms, 6985 → 2042 B, −0.7 dB | 9.4 → 8.6 ms, 6179 → 2243 B, −0.8 dB | 10.6 → 9.4 ms, 5970 → 2325 B, −0.7 dB | 10.1 → 10.0 ms, 26625 → 3008 B, +0.4 dB |
+
 What the real captures say, which the decoded samples could not:
 
 - **Where the picture arrives exact and the compositor damages the whole
@@ -424,9 +444,23 @@ The replan, from here. Each phase is measured on the captures of
       blocks coded and no other, which is what a decoder now filters: the
       masks built from the coded superblocks only. This is also where the
       small frames' bytes go: the symbols of the superblocks outside collapse
-      to the segment's. Decoded by libvpx in the tests as every frame is,
-      and vp9-wasm 0.0.7's fixtures replayed through this encoder once it
-      codes them.
+      to the segment's. Decoded by libvpx in the tests as every frame is.
+      **Done.** Every inter frame is segmented, a block in the inactive
+      segment where its source is the previous frame's (named or not); the
+      map coded whole or against the last frame's by the counted cost, the
+      inactive segment's features written once after each keyframe; the loop
+      filter's masks built for superblocks with an active block only. On
+      `terminal`'s frames of a line of text, bytes against libvpx went from
+      1.28–2.05× to 0.94–1.22× (level at 1280, 1600, 1920, 2560, 3200, 3840;
+      1.2× at 1440 and 2880, which are two columns), and the paired time
+      from 1.5–1.6× to 1.13–1.26× in one and two columns, 0.9–1.0× in four;
+      `drag` kept its bytes (0.09–0.39× of libvpx's) once the map was
+      predicted, having lost 5–8% with it coded whole, since a map whose
+      segments are mixed costs its entropy on every block. libvpx and ffvp9
+      decode every stream alike; vp9-wasm 0.0.7 (main at 4c847c7) does not:
+      its second keyframe decodes wrong after a first keyframe of other
+      bytes, with no segmented frame between, deterministically on one
+      thread or four, which is its own defect and is left to it.
    2. **One pool of threads for the encoder's life**, parked between frames,
       each phase one wake: the comparison, the index, the tiles, the tapes,
       the filter. The band and row scheduling as now.

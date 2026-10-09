@@ -265,6 +265,13 @@ pub(super) struct ModeInfo {
     tx: usize,
     /// The side of the block it is in, in 8×8s as log2.
     n: u32,
+    /// Whether the block is in the inactive segment: the previous frame as
+    /// it is, which a decoder reads nothing else of and does not filter.
+    inactive: bool,
+    /// Whether its segment is what the last map predicted (libvpx's
+    /// `seg_id_predicted`), which the blocks after it read as the context
+    /// of their own prediction flag.
+    predicted: bool,
 }
 
 /// What a decoder keeps of a tile column, which nothing outside the column
@@ -293,6 +300,9 @@ pub(super) struct Contexts {
     /// Per superblock, what it leaves the superblock below it, once its row
     /// has coded it.
     edges: Vec<OnceLock<Edge>>,
+    /// Per superblock, whether any block of it was coded in the active
+    /// segment, so that the loop filter has an edge in it.
+    coded: Vec<bool>,
 }
 
 impl Contexts {
@@ -309,6 +319,7 @@ impl Contexts {
             searched_rows: vec![[0.0; 2]; geometry.sb_rows],
             tapes: (0..geometry.sb_rows).map(|_| Tape::new()).collect(),
             edges: (0..geometry.sb_rows * sb_cols).map(|_| OnceLock::new()).collect(),
+            coded: vec![false; geometry.sb_rows * sb_cols],
         }
     }
 
@@ -328,7 +339,14 @@ impl Contexts {
     /// `mi_row` and the column's 8×8 column `col`.
     pub(super) fn filtered(&self, mi_row: usize, col: usize) -> loopfilter::Block {
         let m = self.mode_info[mi_row * self.width + col];
-        loopfilter::Block { n: m.n, tx: m.tx, intra: m.inter.is_none(), skip: m.skip }
+        loopfilter::Block { n: m.n, tx: m.tx, intra: m.inter.is_none(), skip: m.skip, inactive: m.inactive }
+    }
+
+    /// Whether the loop filter has an edge in the superblock at superblock
+    /// row `sb_row` and the column's superblock column `sb_col` of the frame
+    /// coded last: any block of it is in the active segment.
+    pub(super) fn coded(&self, sb_row: usize, sb_col: usize) -> bool {
+        self.coded[sb_row * self.sb_cols + sb_col]
     }
 
     /// Back to how a decoder starts a frame, the mode info coded last kept
@@ -346,19 +364,21 @@ impl Contexts {
         for edge in &mut self.edges {
             edge.take();
         }
+        self.coded.fill(false);
     }
 
     /// A job for each superblock row of the column, which `column` holds
     /// the pixels of.
     fn jobs<'a>(&'a mut self, column: &'a mut Column) -> impl Iterator<Item = Job<'a>> {
-        let Contexts { mode_info, last_mode_info, width, sb_cols, use_last, searched_rows, tapes, edges, .. } = self;
+        let Contexts { mode_info, last_mode_info, width, sb_cols, use_last, searched_rows, tapes, edges, coded, .. } = self;
         let (width, sb_cols, use_last) = (*width, *sb_cols, *use_last);
         let (last_mode_info, edges) = (&last_mode_info[..], &edges[..]);
         let (x, stride) = (column.x, column.stride);
         let [p0, p1, p2] = &mut column.planes;
         let rows = 64 * stride;
         let planes = p0.chunks_mut(rows).zip(p1.chunks_mut(rows)).zip(p2.chunks_mut(rows));
-        mode_info.chunks_mut(8 * width).zip(planes).zip(tapes.iter_mut().zip(searched_rows)).enumerate().map(move |(sb_row, ((mode_info, ((p0, p1), p2)), (tape, searched)))| Job {
+        let rows = mode_info.chunks_mut(8 * width).zip(planes).zip(tapes.iter_mut().zip(searched_rows)).zip(coded.chunks_mut(sb_cols));
+        rows.enumerate().map(move |(sb_row, (((mode_info, ((p0, p1), p2)), (tape, searched)), coded))| Job {
             sb_row,
             x,
             stride,
@@ -371,6 +391,7 @@ impl Contexts {
             planes: [p0, p1, p2],
             tape,
             searched,
+            coded,
         })
     }
 }
@@ -417,6 +438,8 @@ struct Job<'a> {
     planes: [&'a mut [u8]; 3],
     tape: &'a mut Tape,
     searched: &'a mut [f64; 2],
+    /// Per superblock of the row, whether a block of it is active.
+    coded: &'a mut [bool],
 }
 
 /// Code every superblock row of every tile column of a frame, on `threads`
@@ -1241,56 +1264,76 @@ impl<'a> Tile<'a> {
         let inter = match mode {
             Mode::Intra(_) => None,
             Mode::Inter(mv) => Some(self.inter_mode(mi_row, mi_col, n, mv)),
-            Mode::Unchanged => Some(self.inter_mode(mi_row, mi_col, n, Mv::ZERO)),
+            // A decoder gives an inactive block ZEROMV, whatever it would
+            // have cost to code.
+            Mode::Unchanged => Some((InterMode::Zero, Mv::ZERO)),
         };
         let above = (mi_row > 0).then(|| self.mode_info(mi_row - 1, mi_col));
         let left = (mi_col > self.mi_col_start).then(|| self.mode_info(mi_row, mi_col - 1));
         let skips = usize::from(above.is_some_and(|m| m.skip)) + usize::from(left.is_some_and(|m| m.skip));
         let bw = 1 << n;
-        self.contexts.tape.put(skip, skip_slot(skips));
-        if self.previous.is_none() {
-            self.write_tx(n, tx, above, left);
-            // The luma mode's probabilities are chosen by the modes above and
-            // to the left, DC by rule where there is no block; the chroma
-            // mode's, which is the luma's, by the luma's.
-            let (a, l) = (above.map_or(IntraMode::Dc, |m| m.mode), left.map_or(IntraMode::Dc, |m| m.mode));
-            self.write_intra(intra, &KF_Y_MODE_PROBS[a as usize][l as usize], &KF_UV_MODE_PROBS[intra as usize]);
-        } else {
-            // libvpx's `get_intra_inter_context`.
-            let is_intra = |m: &ModeInfo| m.inter.is_none();
-            let ctx = match (above, left) {
-                (Some(a), Some(l)) if is_intra(&a) && is_intra(&l) => 3,
-                (Some(a), Some(l)) => usize::from(is_intra(&a) || is_intra(&l)),
-                (Some(m), None) | (None, Some(m)) => 2 * usize::from(is_intra(&m)),
-                (None, None) => 0,
-            };
-            self.contexts.tape.write(inter.is_some(), INTRA_INTER_PROBS[ctx]);
-            if !skip || inter.is_none() {
+        let inactive = mode == Mode::Unchanged;
+        // An inter frame's block says its segment first. The last map
+        // predicts the active segment for it where any of its 8×8s was
+        // active (libvpx's `dec_get_segment_id`, the least of them). An
+        // inactive block says nothing more, a decoder taking the rest from
+        // the segment.
+        let mut predicted = false;
+        if self.previous.is_some() {
+            let (w, col) = (self.contexts.width, mi_col - self.mi_col_start);
+            let last = &self.contexts.last_mode_info;
+            let was_inactive = (mi_row..(mi_row + bw).min(g.mi_rows)).all(|row| last[row * w + col..][..bw.min(w - col)].iter().all(|m| m.inactive));
+            predicted = inactive == was_inactive;
+            let ctx = usize::from(above.is_some_and(|m| m.predicted)) + usize::from(left.is_some_and(|m| m.predicted));
+            self.contexts.tape.segment(inactive, predicted, ctx);
+        }
+        if !inactive {
+            self.contexts.tape.put(skip, skip_slot(skips));
+            self.contexts.coded[(mi_col - self.mi_col_start) >> SB_LOG2] = true;
+            if self.previous.is_none() {
                 self.write_tx(n, tx, above, left);
-            }
-            if let Some((mode, mv)) = inter {
-                // LAST, the reference tree's first leaf, at libvpx's
-                // `vp9_get_pred_context_single_ref_p1` when LAST is the only
-                // reference: 4 beside an inter block, 2 otherwise.
-                let ctx = if above.is_some_and(|m| !is_intra(&m)) || left.is_some_and(|m| !is_intra(&m)) { 4 } else { 2 };
-                self.contexts.tape.write(false, SINGLE_REF_PROBS[ctx][0]);
-                let probs = INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)];
-                for (b, node) in mode.bits() {
-                    self.contexts.tape.write(b, probs[node]);
-                }
-                if mode == InterMode::New {
-                    let nearest = self.candidates(mi_row, mi_col, n)[0];
-                    let tape = &mut self.contexts.tape;
-                    mv::code(mv - nearest, |b, p| tape.write(b, p));
-                }
+                // The luma mode's probabilities are chosen by the modes above and
+                // to the left, DC by rule where there is no block; the chroma
+                // mode's, which is the luma's, by the luma's.
+                let (a, l) = (above.map_or(IntraMode::Dc, |m| m.mode), left.map_or(IntraMode::Dc, |m| m.mode));
+                self.write_intra(intra, &KF_Y_MODE_PROBS[a as usize][l as usize], &KF_UV_MODE_PROBS[intra as usize]);
             } else {
-                // At the probabilities of the block's size group.
-                self.write_intra(intra, &Y_MODE_PROBS[(n as usize + 1).min(3)], &UV_MODE_PROBS[intra as usize]);
+                // libvpx's `get_intra_inter_context`.
+                let is_intra = |m: &ModeInfo| m.inter.is_none();
+                let ctx = match (above, left) {
+                    (Some(a), Some(l)) if is_intra(&a) && is_intra(&l) => 3,
+                    (Some(a), Some(l)) => usize::from(is_intra(&a) || is_intra(&l)),
+                    (Some(m), None) | (None, Some(m)) => 2 * usize::from(is_intra(&m)),
+                    (None, None) => 0,
+                };
+                self.contexts.tape.write(inter.is_some(), INTRA_INTER_PROBS[ctx]);
+                if !skip || inter.is_none() {
+                    self.write_tx(n, tx, above, left);
+                }
+                if let Some((mode, mv)) = inter {
+                    // LAST, the reference tree's first leaf, at libvpx's
+                    // `vp9_get_pred_context_single_ref_p1` when LAST is the only
+                    // reference: 4 beside an inter block, 2 otherwise.
+                    let ctx = if above.is_some_and(|m| !is_intra(&m)) || left.is_some_and(|m| !is_intra(&m)) { 4 } else { 2 };
+                    self.contexts.tape.write(false, SINGLE_REF_PROBS[ctx][0]);
+                    let probs = INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)];
+                    for (b, node) in mode.bits() {
+                        self.contexts.tape.write(b, probs[node]);
+                    }
+                    if mode == InterMode::New {
+                        let nearest = self.candidates(mi_row, mi_col, n)[0];
+                        let tape = &mut self.contexts.tape;
+                        mv::code(mv - nearest, |b, p| tape.write(b, p));
+                    }
+                } else {
+                    // At the probabilities of the block's size group.
+                    self.write_intra(intra, &Y_MODE_PROBS[(n as usize + 1).min(3)], &UV_MODE_PROBS[intra as usize]);
+                }
             }
         }
         let (w, col) = (self.contexts.width, mi_col - self.mi_col_start);
         for row in mi_row..(mi_row + bw).min(g.mi_rows) {
-            self.contexts.mode_info[(row - self.top) * w + col..][..bw.min(w - col)].fill(ModeInfo { skip, mode: intra, inter, tx, n });
+            self.contexts.mode_info[(row - self.top) * w + col..][..bw.min(w - col)].fill(ModeInfo { skip, mode: intra, inter, tx, n, inactive, predicted });
         }
         if skip {
             // A skipped block leaves no coefficient above or left of the

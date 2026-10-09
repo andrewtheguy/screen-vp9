@@ -39,6 +39,9 @@ pub(super) struct Block {
     pub(super) intra: bool,
     /// Whether it coded no coefficient.
     pub(super) skip: bool,
+    /// Whether it is in the inactive segment, whose level is 0: none of its
+    /// edges are filtered, though a neighbour's edge against it may be.
+    pub(super) inactive: bool,
 }
 
 /// The frame's filter level for a quantizer index, as libvpx's real-time
@@ -103,7 +106,13 @@ impl Masks {
                 if r % bw != 0 || c % bw != 0 {
                     continue;
                 }
-                let level = if b.intra { intra_level } else { level };
+                let level = if b.inactive {
+                    0
+                } else if b.intra {
+                    intra_level
+                } else {
+                    level
+                };
                 if level == 0 {
                     continue;
                 }

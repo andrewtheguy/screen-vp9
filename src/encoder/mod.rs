@@ -9,11 +9,15 @@
 //! reconstructed exactly as libvpx's decoder reconstructs it, its loop filter
 //! run over it before it is kept. Where the source has not changed since the
 //! frame before, a block is that frame's, skipped; where it moved, a hash
-//! search finds where it came from. A frame's bools are recorded as its
-//! blocks are decided and coded once its header has updated the
-//! probabilities to what they count, which a decoder keeps for the next
-//! frame. Tile columns, which a decoder reads independently of each other,
-//! are decided and coded on threads of their own.
+//! search finds where it came from. An inter frame's blocks are in two
+//! segments, as libvpx's are under an active map: the blocks left as the
+//! previous frame has them are the inactive segment, which a decoder reads
+//! nothing of but the segment and does not loop filter, and the rest the
+//! active one. A frame's bools are recorded as its blocks are decided and
+//! coded once its header has updated the probabilities to what they count,
+//! which a decoder keeps for the next frame. Tile columns, which a decoder
+//! reads independently of each other, are decided and coded on threads of
+//! their own.
 
 mod bool_writer;
 mod convolve;
@@ -267,6 +271,9 @@ pub(crate) struct Encoder {
     /// Whether the frame coded last was an inter frame, whose vectors a
     /// decoder predicts the next frame's from.
     last_inter: bool,
+    /// Whether a decoder holds the inactive segment's features: an inter
+    /// frame since the last keyframe wrote them.
+    segmented: bool,
     /// Of the blocks the search between pixels could refine in the next
     /// frame, the one in this many it does, and what the blocks it refined
     /// would cost and what it saved (`tile::Contexts::searched`), summed over
@@ -305,6 +312,7 @@ impl Encoder {
             search: motion::Search::new(&geometry, threads),
             started: false,
             last_inter: false,
+            segmented: false,
             search_every: 1,
             searched: [0.0; 2],
             geometry,
@@ -375,6 +383,9 @@ impl Encoder {
             counts.add(&tape.counts);
         }
         let compressed = header::compressed(keyframe, &mut probs, &counts);
+        // An inter frame's blocks are in segments, the inactive segment's
+        // features written once after each keyframe.
+        let segmentation = (!keyframe).then(|| header::Segmentation::choose(&counts.segments, !self.segmented));
         // Each frame's half again of what came before, so that a frame with
         // little to search says little.
         self.searched = self.contexts.iter().fold(self.searched.map(|v| v / 2.0), |[c, s], contexts| [c + contexts.searched[0], s + contexts.searched[1]]);
@@ -384,7 +395,7 @@ impl Encoder {
         }
         let filter_level = if self.filtered { loopfilter::level(quantizer.ac_step(), keyframe) } else { 0 };
         let table = probs.table();
-        let tiles = on_threads(self.threads, self.contexts.iter(), |contexts| tape::code(&contexts.tapes, &table));
+        let tiles = on_threads(self.threads, self.contexts.iter(), |contexts| tape::code(&contexts.tapes, &table, segmentation.as_ref()));
         let uncompressed = header::Uncompressed {
             keyframe,
             width: g.width,
@@ -394,6 +405,7 @@ impl Encoder {
             tile_cols_log2: self.tile_cols_log2,
             min_log2_tile_cols: g.min_log2_tile_cols(),
             max_log2_tile_cols: g.max_log2_tile_cols(),
+            segmentation,
         };
         out.extend(uncompressed.write(compressed.len()));
         out.extend(compressed);
@@ -415,6 +427,8 @@ impl Encoder {
         }
         self.started = true;
         self.last_inter = !keyframe;
+        // A keyframe clears the features a decoder holds.
+        self.segmented = !keyframe;
         Ok(keyframe)
     }
 
@@ -443,16 +457,17 @@ impl Encoder {
 
     /// Run the loop filter at `level` over the frame just coded, as a
     /// decoder does before it keeps the frame: each plane on a thread of its
-    /// own, as far as there are threads.
+    /// own, as far as there are threads. A superblock with no active block
+    /// has no edge to filter and is passed over.
     fn filter(&mut self, level: u8) {
         let g = &self.geometry;
         let log2 = self.tile_cols_log2;
         let tiles: Vec<_> = (0..1 << log2).map(|i| g.tile_cols(i, log2).start).zip(&self.contexts).collect();
-        let masks: Vec<loopfilter::Masks> = (0..g.sb_rows * g.sb_cols)
+        let masks: Vec<Option<loopfilter::Masks>> = (0..g.sb_rows * g.sb_cols)
             .map(|i| {
                 let (mi_row, mi_col) = (i / g.sb_cols * 8, i % g.sb_cols * 8);
                 let &(start, contexts) = &tiles[tiles.partition_point(|&(start, _)| start <= mi_col) - 1];
-                loopfilter::Masks::new(g, mi_row, mi_col, level, |r, c| contexts.filtered(r, c - start))
+                contexts.coded(mi_row / 8, (mi_col - start) / 8).then(|| loopfilter::Masks::new(g, mi_row, mi_col, level, |r, c| contexts.filtered(r, c - start)))
             })
             .collect();
         let mut planes: [Vec<(usize, usize, &mut Vec<u8>)>; 3] = Default::default();
@@ -470,7 +485,7 @@ impl Encoder {
                 let mi_row = sb_row * 8;
                 let rows = (g.mi_rows - mi_row).min(8);
                 for sb_col in 0..g.sb_cols {
-                    let m = &masks[sb_row * g.sb_cols + sb_col];
+                    let Some(m) = &masks[sb_row * g.sb_cols + sb_col] else { continue };
                     let x = sb_col * 64;
                     let t = columns.partition_point(|&(start, ..)| start <= x) - 1;
                     let (start, stride) = (columns[t].0, columns[t].1);
@@ -1024,9 +1039,10 @@ mod tests {
         let (_, _, first) = stream.frame(&desktop(w, h), false);
         let (bytes, keyframe, again) = stream.frame(&desktop(w, h), false);
         assert!(!keyframe);
-        // The headers, and sixty superblocks each one skipped block of the
-        // previous frame, whose edges the loop filter runs over again.
-        assert!(bytes < 40, "{bytes} bytes");
+        // The headers, the inactive segment's features, and sixty
+        // superblocks each a partition and a segment, at a probability
+        // that makes the sixty a few bits.
+        assert!(bytes < 32, "{bytes} bytes");
         assert!((again - first).abs() < first / 100.0, "squared error {again} against {first}");
     }
 
@@ -1047,15 +1063,15 @@ mod tests {
         assert!(bytes * 10 < key_bytes, "{bytes} bytes against a keyframe of {key_bytes}");
         assert!(mse < 4.0, "squared error {mse}");
         // Outside the superblock the edit is in, the frame is the one before,
-        // not coded again, but for the seven pixels each side of the
-        // superblocks' edges that the loop filter runs over again.
+        // not coded again and not filtered again: the superblock's own left
+        // and top edges reach eight pixels into its neighbours, and its
+        // right and bottom edges are its inactive neighbours', unfiltered.
         let after = stream.encoder.reconstruction();
         let stride = usize::from(w);
-        let edge = |v: usize| !(7..57).contains(&(v % 64));
         for (p, (a, b)) in after.iter().zip(&before).enumerate() {
             for y in 0..usize::from(h) {
                 for x in 0..usize::from(w) {
-                    let touched = (64..128).contains(&x) && (64..128).contains(&y) || edge(x) || edge(y);
+                    let touched = (56..128).contains(&x) && (56..128).contains(&y);
                     assert!(touched || a[y * stride + x] == b[y * stride + x], "plane {p} moved at ({x}, {y})");
                 }
             }
@@ -1596,11 +1612,37 @@ mod tests {
     /// rectangles, the same dial, a keyframe where one was asked, which of
     /// them goes first alternating, on `threads`. Per kind of frame, what
     /// each made of it.
+    /// `frames`, each a VP9 frame of a `width`×`height` stream, as an IVF
+    /// file at `path`, for another decoder to read.
+    fn write_ivf(path: &std::path::Path, (width, height): (u16, u16), frames: &[Vec<u8>]) {
+        let mut ivf = Vec::new();
+        ivf.extend(b"DKIF");
+        ivf.extend(0u16.to_le_bytes());
+        ivf.extend(32u16.to_le_bytes());
+        ivf.extend(b"VP90");
+        ivf.extend(width.to_le_bytes());
+        ivf.extend(height.to_le_bytes());
+        ivf.extend(30u32.to_le_bytes());
+        ivf.extend(1u32.to_le_bytes());
+        ivf.extend((frames.len() as u32).to_le_bytes());
+        ivf.extend(0u32.to_le_bytes());
+        for (i, frame) in frames.iter().enumerate() {
+            ivf.extend((frame.len() as u32).to_le_bytes());
+            ivf.extend((i as u64).to_le_bytes());
+            ivf.extend(frame);
+        }
+        std::fs::write(path, ivf).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
+
     fn play(path: &std::path::Path, threads: usize, against: bool) -> (std::collections::BTreeMap<Kind, Tally>, (u16, u16), usize) {
         let mut encoders: Option<(crate::Encoder, Encoder, [Decoder; 2])> = None;
         let mut picture: Option<Picture> = None;
         let mut tallies: std::collections::BTreeMap<Kind, Tally> = std::collections::BTreeMap::new();
         let (mut n, mut size, mut libvpx_carried) = (0usize, (0u16, 0u16), false);
+        // With `IVF` set to a directory, this encoder's stream is kept and
+        // written there as `<capture>.ivf`.
+        let ivf = std::env::var_os("IVF").map(std::path::PathBuf::from);
+        let mut stream: Vec<Vec<u8>> = Vec::new();
         each_captured(path, |frame| {
             let (w, h) = frame.size;
             let fresh = size != (w, h);
@@ -1677,8 +1719,14 @@ mod tests {
             if against && produced {
                 tally.ratios.push(times[1] / times[0]);
             }
+            if ivf.is_some() {
+                stream.push(std::mem::take(&mut out[1]));
+            }
             n += 1;
         });
+        if let Some(dir) = ivf {
+            write_ivf(&dir.join(format!("{}.ivf", capture_name(path))), size, &stream);
+        }
         (tallies, size, n)
     }
 
@@ -1709,8 +1757,12 @@ mod tests {
     /// capture, for the frames of each kind — keyframes, whole inter frames,
     /// and rectangles within a superblock, within a sixteenth of the picture
     /// and over more — bytes, median time and luma PSNR of libvpx's decode
-    /// of each, and the ratios the plan's gate reads. A measurement, not a
-    /// check; run it in release:
+    /// of each, and the ratios the plan's gate reads. With `IVF` set to a
+    /// directory, this encoder's stream of each capture is written there
+    /// too, for the browsers' own decoders to read through ffmpeg
+    /// (`-c:v libvpx-vp9` is Chrome's, `-c:v vp9` Firefox's; `-f framemd5`
+    /// of each should agree). A measurement, not a check; run it in
+    /// release:
     ///
     /// ```text
     /// cargo test --release captures_against_libvpx -- --ignored --nocapture

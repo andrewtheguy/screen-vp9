@@ -356,7 +356,7 @@ mod tests {
                 estimate += super::estimate(&costs, kind, 0, &levels, eob, &mut energy);
                 write(&mut tape, kind, 0, &levels, eob, &mut energy);
             }
-            let coded = super::super::tape::code([&tape], &probs.table()).len() as f64;
+            let coded = super::super::tape::code([&tape], &probs.table(), None).len() as f64;
             let estimated = f64::from(estimate) / 2048.0;
             assert!((coded - estimated).abs() < coded / 100.0 + 8.0, "{n}x{n}: {coded} bytes coded, {estimated} estimated");
         }
@@ -387,7 +387,7 @@ mod tests {
                     for i in (0..7).rev() {
                         t.write(0x5a >> i & 1 == 1, 128);
                     }
-                    let data = super::super::tape::code([&t], &Probs::default().table());
+                    let data = super::super::tape::code([&t], &Probs::default().table(), None);
                     let mut r = BoolReader::new(&data);
                     let (back, back_eob) = read(&mut r, tx, tx_type, ctx);
                     assert_eq!((&back, back_eob), (levels, eob), "{n}x{n} {tx_type:?}, case {case}, context {ctx}");

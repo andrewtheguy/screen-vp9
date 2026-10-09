@@ -71,18 +71,33 @@ pub(super) fn coef_slot(context: usize) -> usize {
     FIXED + MODE_SLOTS + context * NODES
 }
 
+/// How a frame's blocks' segments went, for the two ways of coding the
+/// map (`header::Segmentation::choose`).
+#[derive(Clone, Copy, Default)]
+pub(super) struct SegmentCounts {
+    /// How many blocks were active and how many inactive.
+    pub(super) ids: [u32; 2],
+    /// Per context, how many blocks' segments were not the last map's and
+    /// how many were.
+    pub(super) predicted: [[u32; 2]; 3],
+    /// Of the blocks whose segment was not the last map's, how many were
+    /// active and how many inactive.
+    pub(super) unpredicted: [u32; 2],
+}
+
 /// A frame's tokens, per band and context how many of each and how many
-/// times the end of block was coded, and its other bools whose
-/// probabilities it updates, per slot after `FIXED` how many were false and
-/// how many true.
+/// times the end of block was coded; its other bools whose probabilities it
+/// updates, per slot after `FIXED` how many were false and how many true;
+/// and its segments.
 pub(super) struct Counts {
     pub(super) tokens: Box<[[u32; TOKENS + 1]; CONTEXTS]>,
     pub(super) bools: [[u32; 2]; MODE_SLOTS],
+    pub(super) segments: SegmentCounts,
 }
 
 impl Counts {
     pub(super) fn new() -> Self {
-        Self { tokens: Box::new([[0; TOKENS + 1]; CONTEXTS]), bools: [[0; 2]; MODE_SLOTS] }
+        Self { tokens: Box::new([[0; TOKENS + 1]; CONTEXTS]), bools: [[0; 2]; MODE_SLOTS], segments: SegmentCounts::default() }
     }
 
     /// Add `other`'s counts to these.
@@ -92,6 +107,10 @@ impl Counts {
         }
         for (mine, theirs) in self.bools.iter_mut().flatten().zip(other.bools.iter().flatten()) {
             *mine += theirs;
+        }
+        let (mine, theirs) = (&mut self.segments, &other.segments);
+        for (m, t) in mine.ids.iter_mut().zip(theirs.ids).chain(mine.predicted.iter_mut().flatten().zip(theirs.predicted.into_iter().flatten())).chain(mine.unpredicted.iter_mut().zip(theirs.unpredicted)) {
+            *m += t;
         }
     }
 
@@ -159,7 +178,7 @@ impl Costs {
 }
 
 /// The probability of false that `ct` measures (libvpx's `get_binary_prob`).
-fn binary_prob(ct: [u32; 2]) -> u8 {
+pub(super) fn binary_prob(ct: [u32; 2]) -> u8 {
     let den = u64::from(ct[0]) + u64::from(ct[1]);
     if den == 0 {
         return 128;
