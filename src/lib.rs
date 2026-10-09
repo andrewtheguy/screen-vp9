@@ -17,6 +17,11 @@
 //! decoder's threads wait on there; 4:2:0, which a browser decodes itself,
 //! always keeps it. The measurements are at `TILE_WIDTHS` and `loop_filtered`.
 //!
+//! A frame need not cost the whole picture. [`Picture::read_bgrx_rows`] converts
+//! the rows that changed, and [`Encoder::encode`] told where the picture changed
+//! skips every block outside it, which a caller that knows its damage says and
+//! one that does not leaves unsaid.
+//!
 //! Frame metadata is handled here too: [`frame_header`] reads the profile and
 //! keyframe bit of a frame this process did not encode, and [`codec_string`]
 //! builds the WebCodecs string a browser's `VideoDecoder` is configured with
@@ -112,6 +117,9 @@ impl Speed {
 /// Never more than the
 /// threads can fill, since a tile no thread is free for is bytes for nothing.
 const TILE_WIDTHS: [u16; 3] = [1440, 2048, 5760];
+
+/// The side of a block of libvpx's active map, in pixels.
+const ACTIVE_BLOCK: usize = 16;
 
 /// The most threads libvpx takes for one encoder.
 const MAX_THREADS: usize = 64;
@@ -266,6 +274,17 @@ fn fits(width: usize, height: usize, stride: usize, bytes: usize) -> bool {
     width == 0 || height == 0 || (stride >= width * 4 && bytes >= (height - 1) * stride + width * 4)
 }
 
+/// A rectangle of a picture, in pixels: where it differs from the picture
+/// encoded before it, for [`Encoder::encode`]. What lies past the picture's
+/// edge is not part of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rect {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
 /// One picture as the planes libvpx reads: 8-bit Y, U and V, BT.601 at studio
 /// swing, the chroma at one sample per pixel or one per 2×2 group averaged, as
 /// its [`Chroma`] says. Reused across frames, so a 1080p conversion is not a
@@ -357,36 +376,56 @@ impl Picture {
     /// Convert `pixels` — `B, G, R, X`, this picture's size, rows `stride` bytes
     /// apart — in place. The X byte is ignored.
     pub fn read_bgrx(&mut self, pixels: &[u8], stride: usize) -> Result<(), Error> {
+        self.read_bgrx_rows(pixels, stride, 0..self.size.1)
+    }
+
+    /// Convert `rows` of `pixels`, which hold the whole picture as
+    /// [`Self::read_bgrx`] takes it, and leave every other row as the last
+    /// conversion made it: what a picture that changed in a few places costs is
+    /// those rows and not the screen. Rows past the picture's last are not
+    /// part of it. A 4:2:0 chroma row is two rows' average, so both are read.
+    pub fn read_bgrx_rows(&mut self, pixels: &[u8], stride: usize, rows: std::ops::Range<u16>) -> Result<(), Error> {
         use yuv::{YuvConversionMode, YuvRange, YuvStandardMatrix};
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         if !fits(w, h, stride, pixels.len()) {
             return Err(Error::Buffer { width: w, height: h, stride, bytes: pixels.len() });
         }
+        let chroma = self.chroma;
+        let (from, to) = (usize::from(rows.start), usize::from(rows.end).min(h));
+        let (from, to) = match chroma {
+            Chroma::Full => (from, to),
+            Chroma::Subsampled => (from & !1, to.next_multiple_of(2).min(h)),
+        };
+        if from >= to {
+            return Ok(());
+        }
+        let count = to - from;
         // The crate reads rows as whole strides, so a last row with nothing
         // after it — which is a picture that fits — is copied tight first.
-        let (pixels, stride) = if pixels.len() >= h * stride {
-            (pixels, stride)
+        let (pixels, stride) = if pixels.len() >= to * stride {
+            (&pixels[from * stride..to * stride], stride)
         } else {
             let row = w * 4;
             self.tight.clear();
-            self.tight.extend(pixels.chunks(stride).take(h).flat_map(|r| &r[..row]));
+            self.tight.extend(pixels.chunks(stride).take(to).skip(from).flat_map(|r| &r[..row]));
             (self.tight.as_slice(), row)
         };
-        // Borrowed apart from `self.tight`, which the conversion reads.
-        let (size, chroma) = (self.size, self.chroma);
-        let [ys, us, vs] = {
-            let (cw, _) = chroma.plane_size(w, h);
-            [w, cw, cw]
+        // Borrowed apart from `self.tight`, which the conversion reads. A 4:2:0
+        // chroma row is two picture rows, and `from` is even.
+        let (cw, _) = chroma.plane_size(w, h);
+        let (chroma_from, chroma_to) = match chroma {
+            Chroma::Full => (from, to),
+            Chroma::Subsampled => (from / 2, to.div_ceil(2)),
         };
         let mut image = yuv::YuvPlanarImageMut {
-            y_plane: yuv::BufferStoreMut::Borrowed(&mut self.y),
-            y_stride: ys as u32,
-            u_plane: yuv::BufferStoreMut::Borrowed(&mut self.u),
-            u_stride: us as u32,
-            v_plane: yuv::BufferStoreMut::Borrowed(&mut self.v),
-            v_stride: vs as u32,
-            width: u32::from(size.0),
-            height: u32::from(size.1),
+            y_plane: yuv::BufferStoreMut::Borrowed(&mut self.y[from * w..to * w]),
+            y_stride: w as u32,
+            u_plane: yuv::BufferStoreMut::Borrowed(&mut self.u[chroma_from * cw..chroma_to * cw]),
+            u_stride: cw as u32,
+            v_plane: yuv::BufferStoreMut::Borrowed(&mut self.v[chroma_from * cw..chroma_to * cw]),
+            v_stride: cw as u32,
+            width: w as u32,
+            height: count as u32,
         };
         let (range, matrix, mode) = (YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Balanced);
         match chroma {
@@ -428,6 +467,12 @@ pub struct Encoder {
     started: std::time::Instant,
     /// The last timestamp given, which the next must pass.
     pts: i64,
+    /// libvpx's active map, a byte per 16×16 block in rows: which blocks the
+    /// frame being encoded may code, the others being skipped as they stand.
+    /// Kept so a frame does not allocate one.
+    active: Vec<u8>,
+    /// The encoder is holding a map, which it keeps until told otherwise.
+    mapped: bool,
 }
 
 impl Encoder {
@@ -531,6 +576,8 @@ impl Encoder {
             speed: Speed::default(),
             started: std::time::Instant::now(),
             pts: -1,
+            active: vec![0; usize::from(width).div_ceil(ACTIVE_BLOCK) * usize::from(height).div_ceil(ACTIVE_BLOCK)],
+            mapped: false,
         };
 
         // SAFETY: the context is live and each control's argument really is an
@@ -668,12 +715,26 @@ impl Encoder {
     }
 
     /// Encode `picture` and append the frame to `out`. `keyframe` makes it one a
-    /// decoder can start from; the first frame is one either way. Returns whether
+    /// decoder can start from; the first frame is one either way.
+    ///
+    /// `changed` is where the picture differs from the one encoded before it,
+    /// or `None` for a picture that may differ anywhere. Blocks outside every
+    /// rectangle are skipped — not searched, and left in the decoder's picture
+    /// as they are — which is most of what a frame costs to encode when little
+    /// moved: a 4K frame with one small change took 26 ms whole and 11 told
+    /// where. It is the caller's word and not checked: a change outside the
+    /// rectangles is not coded, by this frame or by a later one that does not
+    /// name it. A skipped block also keeps the quantizer it was last coded at,
+    /// so the frame that is to sharpen an unchanged picture after
+    /// [`Self::set_quality`] passes `None`. A keyframe codes everything
+    /// whatever `changed` says.
+    ///
+    /// Returns whether
     /// the frame is a keyframe, or `None` when the encoder produced no bitstream
     /// and nothing was appended: with no lag and no dropped frames that should be
     /// unreachable, but it is a return value rather than an assertion because a
     /// caller has to be ready to carry its pixels over to the next frame anyway.
-    pub fn encode(&mut self, picture: &Picture, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+    pub fn encode(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
         if picture.size() != self.size || picture.chroma() != self.chroma {
             let (w, h) = self.size;
             let (pw, ph) = picture.size();
@@ -688,6 +749,7 @@ impl Encoder {
         let flags: vpx::vpx_enc_frame_flags_t = if keyframe { vpx::VPX_EFLAG_FORCE_KF as vpx::vpx_enc_frame_flags_t } else { 0 };
         let planes = picture.planes();
         let strides = picture.strides();
+        self.map(changed.filter(|_| !keyframe))?;
 
         // SAFETY: the three planes outlive this call — they belong to `picture`,
         // which is borrowed for it — and the strides are the ones the picture
@@ -743,6 +805,43 @@ impl Encoder {
             }
             Ok((out.len() > from).then_some(keyframe))
         }
+    }
+
+    /// Tell libvpx which blocks the next frame may code: those `changed`
+    /// touches, or with `None` all of them. libvpx keeps a map until it is
+    /// given another, so one is handed over for every frame that has
+    /// rectangles and taken back by the first that has none.
+    fn map(&mut self, changed: Option<&[Rect]>) -> Result<(), Error> {
+        let (cols, rows) = (usize::from(self.size.0).div_ceil(ACTIVE_BLOCK), usize::from(self.size.1).div_ceil(ACTIVE_BLOCK));
+        let active_map = match changed {
+            Some(rects) => {
+                self.active.fill(0);
+                for rect in rects {
+                    let (x, y) = (usize::from(rect.x), usize::from(rect.y));
+                    let right = (x + usize::from(rect.width)).min(usize::from(self.size.0));
+                    let bottom = (y + usize::from(rect.height)).min(usize::from(self.size.1));
+                    if x >= right || y >= bottom {
+                        continue;
+                    }
+                    let (first, last) = (x / ACTIVE_BLOCK, (right - 1) / ACTIVE_BLOCK);
+                    for row in y / ACTIVE_BLOCK..=(bottom - 1) / ACTIVE_BLOCK {
+                        self.active[row * cols + first..=row * cols + last].fill(1);
+                    }
+                }
+                self.active.as_mut_ptr()
+            }
+            None if self.mapped => std::ptr::null_mut(),
+            None => return Ok(()),
+        };
+        let mut map = vpx::vpx_active_map { active_map, rows: rows as u32, cols: cols as u32 };
+        // SAFETY: the context is live, the control's argument is a pointer to
+        // a `vpx_active_map`, and the map it names is a byte for each of the
+        // `rows`×`cols` blocks libvpx counts for this size — it refuses any
+        // other count. libvpx copies the map out before the call returns, and
+        // a null one is how a map is taken back.
+        check(unsafe { vpx::vpx_codec_control_(&mut *self.ctx, vpx::vp8e_enc_control_id_VP8E_SET_ACTIVEMAP as c_int, &mut map as *mut vpx::vpx_active_map) }, "active_map")?;
+        self.mapped = changed.is_some();
+        Ok(())
     }
 
     /// One `vpx_codec_control_` call with an `int` argument, checked.
@@ -1030,7 +1129,7 @@ mod tests {
     /// Encode `picture` and return the frame with its keyframe bit.
     fn encode(encoder: &mut Encoder, picture: &Picture, keyframe: bool) -> (Vec<u8>, bool) {
         let mut out = Vec::new();
-        let key = encoder.encode(picture, keyframe, &mut out).expect("an encode").expect("a frame");
+        let key = encoder.encode(picture, keyframe, None, &mut out).expect("an encode").expect("a frame");
         (out, key)
     }
 
@@ -1080,6 +1179,140 @@ mod tests {
             rgb[at..at + 300].fill(230);
         }
         rgb
+    }
+
+    /// A frame told where its picture changed codes those blocks and no
+    /// others: a change it was not told of stays out of the decoder's picture
+    /// until a frame names it, and a block left out of one frame is coded by
+    /// the next that names it. A frame told nothing codes the whole picture
+    /// again, and a rectangle past the picture's edge is no error.
+    #[test]
+    fn a_frame_told_where_it_changed_codes_that_and_nothing_else() {
+        // Neither side a multiple of the map's 16-pixel block.
+        let (w, h) = (333u16, 250u16);
+        let (wu, hu) = (usize::from(w), usize::from(h));
+        const GREY: [u8; 3] = [200, 200, 200];
+        let square = |x: u16, y: u16| Rect { x, y, width: 32, height: 32 };
+        let (first, second, third) = (square(32, 32), square(200, 150), square(96, 200));
+        let paint = |rgb: &mut [u8], rect: Rect, colour: [u8; 3]| {
+            for y in usize::from(rect.y)..usize::from(rect.y + rect.height) {
+                for x in usize::from(rect.x)..usize::from(rect.x + rect.width) {
+                    rgb[(y * wu + x) * 3..][..3].copy_from_slice(&colour);
+                }
+            }
+        };
+        for chroma in [Chroma::Full, Chroma::Subsampled] {
+            let mut encoder = Encoder::new(w, h, chroma, 90, 2).expect("an encoder");
+            let mut rgb = flat(w, h, GREY);
+            let mut frames = vec![encode(&mut encoder, &picture(w, h, chroma, &rgb), false).0];
+            let mut step = |rgb: &[u8], changed: Option<&[Rect]>, want: [(Rect, [u8; 3]); 3]| {
+                let mut out = Vec::new();
+                let key = encoder.encode(&picture(w, h, chroma, rgb), false, changed, &mut out).expect("an encode").expect("a frame");
+                assert!(!key, "{chroma:?}: a frame told where it changed cost a keyframe");
+                frames.push(out);
+                let back = decode_chain(&frames, wu, hu);
+                for (rect, colour) in want {
+                    let got = rgb_at(&back, wu, usize::from(rect.x) + 16, usize::from(rect.y) + 16);
+                    assert!((0..3).all(|c| got[c].abs_diff(colour[c]) <= 40), "{chroma:?}, told {changed:?}: {rect:?} is {got:?}, not {colour:?}");
+                }
+            };
+
+            // Two squares change and the frame is told of one.
+            paint(&mut rgb, first, [220, 40, 40]);
+            paint(&mut rgb, second, [40, 40, 220]);
+            step(&rgb, Some(&[first]), [(first, [220, 40, 40]), (second, GREY), (third, GREY)]);
+            // The other, which the frame before skipped, is coded when named.
+            step(&rgb, Some(&[second]), [(first, [220, 40, 40]), (second, [40, 40, 220]), (third, GREY)]);
+            // Told nothing, a frame codes whatever changed.
+            paint(&mut rgb, third, [40, 180, 40]);
+            step(&rgb, None, [(first, [220, 40, 40]), (second, [40, 40, 220]), (third, [40, 180, 40])]);
+            // And a map after that one holds again, its rectangles clipped to
+            // the picture.
+            paint(&mut rgb, first, GREY);
+            paint(&mut rgb, third, GREY);
+            let edge = Rect { x: 320, y: 240, width: 100, height: 100 };
+            let outside = Rect { x: 400, y: 300, width: 16, height: 16 };
+            step(&rgb, Some(&[first, edge, outside]), [(first, GREY), (second, [40, 40, 220]), (third, [40, 180, 40])]);
+            // Nothing named is nothing coded.
+            step(&rgb, Some(&[]), [(first, GREY), (second, [40, 40, 220]), (third, [40, 180, 40])]);
+            step(&rgb, Some(&[third]), [(first, GREY), (second, [40, 40, 220]), (third, GREY)]);
+        }
+    }
+
+    /// A block a frame skips keeps the quantizer it was last coded at, so a
+    /// frame at a finer one that is told where the picture changed sharpens
+    /// that and leaves the rest coarse: what a caller that settles a quiet
+    /// picture must send its settle whole for.
+    #[test]
+    fn a_skipped_block_keeps_its_quantizer_until_a_whole_frame() {
+        let (w, h) = (320u16, 240u16);
+        let mut rgb = flat(w, h, [240, 240, 240]);
+        let mut seed = 12_345u32;
+        for px in rgb.chunks_mut(3) {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            if (seed >> 16).is_multiple_of(5) {
+                px.copy_from_slice(&[20, 20, 20]);
+            }
+        }
+        let source = picture(w, h, Chroma::Subsampled, &rgb);
+        let (wu, hu) = (usize::from(w), usize::from(h));
+        let named = Rect { x: 0, y: 0, width: 64, height: 64 };
+        // The error of everything the rectangle leaves out.
+        let error = |bgrx: &[u8]| {
+            let rest = (0..hu).flat_map(|y| (0..wu).map(move |x| (x, y))).filter(|&(x, y)| x >= 64 || y >= 64);
+            let sum: u64 = rest.clone().map(|(x, y)| u64::from(rgb_at(bgrx, wu, x, y)[1].abs_diff(rgb[(y * wu + x) * 3 + 1]))).sum();
+            sum as f64 / rest.count() as f64
+        };
+
+        let mut encoder = Encoder::new(w, h, Chroma::Subsampled, QUALITY_MIN, 2).expect("an encoder");
+        let mut frames = vec![encode(&mut encoder, &source, false).0];
+        let coarse = error(&decode_chain(&frames, wu, hu));
+
+        encoder.set_quality(90).expect("the encoder to accept a new quantizer");
+        let mut partial = Vec::new();
+        encoder.encode(&source, false, Some(&[named]), &mut partial).expect("an encode").expect("a frame");
+        frames.push(partial);
+        let skipped = error(&decode_chain(&frames, wu, hu));
+        assert!(skipped > coarse * 0.9, "a frame told of one corner left the rest at error {skipped:.2}, from {coarse:.2}: it coded blocks it was to skip");
+
+        frames.push(encode(&mut encoder, &source, false).0);
+        let settled = error(&decode_chain(&frames, wu, hu));
+        assert!(settled < coarse / 4.0, "a whole frame at quality 90 left the picture at error {settled:.2}, from {coarse:.2}");
+    }
+
+    /// Converting some rows leaves the planes as converting the whole picture
+    /// would, wherever the rows fall: on an odd row of a 4:2:0 picture, whose
+    /// chroma is two rows' average, on the last row of an odd height, in a
+    /// buffer that ends with its last row, and past the picture's end.
+    #[test]
+    fn rows_convert_as_the_whole_picture_does() {
+        let (width, height, stride) = (37usize, 21usize, 37 * 4 + 12);
+        let pixels = |salt: u32| {
+            let mut seed = salt;
+            let mut pixels = vec![0u8; (height - 1) * stride + width * 4];
+            for byte in &mut pixels {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                *byte = (seed >> 16) as u8;
+            }
+            pixels
+        };
+        let (before, after) = (pixels(1), pixels(2));
+        for chroma in [Chroma::Full, Chroma::Subsampled] {
+            let mut whole = Picture::new(width as u16, height as u16, chroma).expect("a picture");
+            for rows in [0..1u16, 3..4, 5..12, 20..21, 19..40, 0..21, 7..7, 30..40] {
+                // What changed is these rows and no others.
+                let mut changed = before.clone();
+                for row in usize::from(rows.start)..usize::from(rows.end).min(height) {
+                    changed[row * stride..][..width * 4].copy_from_slice(&after[row * stride..][..width * 4]);
+                }
+                whole.read_bgrx(&changed, stride).expect("a picture that fits");
+                let mut partial = Picture::new(width as u16, height as u16, chroma).expect("a picture");
+                partial.read_bgrx(&before, stride).expect("a picture that fits");
+                partial.read_bgrx_rows(&changed, stride, rows.clone()).expect("a picture that fits");
+                assert!(partial.planes() == whole.planes(), "{chroma:?} rows {rows:?}: the planes are not the whole conversion's");
+            }
+            assert!(matches!(whole.read_bgrx_rows(&before[1..], stride, 0..1), Err(Error::Buffer { .. })), "a buffer too short for the picture was read");
+        }
     }
 
     #[test]
@@ -1506,7 +1739,7 @@ mod tests {
         // 1919×1079 as a desktop is, at the size the gateway once padded.
         let source = picture(1919, 1079, Chroma::Subsampled, &flat(1919, 1079, [90, 90, 90]));
         let mut encoder = Encoder::new(1919, 1079, Chroma::Subsampled, 60, 2).expect("an encoder");
-        assert!(encoder.encode(&source, false, &mut Vec::new()).expect("an encode").is_some());
+        assert!(encoder.encode(&source, false, None, &mut Vec::new()).expect("an encode").is_some());
     }
 
     /// Only the frames that are asked to be keyframes are, and the ones between
@@ -1624,9 +1857,9 @@ mod tests {
     fn a_wrong_picture_or_frame_is_an_error_rather_than_a_read_past_the_end() {
         let mut encoder = Encoder::new(32, 16, Chroma::Full, 60, 1).expect("an encoder");
         let other = picture(16, 16, Chroma::Full, &flat(16, 16, [0, 0, 0]));
-        assert!(matches!(encoder.encode(&other, false, &mut Vec::new()), Err(Error::Mismatch(32, 16, _, 16, 16, _))));
+        assert!(matches!(encoder.encode(&other, false, None, &mut Vec::new()), Err(Error::Mismatch(32, 16, _, 16, 16, _))));
         let subsampled = picture(32, 16, Chroma::Subsampled, &flat(32, 16, [0, 0, 0]));
-        assert!(matches!(encoder.encode(&subsampled, false, &mut Vec::new()), Err(Error::Mismatch(..))));
+        assert!(matches!(encoder.encode(&subsampled, false, None, &mut Vec::new()), Err(Error::Mismatch(..))));
         assert!(matches!(Encoder::new(0, 16, Chroma::Full, 60, 1), Err(Error::Empty(0, 16))));
         assert!(matches!(Encoder::new(16, 16, Chroma::Full, 60, 0), Err(Error::Threads(0))));
         assert!(matches!(Decoder::new(0), Err(Error::Threads(0))));
