@@ -32,6 +32,20 @@ pub(super) enum IntraMode {
 }
 
 impl IntraMode {
+    /// Whether this mode is not worth trying after `best`, the best so
+    /// far (libvpx's `conditional_skipintra`): a steep diagonal pays only
+    /// where a mode on its side of the quadrant has.
+    pub(super) fn pointless_after(self, best: IntraMode) -> bool {
+        use IntraMode::*;
+        match self {
+            D117 => best != V && best != D135,
+            D63 => best != V && best != D45,
+            D207 => best != H && best != D45,
+            D153 => best != H && best != D135,
+            _ => false,
+        }
+    }
+
     /// Every mode, in the order they are tried.
     pub(super) const ALL: [IntraMode; 10] = [IntraMode::Dc, IntraMode::V, IntraMode::H, IntraMode::D45, IntraMode::D135, IntraMode::D117, IntraMode::D153, IntraMode::D207, IntraMode::D63, IntraMode::Tm];
 

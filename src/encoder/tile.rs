@@ -78,12 +78,19 @@ const SPLIT_4X4_VARIANCE: i64 = 80;
 /// `partition_context_lookup[BLOCK_4X4]`).
 const PARTITION_CONTEXT_4X4: u8 = 15;
 
-/// The intra modes a block is coded each way in, DC first. libvpx's
-/// realtime encoder tries DC, V and H alone (`intra_y_mode_mask`,
-/// `INTRA_DC_H_V`); the six diagonal modes bought 0.05 to 0.1 dB on the
-/// captures' keyframes for a third of libvpx's time again, and whether to
-/// keep them is the keyframe's time measurement, not made yet.
+/// The intra modes an 8×8 block is coded each way in, DC first, as
+/// libvpx's realtime encoder tries them on a keyframe
+/// (`rd_pick_intra_sby_mode`): all ten, less the steep diagonals whose
+/// way the best so far does not point (`IntraMode::pointless_after`), and
+/// none after a mode that codes no coefficient.
 const TRIED_MODES: [IntraMode; 10] = IntraMode::ALL;
+
+/// The intra modes a 4×4 block is coded each way in, pruned as an 8×8's
+/// are: libvpx's realtime encoder masks a 4×4's to these three
+/// (`intra_y_mode_mask[TX_4X4]`, `INTRA_DC_H_V`). All ten, pruned, bought
+/// 0.1 to 0.2 dB on the captures' keyframes at 1920×1080 for 15% of
+/// libvpx's keyframe time, which put them over its time at dial 40.
+const TRIED_MODES_4X4: [IntraMode; 3] = [IntraMode::Dc, IntraMode::V, IntraMode::H];
 
 /// What an intra neighbour adds to the mode context's counter (libvpx's
 /// `mode_2_counter`); `InterMode::counter` gives the rest.
@@ -1443,13 +1450,20 @@ impl<'a> Tile<'a> {
         let high4 = (2 << n).min((g.mi_rows - mi_row) * 2);
         let (stride, x0, y0) = (self.contexts.stride, self.contexts.x, self.top * 8);
         let (ax, ly0) = ((mi_col - self.mi_col_start) * 2, (mi_row * 2) & 15);
-        let mut best = (i64::MAX, IntraMode::Dc);
+        let mut best = (i64::MAX, IntraMode::Dc, true);
         let (up, beside) = (mi_row > 0, mi_col > self.mi_col_start);
+        let blocks = self.transform_blocks(mi_row, mi_col, n, tx_log2).1.count();
         for mode in TRIED_MODES {
+            // A mode that codes no coefficient is beaten only on its bits,
+            // and the modes before it cost fewer.
+            if best.0 < i64::MAX && best.2 {
+                break;
+            }
             // A mode predicted without an edge it reads is DC's picture
-            // or near it, at more bits.
+            // or near it, at more bits; a steep diagonal is tried only
+            // where the best so far points its way.
             let (reads_above, reads_left) = mode.reads();
-            if mode != IntraMode::Dc && (reads_above && !up || reads_left && !beside) {
+            if mode != IntraMode::Dc && (reads_above && !up || reads_left && !beside) || mode.pointless_after(best.1) {
                 continue;
             }
             let uv_probs = if keyframe { &KF_UV_MODE_PROBS[mode as usize] } else { &UV_MODE_PROBS[mode as usize] };
@@ -1463,6 +1477,7 @@ impl<'a> Tile<'a> {
             above_nz[..2 << n].copy_from_slice(&self.above_nonzero[0][ax..ax + (2 << n)]);
             left_nz[..2 << n].copy_from_slice(&self.left_nonzero[0][ly0..ly0 + (2 << n)]);
             let mut error = 0i64;
+            let mut coded_any = false;
             for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx_log2).1.enumerate() {
                 let (px, py) = (mi_col * 8 + x, mi_row * 8 + y);
                 let (lx, ly) = (px - x0, py - y0);
@@ -1484,12 +1499,13 @@ impl<'a> Tile<'a> {
                 let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: false, inter: false };
                 bits += i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.energy));
                 let coded = u8::from(eob > 0);
+                coded_any |= eob > 0;
                 for k in 0..n4 {
                     above_nz[col4 + k] = if col4 + k < wide4 { coded } else { 0 };
                     left_nz[row4 + k] = if row4 + k < high4 { coded } else { 0 };
                 }
                 // The transform blocks after this one predict from it.
-                if eob > 0 {
+                if eob > 0 && i + 1 < blocks {
                     let levels = &self.levels[0][i * area..][..area];
                     self.quantizer.dequantize(side, levels, scan.order, eob, &mut self.coeffs[..area]);
                     transform::inverse_add(side, tx_type, &self.coeffs[..area], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
@@ -1497,12 +1513,7 @@ impl<'a> Tile<'a> {
             }
             let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
             if cost < best.0 {
-                best = (cost, mode);
-            }
-            // A mode that predicts the block exactly is beaten only on its
-            // bits, and DC, tried first, has the fewest.
-            if error == 0 {
-                break;
+                best = (cost, mode, !coded_any);
             }
         }
         best.1
@@ -1537,9 +1548,12 @@ impl<'a> Tile<'a> {
             let ctx = usize::from(above_nz[x / 4] != 0) + usize::from(left_nz[y / 4] != 0);
             let (up, beside) = (y > 0 || mi_row > 0, x > 0 || mi_col > self.mi_col_start);
             let mut best = (i64::MAX, IntraMode::Dc, 0usize);
-            for mode in TRIED_MODES {
+            for mode in TRIED_MODES_4X4 {
+                if best.0 < i64::MAX && best.2 == 0 {
+                    break;
+                }
                 let (reads_above, reads_left) = mode.reads();
-                if mode != IntraMode::Dc && (reads_above && !up || reads_left && !beside) {
+                if mode != IntraMode::Dc && (reads_above && !up || reads_left && !beside) || mode.pointless_after(best.1) {
                     continue;
                 }
                 let bits: i64 = mode.bits().iter().map(|&(bit, node)| i64::from(bool_writer::cost(bit, y_probs[node]))).sum();
@@ -1562,9 +1576,6 @@ impl<'a> Tile<'a> {
                 let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
                 if cost < best.0 {
                     best = (cost, mode, eob);
-                }
-                if error == 0 {
-                    break;
                 }
             }
             sub[b] = best.1;

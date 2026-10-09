@@ -547,16 +547,36 @@ The replan, from here. Each phase is measured on the captures of
       the keyframes, and over the captures at 1920×1080: `terminal`'s lines
       of text −0.17 dB at 0.97× the bytes (from −0.71 at 1.02×), `uncover`
       −0.17 dB (from −0.6), `flood` −0.04 dB at 0.94× the bytes, `drag`
-      +0.27 dB at 0.09×. Keyframes take 1.04 to 1.26× libvpx's time, which
-      is over the line and is the next thing.
-   Left, in order: the keyframe's time (the trial over modes whose edges
-   are not there, and over flat 4×4s, is wasted); the chroma mode, coded as
-   luma's where libvpx chooses it by cost, which in 4:4:4 is two planes of
-   three; `RATE_WEIGHT`, which trades coefficients for bits at a weight
-   fitted to bytes alone and is 13× lighter than libvpx's `rdmult`, refit to
-   the gate's PSNR; the transform size of an 8×8 intra block, which libvpx
-   leaves at 8×8; and every size measured, not 1920×1080 alone. `Fastest`
-   skips the trials and the 4×4s.
+      +0.27 dB at 0.09×. Keyframes took 1.05 to 1.42× libvpx's time, which
+      was over the line.
+   4. **The trials pruned as libvpx prunes its own** (`rd_pick_intra_sby_mode`
+      and `rd_pick_intra4x4block` at its speed 7): an 8×8 tries all ten
+      modes less the steep diagonals whose way the best so far does not
+      point (`conditional_skipintra`) and stops at a mode that codes no
+      coefficient; a 4×4 tries DC, V and H alone (`intra_y_mode_mask`);
+      the trial's last transform block is not reconstructed. Keyframes at
+      1920×1080, dials 40 and 90: from 1.05–1.42× libvpx's time to
+      0.77–0.93× (`video` and `walk` at dial 40, the two smallest
+      keyframes, 1.04 and 1.10×), at −0.64 to −0.89 dB from −0.41 to −0.68,
+      the bytes 0.91–1.00× of libvpx's. The profile of a dial-40 keyframe
+      before the pruning, for the record: a third of the block coder in
+      the token bit estimate, a tenth each in prediction and the forward
+      transform, and a quarter of the frame's wall time coding the tapes.
+      What was tried and not kept: DC, V and H alone on the 8×8s too is the
+      same time and picture, so the 8×8's diagonals are free once pruned;
+      the ten modes pruned on the 4×4s as well buy 0.1 to 0.2 dB (−0.46 to
+      −0.73) for 15% of libvpx's keyframe time (0.95–1.11×), over the line
+      at dial 40, and are the first thing to retry if the rest of this
+      phase leaves time; DC, V, H and TM on the 4×4s is between (0.83–1.07×,
+      −0.59 to −0.82).
+   Left, in order: the chroma mode, coded as luma's where libvpx codes a
+   keyframe's as DC (`intra_uv_mode_mask`) and chooses it by cost
+   elsewhere, which in 4:4:4 is two planes of three; `RATE_WEIGHT`, which
+   trades coefficients for bits at a weight fitted to bytes alone and is
+   13× lighter than libvpx's `rdmult`, refit to the gate's PSNR; the
+   transform size of an 8×8 intra block, which libvpx leaves at 8×8; and
+   every size measured, not 1920×1080 alone. `Fastest` skips the trials
+   and the 4×4s.
 9. **Whole frames: keyframes, scrolls, settles.** Measured by the other time
    line of the gate on `flood`, `browser`, `video`, `walk` and `uncover`,
    with the rest of the rows of

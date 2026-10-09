@@ -1028,17 +1028,18 @@ mod tests {
         }
     }
 
-    /// A `w`×`h` in RGB of thirds that one intra mode each predicts best:
-    /// stripes down, which V predicts; stripes across, H; and a plane
-    /// sloping both ways, TM. Each `k` makes others, none of them in
-    /// another's picture.
+    /// A `w`×`h` in RGB of quarters that one intra mode each predicts best:
+    /// stripes down, which V predicts; stripes across, H; stripes down and
+    /// to the right, D135; and a plane sloping both ways, TM. Each `k`
+    /// makes others, none of them in another's picture.
     fn lines_rgb(w: u16, h: u16, k: usize) -> Vec<u8> {
         let mut rgb = Vec::with_capacity(usize::from(w) * usize::from(h) * 3);
         for y in 0..usize::from(h) {
             for x in 0..usize::from(w) {
-                let v = match (x * 3 / usize::from(w) + k) % 3 {
+                let v = match (x * 4 / usize::from(w) + k) % 4 {
                     0 => (x * (37 + 6 * k)) % 251,
                     1 => (y * (53 + 10 * k)) % 241,
+                    2 => ((x + usize::from(h) - y) * (29 + 8 * k)) % 239,
                     _ => (x % 64) * (k + 1) + (2 + k) * (y % 32),
                 } as u8;
                 rgb.extend([v, v / 2 + 40, 255 - v]);
@@ -1689,6 +1690,9 @@ mod tests {
     fn keyframes_against_libvpx() {
         let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
         let dials: Vec<u8> = std::env::var("DIALS").map_or_else(|_| vec![40, 60, 80, 90, 100], |d| d.split(',').map(|v| v.parse().expect("a dial")).collect());
+        // `PASSES` codes each keyframe that many times (3 if unset), for a
+        // profile that wants more samples than a measurement.
+        let passes: usize = std::env::var("PASSES").map_or(3, |t| t.parse().expect("a pass count"));
         for path in captures() {
             let picture = first_picture(&path);
             let (w, h) = picture.size();
@@ -1704,7 +1708,7 @@ mod tests {
                 let mut result = [(0usize, f64::INFINITY, 0.0f64); 2];
                 for (c, r) in result.iter_mut().enumerate() {
                     let mut frame = Vec::new();
-                    for _ in 0..3 {
+                    for _ in 0..passes {
                         frame.clear();
                         let started = std::time::Instant::now();
                         if c == 0 {
