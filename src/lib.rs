@@ -10,6 +10,13 @@
 //! back, for every test here and in a user, which reads what the encoder made
 //! with the other half of the same archive.
 //!
+//! The stream's shape is chosen for whoever decodes it. Tile columns follow the
+//! picture's width, one under 1440, two from 1440, four from 2048 and eight
+//! from 5760, and never outnumber the encoder's threads. A 4:4:4 stream in four
+//! columns or more is coded without the loop filter, which is what a software
+//! decoder's threads wait on there; 4:2:0, which a browser decodes itself,
+//! always keeps it. The measurements are at `TILE_WIDTHS` and `loop_filtered`.
+//!
 //! Frame metadata is handled here too: [`frame_header`] reads the profile and
 //! keyframe bit of a frame this process did not encode, and [`codec_string`]
 //! builds the WebCodecs string a browser's `VideoDecoder` is configured with
@@ -427,7 +434,9 @@ impl Encoder {
     /// An encoder for a `width`×`height` picture at `chroma`, starting at
     /// `quality` (1–100, clamped), coded by `threads` threads. The thread count
     /// is the caller's: how many cores a machine can spare is a question about
-    /// what else it runs.
+    /// what else it runs. It also bounds the tile columns, and so decides with
+    /// the width whether a 4:4:4 stream is loop filtered: from 2048 wide on four
+    /// threads or more it is not.
     pub fn new(width: u16, height: u16, chroma: Chroma, quality: u8, threads: usize) -> Result<Self, Error> {
         if width == 0 || height == 0 {
             return Err(Error::Empty(width, height));
