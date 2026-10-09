@@ -16,7 +16,10 @@
 //!
 //! Hashes are kept per 8×8 of the frame and taken again only where the
 //! source changed, so a frame that changes little costs little; they are
-//! taken and looked up in a band of 8×8 rows on each thread.
+//! taken and looked up in a band of 8×8 rows on each thread. The table of
+//! the frame before's anchors by hash is kept too, and brought up to date
+//! with the 8×8s whose anchors were taken again, unless so many were that
+//! filling it again is cheaper.
 //!
 //! What moves but does not arrive whole, which a hash cannot match, each
 //! superblock that changed finds by its projections (libvpx's
@@ -87,10 +90,52 @@ impl Hasher for Identity {
 }
 
 /// Where the frame before has anchors of one hash, as (x, y): how many, and
-/// the first of them; more than `MAX_REPEATS` once it has too many.
-type Places = (usize, [(u16, u16); MAX_REPEATS]);
+/// each of them while there are no more than `MAX_REPEATS`. Once there have
+/// been more the places are not kept, and the hash says nothing until the
+/// table is filled again.
+#[derive(Clone, Copy, Default)]
+struct Places {
+    count: u32,
+    spoiled: bool,
+    places: [(u16, u16); MAX_REPEATS],
+}
+
+impl Places {
+    /// The places, where the hash has few enough anchors to say where
+    /// something came from.
+    fn usable(&self) -> Option<&[(u16, u16)]> {
+        (!self.spoiled && self.count as usize <= MAX_REPEATS).then(|| &self.places[..self.count as usize])
+    }
+}
 
 type Table = HashMap<u32, Places, BuildHasherDefault<Identity>>;
+
+/// Add an anchor of `hash` at `place` to `table`.
+fn insert(table: &mut Table, hash: u32, place: (u16, u16)) {
+    let p = table.entry(hash).or_default();
+    if p.count as usize >= MAX_REPEATS {
+        p.spoiled = true;
+    } else {
+        p.places[p.count as usize] = place;
+    }
+    p.count += 1;
+}
+
+/// Take the anchor of `hash` at `place` out of `table`, which holds it.
+fn remove(table: &mut Table, hash: u32, place: (u16, u16)) {
+    let p = table.get_mut(&hash).expect("an anchor indexed is in the table");
+    p.count -= 1;
+    if let Some(at) = (!p.spoiled).then(|| p.places[..=p.count as usize].iter().position(|&q| q == place)).flatten() {
+        p.places[at] = p.places[p.count as usize];
+    }
+    if p.count == 0 {
+        table.remove(&hash);
+    }
+}
+
+/// The share of a frame's 8×8s, as `1 / REFILL`, above which a table is
+/// filled again rather than brought up to date one anchor at a time.
+const REFILL: usize = 4;
 
 /// Which of the tables, one per thread so that each thread fills one, holds
 /// the anchors whose hash is `hash`.
@@ -131,6 +176,12 @@ pub(super) struct Search {
     /// The anchors of the source coded last by hash, in a table per thread
     /// (`shard`).
     tables: Vec<Table>,
+    /// Whether the tables have to be filled from every anchor: before any
+    /// frame, and after a frame that did not read them.
+    refill: bool,
+    /// The 8×8s whose anchors were taken again last, with the anchors they
+    /// had, which the tables still hold.
+    pending: Vec<(usize, Anchors, u8)>,
     /// Per thread.
     scratch: Vec<Scratch>,
 }
@@ -151,6 +202,8 @@ impl Search {
             anchors: vec![[(0, 0); PER_8X8]; mis],
             counts: vec![0; mis],
             tables: (0..threads).map(|_| HashMap::default()).collect(),
+            refill: true,
+            pending: Vec::new(),
             scratch: (0..threads).map(|_| Scratch::default()).collect(),
         }
     }
@@ -174,9 +227,17 @@ impl Search {
                 changed(r, c) || changed(r, c + 1) || changed(r + 1, c) || changed(r + 1, c + 1)
             })
             .collect();
-        if inter && stale.iter().any(|&s| s) {
-            self.index(pool);
+        // The tables are brought to the source coded last, which the
+        // anchors are of, before any of them is taken again.
+        if inter {
+            if self.refill || self.pending.len() * REFILL > self.anchors.len() {
+                self.index(pool);
+            } else {
+                self.bring_up(pool);
+            }
         }
+        self.refill = !inter;
+        self.pending.clear();
         let shape = &self.shape;
         let tables = inter.then_some(&self.tables[..]);
         // A row of 8×8s at a time, as each thread is free for one: what
@@ -184,6 +245,7 @@ impl Search {
         let rows = self.anchors.chunks_mut(mi_cols).zip(self.counts.chunks_mut(mi_cols)).zip(stale.chunks(mi_cols)).enumerate();
         let found = on_workers(pool, rows, &mut self.scratch, |(r, ((anchors, counts), stale)), scratch| {
             let mut found = Vec::new();
+            let mut replaced = Vec::new();
             let mut looked_up = 0;
             let mut c = 0;
             while c < mi_cols {
@@ -195,14 +257,17 @@ impl Search {
                 while c < mi_cols && stale[c] {
                     c += 1;
                 }
+                if inter {
+                    replaced.extend((start..c).map(|i| (r * mi_cols + i, anchors[i], counts[i])));
+                }
                 shape.hash_run(luma, r, start..c, scratch, anchors, counts);
                 let Some(tables) = tables else { continue };
                 for i in start..c {
                     for &a in &anchors[i][..usize::from(counts[i])] {
                         let (x, y) = shape.place(r * mi_cols + i, a);
                         looked_up += 1;
-                        if let Some(&(count, places)) = tables[shard(a.0, tables.len())].get(&a.0).filter(|p| p.0 <= MAX_REPEATS) {
-                            for &(px, py) in &places[..count] {
+                        if let Some(places) = tables[shard(a.0, tables.len())].get(&a.0).and_then(Places::usable) {
+                            for &(px, py) in places {
                                 let mv = (i32::from(py) - y as i32, i32::from(px) - x as i32);
                                 if mv != (0, 0) && mv.0.abs() <= MAX_PIXELS && mv.1.abs() <= MAX_PIXELS {
                                     found.push(((y / 64) * shape.sb_cols + x / 64, Mv::pixels(mv.0, mv.1)));
@@ -212,8 +277,9 @@ impl Search {
                     }
                 }
             }
-            (found, looked_up)
+            (found, looked_up, replaced)
         });
+        self.pending = found.iter().flat_map(|f| f.2.iter().copied()).collect();
         let Some(reference) = reference else {
             return Vec::new();
         };
@@ -248,6 +314,29 @@ impl Search {
         vectors
     }
 
+    /// Bring the tables to the anchors kept, which are the source coded
+    /// last's, from the 8×8s whose anchors were taken again last: each
+    /// thread takes the anchors those had out of its table and puts in the
+    /// ones they have.
+    fn bring_up(&mut self, pool: &Pool) {
+        let Self { shape, anchors, counts, tables, pending, .. } = self;
+        let shards = tables.len();
+        on_threads(pool, shards, tables.iter_mut().enumerate(), |(s, table)| {
+            for &(i, old, n) in pending.iter() {
+                for &a in old[..usize::from(n)].iter().filter(|a| shard(a.0, shards) == s) {
+                    let (x, y) = shape.place(i, a);
+                    remove(table, a.0, (x as u16, y as u16));
+                }
+            }
+            for &(i, ..) in pending.iter() {
+                for &a in anchors[i][..usize::from(counts[i])].iter().filter(|a| shard(a.0, shards) == s) {
+                    let (x, y) = shape.place(i, a);
+                    insert(table, a.0, (x as u16, y as u16));
+                }
+            }
+        });
+    }
+
     /// Index the anchors kept, which are the source coded last's, by hash,
     /// each thread filling a table.
     fn index(&mut self, pool: &Pool) {
@@ -269,11 +358,7 @@ impl Search {
         on_threads(pool, shards, tables.iter_mut().enumerate(), |(s, table)| {
             table.clear();
             for &(hash, x, y) in sorted.iter().flat_map(|sorted| &sorted[s]) {
-                let (count, places) = table.entry(hash).or_insert((0, [(0, 0); MAX_REPEATS]));
-                if *count < MAX_REPEATS {
-                    places[*count] = (x, y);
-                }
-                *count = (*count + 1).min(MAX_REPEATS + 1);
+                insert(table, hash, (x, y));
             }
         });
     }
@@ -408,4 +493,93 @@ fn most(mut votes: Vec<Mv>, least: usize, count: usize) -> Vec<Mv> {
     let mut runs: Vec<(usize, Mv)> = votes.chunk_by(|a, b| a == b).filter(|run| run.len() >= least).map(|run| (run.len(), run[0])).collect();
     runs.sort_unstable_by(|a, b| b.cmp(a));
     runs.into_iter().take(count).map(|(_, mv)| mv).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `w`×`h` of noise from `seed`, which has anchors everywhere.
+    fn noise(w: usize, h: usize, seed: u32) -> Vec<u8> {
+        let mut state = seed;
+        (0..w * h)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect()
+    }
+
+    /// Every usable place in `tables`, by hash, sorted.
+    fn usable(tables: &[Table]) -> Vec<(u32, Vec<(u16, u16)>)> {
+        let mut all: Vec<_> = tables
+            .iter()
+            .flat_map(|t| t.iter())
+            .filter_map(|(&h, p)| {
+                p.usable().map(|places| {
+                    let mut places = places.to_vec();
+                    places.sort_unstable();
+                    (h, places)
+                })
+            })
+            .collect();
+        all.sort_unstable();
+        all
+    }
+
+    /// After frames that change a little and frames that change much, the
+    /// tables brought up to date hold what tables filled from every anchor
+    /// hold, but for hashes that repeated too much at some point.
+    #[test]
+    fn the_tables_brought_up_to_date_are_the_tables_filled_again() {
+        let (w, h) = (320usize, 200usize);
+        let geometry = Geometry::new(w as u16, h as u16);
+        let pool = Pool::new(3);
+        let mut search = Search::new(&geometry, 3);
+        let recon = Reconstruction::new(&geometry, 0);
+        let mut luma = noise(w, h, 1);
+        let all_changed = vec![false; geometry.mi_rows * geometry.mi_cols];
+        search.update(&pool, &luma, None, None);
+        let mut unchanged = all_changed.clone();
+        for frame in 1..12usize {
+            // A patch of new noise, or a scroll, or everything new.
+            let mut next = luma.clone();
+            match frame % 4 {
+                3 => next = noise(w, h, frame as u32),
+                2 => next.rotate_left(w * 7),
+                _ => {
+                    let (x0, y0) = (frame * 13 % (w - 40), frame * 29 % (h - 24));
+                    let patch = noise(40, 24, 100 + frame as u32);
+                    for r in 0..24 {
+                        next[(y0 + r) * w + x0..][..40].copy_from_slice(&patch[r * 40..][..40]);
+                    }
+                }
+            }
+            for (i, u) in unchanged.iter_mut().enumerate() {
+                let (r, c) = (i / geometry.mi_cols, i % geometry.mi_cols);
+                *u = (0..8).all(|y| luma[(r * 8 + y) * w + c * 8..][..8] == next[(r * 8 + y) * w + c * 8..][..8]);
+            }
+            search.update(&pool, &next, Some(&unchanged), Some(&recon));
+            luma = next;
+        }
+        // The tables are now of the frame before `luma`; refill from the
+        // same anchors and compare.
+        let mut refilled = Search::new(&geometry, 3);
+        refilled.anchors = search.anchors.clone();
+        refilled.counts = search.counts.clone();
+        search.bring_up(&pool);
+        refilled.index(&pool);
+        let (kept, fresh) = (usable(&search.tables), usable(&refilled.tables));
+        assert!(!kept.is_empty());
+        let spoiled: Vec<_> = fresh.iter().filter(|f| !kept.contains(f)).collect();
+        for f in &spoiled {
+            let p = search.tables[shard(f.0, 3)].get(&f.0).expect("a hash the fresh tables have is in the kept ones");
+            assert!(p.spoiled, "{:?} is in the fresh tables and not the kept ones", f);
+            assert_eq!(p.count as usize, f.1.len());
+        }
+        assert!(kept.iter().all(|k| fresh.contains(k)), "the kept tables hold a place the fresh ones do not");
+        assert!(spoiled.len() * 10 < fresh.len(), "{} of {} hashes spoiled", spoiled.len(), fresh.len());
+    }
 }

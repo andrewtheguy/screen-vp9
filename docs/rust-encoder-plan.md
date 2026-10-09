@@ -472,7 +472,14 @@ The replan, from here. Each phase is measured on the captures of
       0.47–0.77×, `drag` at 1920×1080 from 0.77× to 0.70×.
    3. **The index of the frame before kept, not rebuilt**: anchors retaken
       and the table updated for the 8×8s that went stale, and the
-      projections only over changed superblocks, as now.
+      projections only over changed superblocks, as now. **Done**: the
+      tables keep each hash's places exactly up to `MAX_REPEATS`, a hash
+      that once had more says nothing until the tables are filled again,
+      which they are after a keyframe or when more than a quarter of the
+      8×8s went stale. `terminal`'s frames of a line of text went from
+      0.85–1.0× libvpx's time to 0.80–0.95× (3.40 ms at 3840×2160); the
+      bytes moved by a few in a million where a spoiled hash had been a
+      match.
    4. **One reconstruction kept across frames rather than two swapped**: the
       blocks this frame codes written in place, the pixels they overwrite
       kept aside for the blocks of this frame that read them as reference,
