@@ -78,6 +78,13 @@ const SPLIT_4X4_VARIANCE: i64 = 80;
 /// `partition_context_lookup[BLOCK_4X4]`).
 const PARTITION_CONTEXT_4X4: u8 = 15;
 
+/// The intra modes a block is coded each way in, DC first. libvpx's
+/// realtime encoder tries DC, V and H alone (`intra_y_mode_mask`,
+/// `INTRA_DC_H_V`); the six diagonal modes bought 0.05 to 0.1 dB on the
+/// captures' keyframes for a third of libvpx's time again, and whether to
+/// keep them is the keyframe's time measurement, not made yet.
+const TRIED_MODES: [IntraMode; 10] = IntraMode::ALL;
+
 /// What an intra neighbour adds to the mode context's counter (libvpx's
 /// `mode_2_counter`); `InterMode::counter` gives the rest.
 const INTRA_COUNT: usize = 9;
@@ -1437,7 +1444,14 @@ impl<'a> Tile<'a> {
         let (stride, x0, y0) = (self.contexts.stride, self.contexts.x, self.top * 8);
         let (ax, ly0) = ((mi_col - self.mi_col_start) * 2, (mi_row * 2) & 15);
         let mut best = (i64::MAX, IntraMode::Dc);
-        for mode in IntraMode::ALL {
+        let (up, beside) = (mi_row > 0, mi_col > self.mi_col_start);
+        for mode in TRIED_MODES {
+            // A mode predicted without an edge it reads is DC's picture
+            // or near it, at more bits.
+            let (reads_above, reads_left) = mode.reads();
+            if mode != IntraMode::Dc && (reads_above && !up || reads_left && !beside) {
+                continue;
+            }
             let uv_probs = if keyframe { &KF_UV_MODE_PROBS[mode as usize] } else { &UV_MODE_PROBS[mode as usize] };
             let mut bits: i64 = mode.bits().iter().map(|&(b, node)| i64::from(bool_writer::cost(b, y_probs[node])) + i64::from(bool_writer::cost(b, uv_probs[node]))).sum();
             let tx_type = Self::tx_type(Mode::Intra(mode), 0, tx_log2, 0);
@@ -1485,6 +1499,11 @@ impl<'a> Tile<'a> {
             if cost < best.0 {
                 best = (cost, mode);
             }
+            // A mode that predicts the block exactly is beaten only on its
+            // bits, and DC, tried first, has the fewest.
+            if error == 0 {
+                break;
+            }
         }
         best.1
     }
@@ -1516,8 +1535,13 @@ impl<'a> Tile<'a> {
             }
             let y_probs = *self.y_mode_probs(&sub, b, true, 0, above, left);
             let ctx = usize::from(above_nz[x / 4] != 0) + usize::from(left_nz[y / 4] != 0);
+            let (up, beside) = (y > 0 || mi_row > 0, x > 0 || mi_col > self.mi_col_start);
             let mut best = (i64::MAX, IntraMode::Dc, 0usize);
-            for mode in IntraMode::ALL {
+            for mode in TRIED_MODES {
+                let (reads_above, reads_left) = mode.reads();
+                if mode != IntraMode::Dc && (reads_above && !up || reads_left && !beside) {
+                    continue;
+                }
                 let bits: i64 = mode.bits().iter().map(|&(bit, node)| i64::from(bool_writer::cost(bit, y_probs[node]))).sum();
                 let tx_type = mode.tx_type();
                 let scan = tokens::scan(0, tx_type);
@@ -1538,6 +1562,9 @@ impl<'a> Tile<'a> {
                 let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
                 if cost < best.0 {
                     best = (cost, mode, eob);
+                }
+                if error == 0 {
+                    break;
                 }
             }
             sub[b] = best.1;

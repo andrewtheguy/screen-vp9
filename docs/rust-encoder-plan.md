@@ -59,6 +59,10 @@ bad evidence and what is done next, in order, are in
   Firefox's, through `ffmpeg -c:v vp9 -f framemd5` on the streams the
   harness writes with `IVF` set. vp9-wasm is checked the same way but is
   not the gate: it may change, and no browser runs it unless asked to.
+  ffmpeg sets its output up at the first frame's size and rescales every
+  later frame of another size to it before hashing, whichever decoder it
+  ran, so a stream that changes size is hashed in pieces cut at the
+  keyframe that changes it; the harness writes one file per size.
 - **Acceptance gate**, on the wlshare captures of
   [Test material](#test-material), each played into both encoders as the
   session played it into its stream (the same rectangles, dial and keyframe
@@ -460,11 +464,12 @@ The replan, from here. Each phase is measured on the captures of
       from 1.5–1.6× to 1.13–1.26× in one and two columns, 0.9–1.0× in four;
       `drag` kept its bytes (0.09–0.39× of libvpx's) once the map was
       predicted, having lost 5–8% with it coded whole, since a map whose
-      segments are mixed costs its entropy on every block. libvpx and ffvp9
-      decode every stream alike; vp9-wasm 0.0.7 (main at 4c847c7) does not:
-      its second keyframe decodes wrong after a first keyframe of other
-      bytes, with no segmented frame between, deterministically on one
-      thread or four, which is its own defect and is left to it.
+      segments are mixed costs its entropy on every block. libvpx, ffvp9
+      and vp9-wasm decode every stream alike, frame for frame. (A first
+      reading had vp9-wasm wrong from the second keyframe of
+      `terminal-1920x1080`; that keyframe changes the picture's size, and
+      what differed was ffmpeg's rescaling after its decoders, not any
+      decoder.)
    2. **One pool of threads for the encoder's life**, parked between frames,
       each phase one wake: the comparison, the index, the tiles, the tapes,
       the filter. The band and row scheduling as now. **Done**

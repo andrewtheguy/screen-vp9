@@ -1544,9 +1544,10 @@ mod tests {
         let mut tallies: std::collections::BTreeMap<Kind, Tally> = std::collections::BTreeMap::new();
         let (mut n, mut size, mut libvpx_carried) = (0usize, (0u16, 0u16), false);
         // With `IVF` set to a directory, this encoder's stream is kept and
-        // written there as `<capture>.ivf`.
+        // written there as `<capture>-<WxH>.ivf`, a file per size.
         let ivf = std::env::var_os("IVF").map(std::path::PathBuf::from);
-        let mut stream: Vec<Vec<u8>> = Vec::new();
+        type Stream = ((u16, u16), Vec<Vec<u8>>);
+        let mut streams: Vec<Stream> = Vec::new();
         each_captured(path, |frame| {
             let (w, h) = frame.size;
             let fresh = size != (w, h);
@@ -1624,13 +1625,18 @@ mod tests {
                 tally.ratios.push(times[1] / times[0]);
             }
             if ivf.is_some() {
-                stream.push(std::mem::take(&mut out[1]));
+                if fresh {
+                    streams.push(((w, h), Vec::new()));
+                }
+                streams.last_mut().expect("pushed above").1.push(std::mem::take(&mut out[1]));
             }
             n += 1;
             true
         });
         if let Some(dir) = ivf {
-            write_ivf(&dir.join(format!("{}.ivf", capture_name(path))), size, &stream);
+            for ((w, h), stream) in &streams {
+                write_ivf(&dir.join(format!("{}-{w}x{h}.ivf", capture_name(path))), (*w, *h), stream);
+            }
         }
         (tallies, size, n)
     }
@@ -1738,8 +1744,10 @@ mod tests {
     /// directory, this encoder's stream of each capture is written there
     /// too, for the browsers' own decoders to read through ffmpeg
     /// (`-c:v libvpx-vp9` is Chrome's, `-c:v vp9` Firefox's; `-f framemd5`
-    /// of each should agree). A measurement, not a check; run it in
-    /// release:
+    /// of each should agree), one file per size the capture runs at, since
+    /// ffmpeg rescales every frame after a size change to the first
+    /// frame's size before hashing it. A measurement, not a check; run it
+    /// in release:
     ///
     /// ```text
     /// cargo test --release captures_against_libvpx -- --ignored --nocapture

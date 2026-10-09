@@ -98,6 +98,18 @@ fn avg3(a: u8, b: u8, c: u8) -> u8 {
 /// column to the left as 129s where there is none; DC takes the mean of
 /// whichever of them there are, or 128.
 pub(super) fn intra(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8], stride: usize, x: usize, size: usize, edges: &Edges) {
+    // Each size its own code, so that its loops unroll.
+    match size {
+        4 => fill::<4>(mode, above, plane, stride, x, edges),
+        8 => fill::<8>(mode, above, plane, stride, x, edges),
+        16 => fill::<16>(mode, above, plane, stride, x, edges),
+        _ => fill::<32>(mode, above, plane, stride, x, edges),
+    }
+}
+
+/// `intra` at one size.
+fn fill<const N: usize>(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8], stride: usize, x: usize, edges: &Edges) {
+    let size = N;
     // The row above from the corner, twice the block's width.
     let mut top = [127u8; 1 + 64];
     let mut left = [129u8; 32];
@@ -117,8 +129,10 @@ pub(super) fn intra(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8], str
         }
     }
     let (corner, a, l) = (top[0], &top[1..], &left[..size]);
-    let mut out = [0u8; 32 * 32];
-    let at = |r: usize, c: usize| r * size + c;
+    // The block is written in place, row `r` column `c` at `at(r, c)`; the
+    // diagonal modes read back rows they wrote.
+    let at = |r: usize, c: usize| r * stride + x + c;
+    let out = plane;
     match mode {
         IntraMode::Dc => {
             let log2 = size.ilog2();
@@ -129,7 +143,9 @@ pub(super) fn intra(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8], str
                 (false, true) => (sum(l) + size as u32 / 2) >> log2,
                 (false, false) => 128,
             };
-            out[..size * size].fill(dc as u8);
+            for r in 0..size {
+                out[at(r, 0)..at(r, size)].fill(dc as u8);
+            }
         }
         IntraMode::V => {
             for r in 0..size {
@@ -170,13 +186,13 @@ pub(super) fn intra(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8], str
         IntraMode::D45 => {
             let right = a[size - 1];
             for c in 0..size - 1 {
-                out[c] = avg3(a[c], a[c + 1], a[c + 2]);
+                out[at(0, c)] = avg3(a[c], a[c + 1], a[c + 2]);
             }
-            out[size - 1] = right;
+            out[at(0, size - 1)] = right;
             for r in 1..size {
                 let n = size - 1 - r;
                 let (done, rest) = out.split_at_mut(at(r, 0));
-                rest[..n].copy_from_slice(&done[r..r + n]);
+                rest[..n].copy_from_slice(&done[at(0, r)..at(0, r + n)]);
                 rest[n..size].fill(right);
             }
         }
@@ -204,23 +220,23 @@ pub(super) fn intra(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8], str
         }
         IntraMode::D63 => {
             for c in 0..size {
-                out[c] = avg2(a[c], a[c + 1]);
+                out[at(0, c)] = avg2(a[c], a[c + 1]);
                 out[at(1, c)] = avg3(a[c], a[c + 1], a[c + 2]);
             }
             let last = a[size - 1];
             for r in (2..size).step_by(2) {
                 let n = size - r / 2;
                 let (done, rest) = out.split_at_mut(at(r, 0));
-                rest[..n].copy_from_slice(&done[r / 2..r / 2 + n]);
+                rest[..n].copy_from_slice(&done[at(0, r / 2)..at(0, r / 2 + n)]);
                 rest[n..size].fill(last);
-                rest[size..size + n].copy_from_slice(&done[size + r / 2..size + r / 2 + n]);
-                rest[size + n..2 * size].fill(last);
+                rest[stride..stride + n].copy_from_slice(&done[at(1, r / 2)..at(1, r / 2 + n)]);
+                rest[stride + n..stride + size].fill(last);
             }
         }
         IntraMode::D117 => {
-            out[0] = avg2(corner, a[0]);
+            out[at(0, 0)] = avg2(corner, a[0]);
             for c in 1..size {
-                out[c] = avg2(a[c - 1], a[c]);
+                out[at(0, c)] = avg2(a[c - 1], a[c]);
             }
             out[at(1, 0)] = avg3(l[0], corner, a[0]);
             out[at(1, 1)] = avg3(corner, a[0], a[1]);
@@ -256,18 +272,18 @@ pub(super) fn intra(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8], str
             }
         }
         IntraMode::D153 => {
-            out[0] = avg2(corner, l[0]);
+            out[at(0, 0)] = avg2(corner, l[0]);
             for r in 1..size {
                 out[at(r, 0)] = avg2(l[r - 1], l[r]);
             }
-            out[1] = avg3(l[0], corner, a[0]);
+            out[at(0, 1)] = avg3(l[0], corner, a[0]);
             out[at(1, 1)] = avg3(corner, l[0], l[1]);
             for r in 2..size {
                 out[at(r, 1)] = avg3(l[r - 2], l[r - 1], l[r]);
             }
-            out[2] = avg3(corner, a[0], a[1]);
+            out[at(0, 2)] = avg3(corner, a[0], a[1]);
             for c in 1..size - 2 {
-                out[2 + c] = avg3(a[c - 1], a[c], a[c + 1]);
+                out[at(0, 2 + c)] = avg3(a[c - 1], a[c], a[c + 1]);
             }
             for r in 1..size {
                 for c in 2..size {
@@ -293,8 +309,18 @@ pub(super) fn intra(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8], str
             }
         }
     }
-    for r in 0..size {
-        plane[r * stride + x..][..size].copy_from_slice(&out[at(r, 0)..at(r, size)]);
+}
+
+impl IntraMode {
+    /// Whether the mode reads the row above, and whether the column to the
+    /// left (libvpx's `extend_modes`); predicted without an edge it reads,
+    /// a mode says little that DC does not.
+    pub(super) fn reads(self) -> (bool, bool) {
+        match self {
+            IntraMode::Dc | IntraMode::Tm | IntraMode::D135 | IntraMode::D117 | IntraMode::D153 => (true, true),
+            IntraMode::V | IntraMode::D45 | IntraMode::D63 => (true, false),
+            IntraMode::H | IntraMode::D207 => (false, true),
+        }
     }
 }
 
