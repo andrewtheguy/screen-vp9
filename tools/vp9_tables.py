@@ -160,8 +160,8 @@ the tests read updates with.""", "UPDATE_INDEX_INVERSE", "u8", [255], initialize
     emit("The AC quantizer step at each q index, 8-bit.", "AC_QLOOKUP", "i16", [256], initializer(quant, "ac_qlookup"))
     emit("The q index of each of libvpx's 0–63 quantizers.", "QUANTIZER_TO_QINDEX", "u8", [64], initializer(quantize, "quantizer_to_qindex"))
 
-    emit("""EIGHTTAP's filter at each sixteenth of a pixel, the taps from three pixels
-before to four after (`sub_pel_filters_8`).""", "SUBPEL_FILTERS", "i16", [16, 8], initializer(filters, "sub_pel_filters_8"))
+    emit("""EIGHTTAP_SMOOTH's filter at each sixteenth of a pixel, the taps from three
+pixels before to four after (`sub_pel_filters_8lp`).""", "SUBPEL_FILTERS", "i16", [16, 8], initializer(filters, "sub_pel_filters_8lp"))
 
     for n in (4, 8, 16, 32):
         emit(f"The {n}×{n} DCT scan: the coefficient at each position.", f"SCAN_{n}X{n}", "u16", [n * n], initializer(scan, f"default_scan_{n}x{n}"))

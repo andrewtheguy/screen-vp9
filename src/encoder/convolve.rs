@@ -1,5 +1,5 @@
-//! Inter prediction between whole pixels: VP9's eight-tap filter, EIGHTTAP,
-//! the frame's one filter, across, down or both, the pass across rounded to
+//! Inter prediction between whole pixels: VP9's smooth eight-tap filter,
+//! EIGHTTAP_SMOOTH, the frame's one filter, across, down or both, the pass across rounded to
 //! pixels before the pass down, as a decoder filters (libvpx's
 //! `vpx_convolve8`). NEON on arm64 and AVX2 on amd64, and held by its tests
 //! to the scalar reference beside it.
@@ -449,14 +449,14 @@ mod tests {
 
     #[test]
     fn the_scalar_reference_is_vp9s_filter() {
-        // A half pixel across a step from 0 to 160 under the taps -1, 6,
-        // -19, 78, 78, -19, 6, -1: halfway is 80, and either side the
+        // A half pixel across a step from 0 to 160 under the taps -1, -4,
+        // 14, 55, 55, 14, -4, -1: halfway is 80, and either side the
         // filter rings, rounded and held to pixels.
         let stride = 8 + TAPS - 1;
         let src: Vec<u8> = (0..stride * TAPS).map(|i| if i % stride >= BEFORE + 4 { 160 } else { 0 }).collect();
         let mut out = [0; 8];
         scalar::across(&src[BEFORE * stride..], stride, 8, 8, 1, &mut out, 8);
-        // From the left: -160, 5 × 160, -14 × 160, 64 × 160, 142 × 160 ...
-        assert_eq!(out, [0, 6, 0, 80, 178, 154, 161, 160]);
+        // From the left: -160, -5 × 160, 9 × 160, 64 × 160, 119 × 160 ...
+        assert_eq!(out, [0, 0, 11, 80, 149, 166, 161, 160]);
     }
 }
