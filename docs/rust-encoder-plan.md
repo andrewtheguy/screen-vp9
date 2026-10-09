@@ -40,14 +40,21 @@ Everything either user calls on an encoder, read from `remotex/src/vp9.rs` and
 
 - `Encoder::new(width, height, chroma, quality, threads)`, with `threads` the
   count each program picks for its machine.
-- `encode(&picture, keyframe, &mut out)`: a keyframe when the flag asks for
-  one, otherwise an inter frame against the previous frame. The return says
-  whether the frame written is a keyframe; the Rust encoder always writes a
-  frame, so the `None` for "libvpx produced nothing" goes with libvpx.
-- `set_quality` and `quality()`: a fixed quantizer from the 1–100 dial, moved
-  between frames without a keyframe. No rate control.
-- `Picture`, which already converts RGB and `B, G, R, X` to the planes and
-  stays as it is, less its 4:2:0 half.
+- `encode(&picture, keyframe, changed, &mut out)`: a keyframe when the flag
+  asks for one, otherwise an inter frame against the previous frame. The
+  return says whether the frame written is a keyframe; the Rust encoder
+  always writes a frame, so the `None` for "libvpx produced nothing" goes
+  with libvpx. `changed` is the rectangles where the picture changed, or
+  `None`: the blocks outside every one are skipped and keep the quantizer
+  they were coded at. libvpx takes them as its active map, a block of 16×16;
+  the Rust encoder as the 8×8s its own comparison marks.
+- `set_quality`, `quality()` and `coarsest()`: a fixed quantizer from the
+  1–100 dial, moved between frames without a keyframe, and the coarsest dial
+  any block a decoder holds was last coded at. No rate control.
+- `Picture`, which already converts RGB and `B, G, R, X` to the planes, the
+  whole picture or the rows that changed, and stays as it is, less its 4:2:0
+  half; and `Stream`, the encoder and its picture together, which is what
+  both users hold, and stays as it is over the Rust encoder.
 
 Not needed, and not built: `Speed` and `set_speed`. Neither user calls them;
 only the benchmark does, to name libvpx's two speeds. The Rust encoder has one
@@ -76,8 +83,9 @@ row's second column is built only if the first fails the gate on a capture.
 ## Where the speed should come from
 
 - **Unchanged blocks:** compare each block with the previous source and code it
-  as a skip without searching. A quality change makes every block dirty for one
-  frame.
+  as a skip without searching; a block outside the rectangles a frame is told
+  changed is skipped whatever it holds. A quality change makes every block
+  dirty for the next frame that may code it.
 - **Scrolls and window drags:** hash-based whole-pixel motion search, which
   finds exact matches cheaply.
 - **SIMD kernels:** NEON on arm64 and AVX2 on amd64, which the crate is

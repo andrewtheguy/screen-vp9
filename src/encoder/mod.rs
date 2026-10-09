@@ -33,7 +33,7 @@ mod tile;
 mod tokens;
 mod transform;
 
-use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, loop_filtered, quality_to_q, tile_columns_log2};
+use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, loop_filtered, quality_to_q, tile_columns_log2};
 
 /// The share of what the blocks it refines would cost that the search
 /// between pixels has to save, as `tile::laplacian` models it, for it to
@@ -255,15 +255,18 @@ pub(crate) struct Encoder {
     previous: [Vec<u8>; 3],
     /// Per 8×8 of the frame, whether the source is `previous` there.
     unchanged: Vec<bool>,
+    /// Per 8×8 of the frame, whether the frame being coded may code it: it
+    /// is in a rectangle the frame was told the picture changed in, or the
+    /// frame was told nothing.
+    named: Vec<bool>,
+    /// Per 8×8 of the frame, the dial it was last coded at.
+    coded_at: Vec<u8>,
     search: motion::Search,
     /// Whether a frame has been coded, so the next can be an inter frame.
     started: bool,
     /// Whether the frame coded last was an inter frame, whose vectors a
     /// decoder predicts the next frame's from.
     last_inter: bool,
-    /// Whether every block is to be coded again, unchanged or not: after the
-    /// quantizer moves.
-    requantize: bool,
     /// Of the blocks the search between pixels could refine in the next
     /// frame, the one in this many it does, and what the blocks it refined
     /// would cost and what it saved (`tile::Contexts::searched`), summed over
@@ -297,10 +300,11 @@ impl Encoder {
             reference: Reconstruction::new(&geometry, tile_cols_log2),
             previous: std::array::from_fn(|_| vec![0; pixels]),
             unchanged: vec![false; geometry.mi_rows * geometry.mi_cols],
+            named: vec![true; geometry.mi_rows * geometry.mi_cols],
+            coded_at: vec![quality; geometry.mi_rows * geometry.mi_cols],
             search: motion::Search::new(&geometry, threads),
             started: false,
             last_inter: false,
-            requantize: false,
             search_every: 1,
             searched: [0.0; 2],
             geometry,
@@ -313,29 +317,43 @@ impl Encoder {
     }
 
     /// Move the dial (1–100, clamped) without a keyframe: the next frame
-    /// codes every block again at the new quantizer, changed or not.
+    /// codes every block it may code again at the new quantizer, changed or
+    /// not.
     pub(crate) fn set_quality(&mut self, quality: u8) {
-        let quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
-        if quality_to_q(quality) != quality_to_q(self.quality) {
-            self.requantize = true;
+        self.quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
+    }
+
+    /// The coarsest dial any block of the picture a decoder now holds was
+    /// last coded at, as `crate::Encoder::coarsest`: a frame told where its
+    /// picture changed leaves the rest at the dial they had. Before the
+    /// first frame, the dial.
+    pub(crate) fn coarsest(&self) -> u8 {
+        if !self.started {
+            return self.quality;
         }
-        self.quality = quality;
+        self.coded_at.iter().copied().min().unwrap_or(self.quality)
     }
 
     /// Code `picture` and append the frame to `out`: a keyframe when
     /// `keyframe` asks for one or nothing has been coded yet, otherwise an
     /// inter frame against the frame before. Returns whether it is a
     /// keyframe.
-    pub(crate) fn encode(&mut self, picture: &Picture, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
+    ///
+    /// `changed` is where the picture differs from the one coded before it,
+    /// as `crate::Encoder::encode` takes it: the 8×8s outside every
+    /// rectangle are skipped, left as the decoder has them and at the dial
+    /// they were coded at, whatever the picture holds there. A keyframe
+    /// codes everything.
+    pub(crate) fn encode(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>, out: &mut Vec<u8>) -> Result<bool, Error> {
         let g = &self.geometry;
         if picture.size() != (g.width, g.height) || picture.chroma() != Chroma::Full {
             let (pw, ph) = picture.size();
             return Err(Error::Mismatch(g.width, g.height, Chroma::Full.name(), pw, ph, picture.chroma().name()));
         }
         let keyframe = keyframe || !self.started;
-        let everything = keyframe || self.requantize;
-        self.compare(picture, everything);
-        let vectors = self.search.update(&self.previous[0], (!everything).then_some(&self.unchanged[..]), (!keyframe).then_some(&self.reference));
+        self.name(changed.filter(|_| !keyframe));
+        self.compare(picture, keyframe);
+        let vectors = self.search.update(&self.previous[0], (!keyframe).then_some(&self.unchanged[..]), (!keyframe).then_some(&self.reference));
         for contexts in &mut self.contexts {
             contexts.start(self.last_inter);
         }
@@ -392,10 +410,35 @@ impl Encoder {
         }
         std::mem::swap(&mut self.recon, &mut self.reference);
         self.probs = probs;
+        for (at, _) in self.coded_at.iter_mut().zip(&self.named).filter(|(_, named)| **named) {
+            *at = self.quality;
+        }
         self.started = true;
         self.last_inter = !keyframe;
-        self.requantize = false;
         Ok(keyframe)
+    }
+
+    /// Mark the 8×8s `changed` touches as the ones the frame may code, or
+    /// with `None` all of them. What lies past the picture's edge is not
+    /// part of it.
+    fn name(&mut self, changed: Option<&[Rect]>) {
+        let Some(rects) = changed else {
+            self.named.fill(true);
+            return;
+        };
+        let g = &self.geometry;
+        self.named.fill(false);
+        for rect in rects {
+            let (x, y) = (usize::from(rect.x), usize::from(rect.y));
+            let right = (x + usize::from(rect.width)).min(usize::from(g.width));
+            let bottom = (y + usize::from(rect.height)).min(usize::from(g.height));
+            if x >= right || y >= bottom {
+                continue;
+            }
+            for row in y / 8..=(bottom - 1) / 8 {
+                self.named[row * g.mi_cols + x / 8..=row * g.mi_cols + (right - 1) / 8].fill(true);
+            }
+        }
     }
 
     /// Run the loop filter at `level` over the frame just coded, as a
@@ -455,17 +498,20 @@ impl Encoder {
     }
 
     /// Mark each 8×8 of the frame unchanged where `picture` is the previous
-    /// source over the part of it the picture holds, and make the previous
-    /// source `picture`, in a band of 8×8 rows on each thread. With
-    /// `everything`, every 8×8 is changed.
+    /// source over the part of it the picture holds and the 8×8 was last
+    /// coded at the dial's quantizer, or where the frame may not code it;
+    /// and make the previous source `picture` where it may, in a band of 8×8
+    /// rows on each thread. With `everything`, every 8×8 is changed.
     fn compare(&mut self, picture: &Picture, everything: bool) {
         let g = &self.geometry;
         let width = usize::from(g.width);
         let (planes, stride) = (picture.planes(), picture.strides()[0]);
+        let q = quality_to_q(self.quality);
         let band = g.mi_rows.div_ceil(self.threads);
         let [p0, p1, p2] = &mut self.previous;
-        let bands = self.unchanged.chunks_mut(band * g.mi_cols).zip(p0.chunks_mut(band * 8 * width)).zip(p1.chunks_mut(band * 8 * width)).zip(p2.chunks_mut(band * 8 * width));
-        on_threads(self.threads, bands.enumerate(), |(b, (((unchanged, p0), p1), p2))| {
+        let marks = self.unchanged.chunks_mut(band * g.mi_cols).zip(self.named.chunks(band * g.mi_cols)).zip(self.coded_at.chunks(band * g.mi_cols));
+        let bands = marks.zip(p0.chunks_mut(band * 8 * width)).zip(p1.chunks_mut(band * 8 * width)).zip(p2.chunks_mut(band * 8 * width));
+        on_threads(self.threads, bands.enumerate(), |(b, (((((unchanged, named), coded_at), p0), p1), p2))| {
             let mut previous = [p0, p1, p2];
             let y0 = b * band * 8;
             let rows = previous[0].len() / width;
@@ -479,10 +525,14 @@ impl Encoder {
                 unchanged.fill(false);
                 return;
             }
-            for (r, unchanged) in unchanged.chunks_exact_mut(g.mi_cols).enumerate() {
+            let marks = unchanged.chunks_exact_mut(g.mi_cols).zip(named.chunks_exact(g.mi_cols)).zip(coded_at.chunks_exact(g.mi_cols));
+            for (r, ((unchanged, named), coded_at)) in marks.enumerate() {
                 let rows = r * 8..(r * 8 + 8).min(rows);
-                // Eight pixels at a time, each run of them an 8×8's row.
                 unchanged.fill(true);
+                if !named.contains(&true) {
+                    continue;
+                }
+                // Eight pixels at a time, each run of them an 8×8's row.
                 for (plane, previous) in previous.iter().enumerate() {
                     for y in rows.clone() {
                         let (old, old_rest) = previous[y * width..][..width].as_chunks::<8>();
@@ -495,12 +545,23 @@ impl Encoder {
                         }
                     }
                 }
+                for ((same, named), &at) in unchanged.iter_mut().zip(named).zip(coded_at) {
+                    *same = !named || *same && quality_to_q(at) == q;
+                }
                 // Where the source is unchanged it is the previous source
-                // already, so a row with a change is taken whole.
-                if unchanged.contains(&false) {
+                // already, so a row with a change is taken whole where the
+                // frame may code it: elsewhere the previous source is what
+                // was coded.
+                if !unchanged.contains(&false) {
+                    continue;
+                }
+                let mut c = 0;
+                while let Some(start) = named[c..].iter().position(|&n| n).map(|i| c + i) {
+                    c = named[start..].iter().position(|&n| !n).map_or(g.mi_cols, |i| start + i);
+                    let span = start * 8..(c * 8).min(width);
                     for (plane, previous) in previous.iter_mut().enumerate() {
                         for y in rows.clone() {
-                            previous[y * width..][..width].copy_from_slice(source(plane, y));
+                            previous[y * width..][span.clone()].copy_from_slice(&source(plane, y)[span.clone()]);
                         }
                     }
                 }
@@ -631,12 +692,17 @@ mod tests {
         /// frame's size, whether it is a keyframe, and the decode's mean
         /// squared error.
         fn frame(&mut self, picture: &Picture, keyframe: bool) -> (usize, bool, f64) {
+            self.told(picture, keyframe, None)
+        }
+
+        /// `frame`, told where the picture changed.
+        fn told(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>) -> (usize, bool, f64) {
             let (w, h) = picture.size();
             let quality = self.encoder.quality();
             let n = self.frames;
             self.frames += 1;
             let mut frame = Vec::new();
-            let keyframe = self.encoder.encode(picture, keyframe, &mut frame).expect("a frame");
+            let keyframe = self.encoder.encode(picture, keyframe, changed, &mut frame).expect("a frame");
             assert_eq!(crate::frame_header(&frame), Some(crate::FrameHeader { profile: 1, keyframe }));
             let decoded = self.decoder.decode(&frame).unwrap_or_else(|e| panic!("{w}x{h} at quality {quality}, frame {n}: {e}"));
             assert_eq!(decoded.size(), (u32::from(w), u32::from(h)));
@@ -748,7 +814,7 @@ mod tests {
             assert_eq!(encoder.tile_cols_log2, 1);
             let mut out = Vec::new();
             for rgb in &frames {
-                encoder.encode(&picture(w, h, rgb), false, &mut out).expect("a frame");
+                encoder.encode(&picture(w, h, rgb), false, None, &mut out).expect("a frame");
             }
             out
         });
@@ -1060,6 +1126,114 @@ mod tests {
         assert!(fine < coarse / 4.0, "squared error {fine} at 100, {coarse} at 1");
     }
 
+    /// A frame told where its picture changed codes those 8×8s and no
+    /// others: a change it was not told of stays out of the decoder's
+    /// picture until a frame names it. A frame told nothing codes whatever
+    /// changed, and a rectangle past the picture's edge is no error.
+    #[test]
+    fn a_frame_told_where_it_changed_codes_that_and_nothing_else() {
+        // Neither side a multiple of 8.
+        let (w, h) = (333u16, 250u16);
+        let wu = usize::from(w);
+        const GREY: [u8; 3] = [200, 200, 200];
+        let square = |x: u16, y: u16| Rect { x, y, width: 32, height: 32 };
+        let (first, second, third) = (square(32, 32), square(200, 150), square(96, 200));
+        let paint = |rgb: &mut [u8], rect: Rect, colour: [u8; 3]| {
+            for y in usize::from(rect.y)..usize::from(rect.y + rect.height) {
+                for x in usize::from(rect.x)..usize::from(rect.x + rect.width) {
+                    rgb[(y * wu + x) * 3..][..3].copy_from_slice(&colour);
+                }
+            }
+        };
+        let mut stream = Stream::new(w, h, 90, 2);
+        let mut rgb = GREY.repeat(wu * usize::from(h));
+        stream.frame(&picture(w, h, &rgb), false);
+        // What the decoder should hold at the middle of each square.
+        let mut step = |rgb: &[u8], changed: Option<&[Rect]>, want: [(Rect, [u8; 3]); 3]| {
+            let (bytes, keyframe, _) = stream.told(&picture(w, h, rgb), false, changed);
+            assert!(!keyframe, "told {changed:?}: a keyframe");
+            let recon = stream.encoder.reconstruction();
+            for (rect, colour) in want {
+                let at = (usize::from(rect.y) + 16) * wu + usize::from(rect.x) + 16;
+                let expected = picture(w, h, &colour.repeat(wu * usize::from(h)));
+                for (p, (plane, expected)) in recon.iter().zip(expected.planes()).enumerate() {
+                    assert!(plane[at].abs_diff(expected[at]) <= 4, "told {changed:?}: {rect:?}, plane {p}, is {} for {}", plane[at], expected[at]);
+                }
+            }
+            bytes
+        };
+
+        // Two squares change and the frame is told of one.
+        paint(&mut rgb, first, [220, 40, 40]);
+        paint(&mut rgb, second, [40, 40, 220]);
+        step(&rgb, Some(&[first]), [(first, [220, 40, 40]), (second, GREY), (third, GREY)]);
+        // The other, which the frame before skipped, is coded when named.
+        step(&rgb, Some(&[second]), [(first, [220, 40, 40]), (second, [40, 40, 220]), (third, GREY)]);
+        // Told nothing, a frame codes whatever changed.
+        paint(&mut rgb, third, [40, 180, 40]);
+        step(&rgb, None, [(first, [220, 40, 40]), (second, [40, 40, 220]), (third, [40, 180, 40])]);
+        // Rectangles are clipped to the picture.
+        paint(&mut rgb, first, GREY);
+        paint(&mut rgb, third, GREY);
+        let edge = Rect { x: 320, y: 240, width: 100, height: 100 };
+        let outside = Rect { x: 400, y: 300, width: 16, height: 16 };
+        step(&rgb, Some(&[first, edge, outside]), [(first, GREY), (second, [40, 40, 220]), (third, [40, 180, 40])]);
+        // Nothing named is nothing coded.
+        let bytes = step(&rgb, Some(&[]), [(first, GREY), (second, [40, 40, 220]), (third, [40, 180, 40])]);
+        assert!(bytes < 40, "a frame told of no change took {bytes} bytes");
+        step(&rgb, Some(&[third]), [(first, GREY), (second, [40, 40, 220]), (third, GREY)]);
+    }
+
+    /// An 8×8 a frame skips keeps the quantizer it was last coded at, so a
+    /// frame at a finer one that is told where the picture changed sharpens
+    /// that and leaves the rest coarse, until every 8×8 has been coded at
+    /// the finer one since; and `coarsest` says so.
+    #[test]
+    fn a_skipped_block_keeps_its_quantizer_until_a_whole_frame() {
+        let (w, h) = (320u16, 240u16);
+        let (wu, hu) = (usize::from(w), usize::from(h));
+        let source = desktop(w, h);
+        let named = Rect { x: 0, y: 0, width: 64, height: 64 };
+        // The error of everything the rectangle leaves out.
+        let error = |recon: &[Vec<u8>; 3]| {
+            let rest = (0..hu).flat_map(|y| (0..wu).map(move |x| (x, y))).filter(|&(x, y)| x >= 64 || y >= 64);
+            let sum: u64 = rest.clone().map(|(x, y)| u64::from(recon[0][y * wu + x].abs_diff(source.planes()[0][y * wu + x]))).sum();
+            sum as f64 / rest.count() as f64
+        };
+
+        let mut unused = Encoder::new(w, h, 20, 1).expect("an encoder");
+        unused.set_quality(90);
+        assert_eq!(unused.coarsest(), 90, "before a frame, the dial as it stands");
+        let mut stream = Stream::new(w, h, QUALITY_MIN, 1);
+        stream.frame(&source, false);
+        let coarse = error(&stream.encoder.reconstruction());
+        assert_eq!(stream.encoder.coarsest(), QUALITY_MIN);
+
+        stream.encoder.set_quality(90);
+        assert_eq!(stream.encoder.coarsest(), QUALITY_MIN, "a dial that moved has coded nothing yet");
+        stream.told(&source, false, Some(&[named]));
+        let skipped = error(&stream.encoder.reconstruction());
+        assert!(skipped > coarse * 0.9, "a frame told of one corner left the rest at error {skipped:.2}, from {coarse:.2}: it coded 8×8s it was to skip");
+        assert_eq!(stream.encoder.coarsest(), QUALITY_MIN, "the 8×8s a frame skipped are as coarse as they were");
+
+        stream.frame(&source, false);
+        let settled = error(&stream.encoder.reconstruction());
+        assert!(settled < coarse / 4.0, "a whole frame at quality 90 left the picture at error {settled:.2}, from {coarse:.2}");
+        assert_eq!(stream.encoder.coarsest(), 90);
+
+        // Coarse where a frame coded and nowhere else, until frames told
+        // where have between them coded every 8×8 finer.
+        stream.encoder.set_quality(40);
+        stream.told(&source, false, Some(&[named]));
+        assert_eq!(stream.encoder.coarsest(), 40);
+        stream.encoder.set_quality(90);
+        stream.told(&source, false, Some(&[Rect { x: 64, y: 0, width: 256, height: 240 }, Rect { x: 0, y: 64, width: 64, height: 176 }]));
+        assert_eq!(stream.encoder.coarsest(), 40, "the corner coded at 40 was not in that frame");
+        let (bytes, _, _) = stream.told(&source, false, Some(&[Rect { x: 4, y: 4, width: 56, height: 56 }]));
+        assert_eq!(stream.encoder.coarsest(), 90, "every 8×8 has been coded at 90 since");
+        assert!(bytes > 100, "the corner, coded at 40, took {bytes} bytes to code at 90");
+    }
+
     #[test]
     fn keyframes_follow_each_other_through_one_decoder() {
         let (w, h) = (200, 120);
@@ -1152,7 +1326,7 @@ mod tests {
             bytes = 0;
             for picture in &pictures {
                 out.clear();
-                encoder.encode(picture, false, &mut out).expect("a frame");
+                encoder.encode(picture, false, None, &mut out).expect("a frame");
                 bytes += out.len();
             }
         }
@@ -1192,9 +1366,9 @@ mod tests {
                         frame.clear();
                         let started = std::time::Instant::now();
                         if c == 0 {
-                            libvpx.encode(picture, true, frame).expect("an encode").expect("a frame");
+                            libvpx.encode(picture, true, None, frame).expect("an encode").expect("a frame");
                         } else {
-                            rust.encode(picture, true, frame).expect("a keyframe");
+                            rust.encode(picture, true, None, frame).expect("a keyframe");
                         }
                         least = least.min(started.elapsed().as_secs_f64() * 1000.0);
                     }
@@ -1247,9 +1421,9 @@ mod tests {
                 for c in if n % 2 == 0 { [0, 1] } else { [1, 0] } {
                     let started = std::time::Instant::now();
                     if c == 0 {
-                        libvpx.encode(picture, false, &mut out[0]).expect("an encode").expect("a frame");
+                        libvpx.encode(picture, false, None, &mut out[0]).expect("an encode").expect("a frame");
                     } else {
-                        rust.encode(picture, false, &mut out[1]).expect("a frame");
+                        rust.encode(picture, false, None, &mut out[1]).expect("a frame");
                     }
                     times[c] = started.elapsed().as_secs_f64() * 1000.0;
                 }
@@ -1278,8 +1452,8 @@ mod tests {
         let mut encoder = Encoder::new(64, 64, 90, 1).expect("an encoder");
         let mut out = Vec::new();
         let subsampled = Picture::new(64, 64, Chroma::Subsampled).expect("a picture");
-        assert!(matches!(encoder.encode(&subsampled, true, &mut out), Err(Error::Mismatch(..))));
-        assert!(matches!(encoder.encode(&noise(64, 32), false, &mut out), Err(Error::Mismatch(..))));
+        assert!(matches!(encoder.encode(&subsampled, true, None, &mut out), Err(Error::Mismatch(..))));
+        assert!(matches!(encoder.encode(&noise(64, 32), false, None, &mut out), Err(Error::Mismatch(..))));
         assert!(out.is_empty());
         assert!(matches!(Encoder::new(0, 64, 90, 1), Err(Error::Empty(..))));
         assert!(matches!(Encoder::new(64, 64, 90, 0), Err(Error::Threads(0))));

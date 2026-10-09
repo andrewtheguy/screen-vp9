@@ -39,7 +39,7 @@ fn candidate(name: &str, size: (u16, u16), chroma: Chroma, quality: u8, threads:
     };
     let mut encoder = Encoder::new(size.0, size.1, chroma, quality, threads).expect("a libvpx encoder");
     encoder.set_speed(speed).expect("a speed libvpx takes");
-    Box::new(move |picture, out| encoder.encode(picture, false, out).expect("an encode").expect("a frame for every picture"))
+    Box::new(move |picture, out| encoder.encode(picture, false, None, out).expect("an encode").expect("a frame for every picture"))
 }
 
 /// What a run was asked for.
