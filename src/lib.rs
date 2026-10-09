@@ -20,7 +20,10 @@
 //! A frame need not cost the whole picture. [`Picture::read_bgrx_rows`] converts
 //! the rows that changed, and [`Encoder::encode`] told where the picture changed
 //! skips every block outside it, which a caller that knows its damage says and
-//! one that does not leaves unsaid.
+//! one that does not leaves unsaid. [`Stream`] is the two together, and what a
+//! user holds: it is handed a packed picture and its damage, and keeps the
+//! rules a frame of damage needs — when a frame is the whole picture anyway,
+//! and how coarse the blocks no frame has touched since still are.
 //!
 //! Frame metadata is handled here too: [`frame_header`] reads the profile and
 //! keyframe bit of a frame this process did not encode, and [`codec_string`]
@@ -334,42 +337,23 @@ impl Picture {
         [w, cw, cw]
     }
 
-    /// The planes as the `yuv` crate writes them.
-    fn planar(&mut self) -> yuv::YuvPlanarImageMut<'_, u8> {
-        use yuv::BufferStoreMut;
-        let [ys, us, vs] = self.strides();
-        yuv::YuvPlanarImageMut {
-            y_plane: BufferStoreMut::Borrowed(&mut self.y),
-            y_stride: ys as u32,
-            u_plane: BufferStoreMut::Borrowed(&mut self.u),
-            u_stride: us as u32,
-            v_plane: BufferStoreMut::Borrowed(&mut self.v),
-            v_stride: vs as u32,
-            width: u32::from(self.size.0),
-            height: u32::from(self.size.1),
-        }
-    }
-
     /// Convert `rgb` — packed RGB888, tight, for exactly this picture — in place.
     ///
     /// The length is checked rather than trusted, because everything after the
     /// check indexes by the picture size.
     pub fn read_rgb(&mut self, rgb: &[u8]) -> Result<(), Error> {
-        use yuv::{YuvConversionMode, YuvRange, YuvStandardMatrix};
+        self.read_rgb_rows(rgb, 0..self.size.1)
+    }
+
+    /// Convert `rows` of `rgb`, which holds the whole picture as
+    /// [`Self::read_rgb`] takes it, and leave every other row as the last
+    /// conversion made it, as [`Self::read_bgrx_rows`] does.
+    pub fn read_rgb_rows(&mut self, rgb: &[u8], rows: std::ops::Range<u16>) -> Result<(), Error> {
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         if rgb.len() != w * h * 3 {
             return Err(Error::Crop(rgb.len(), w, h));
         }
-        let chroma = self.chroma;
-        let mut image = self.planar();
-        let (range, matrix, mode) = (YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Balanced);
-        // The 4:2:0 chroma sample is the 2×2 group's rounded average, as the
-        // crate takes it; `the_conversion_is_bt601_studio_swing` holds it to that.
-        match chroma {
-            Chroma::Full => yuv::rgb_to_yuv444(&mut image, rgb, (w * 3) as u32, range, matrix, mode),
-            Chroma::Subsampled => yuv::rgb_to_yuv420(&mut image, rgb, (w * 3) as u32, range, matrix, mode),
-        }
-        .expect("the picture is the size its buffers were made for");
+        self.convert(rgb, w * 3, rows, Packed::Rgb);
         Ok(())
     }
 
@@ -385,11 +369,19 @@ impl Picture {
     /// those rows and not the screen. Rows past the picture's last are not
     /// part of it. A 4:2:0 chroma row is two rows' average, so both are read.
     pub fn read_bgrx_rows(&mut self, pixels: &[u8], stride: usize, rows: std::ops::Range<u16>) -> Result<(), Error> {
-        use yuv::{YuvConversionMode, YuvRange, YuvStandardMatrix};
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         if !fits(w, h, stride, pixels.len()) {
             return Err(Error::Buffer { width: w, height: h, stride, bytes: pixels.len() });
         }
+        self.convert(pixels, stride, rows, Packed::Bgrx);
+        Ok(())
+    }
+
+    /// Convert `rows` of `pixels`, a whole picture in `packed` order that its
+    /// caller has checked fits, rows `stride` bytes apart.
+    fn convert(&mut self, pixels: &[u8], stride: usize, rows: std::ops::Range<u16>, packed: Packed) {
+        use yuv::{YuvConversionMode, YuvRange, YuvStandardMatrix};
+        let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         let chroma = self.chroma;
         let (from, to) = (usize::from(rows.start), usize::from(rows.end).min(h));
         let (from, to) = match chroma {
@@ -397,15 +389,14 @@ impl Picture {
             Chroma::Subsampled => (from & !1, to.next_multiple_of(2).min(h)),
         };
         if from >= to {
-            return Ok(());
+            return;
         }
-        let count = to - from;
         // The crate reads rows as whole strides, so a last row with nothing
         // after it — which is a picture that fits — is copied tight first.
         let (pixels, stride) = if pixels.len() >= to * stride {
             (&pixels[from * stride..to * stride], stride)
         } else {
-            let row = w * 4;
+            let row = w * packed.bytes();
             self.tight.clear();
             self.tight.extend(pixels.chunks(stride).take(to).skip(from).flat_map(|r| &r[..row]));
             (self.tight.as_slice(), row)
@@ -425,15 +416,35 @@ impl Picture {
             v_plane: yuv::BufferStoreMut::Borrowed(&mut self.v[chroma_from * cw..chroma_to * cw]),
             v_stride: cw as u32,
             width: w as u32,
-            height: count as u32,
+            height: (to - from) as u32,
         };
         let (range, matrix, mode) = (YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Balanced);
-        match chroma {
-            Chroma::Full => yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
-            Chroma::Subsampled => yuv::bgra_to_yuv420(&mut image, pixels, stride as u32, range, matrix, mode),
+        // The 4:2:0 chroma sample is the 2×2 group's rounded average, as the
+        // crate takes it; `the_conversion_is_bt601_studio_swing` holds it to that.
+        match (packed, chroma) {
+            (Packed::Rgb, Chroma::Full) => yuv::rgb_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
+            (Packed::Rgb, Chroma::Subsampled) => yuv::rgb_to_yuv420(&mut image, pixels, stride as u32, range, matrix, mode),
+            (Packed::Bgrx, Chroma::Full) => yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
+            (Packed::Bgrx, Chroma::Subsampled) => yuv::bgra_to_yuv420(&mut image, pixels, stride as u32, range, matrix, mode),
         }
         .expect("the picture fits its buffer, which was checked");
-        Ok(())
+    }
+}
+
+/// The byte order of a packed picture a [`Picture`] is read from.
+#[derive(Clone, Copy)]
+enum Packed {
+    Rgb,
+    Bgrx,
+}
+
+impl Packed {
+    /// The bytes of one pixel.
+    fn bytes(self) -> usize {
+        match self {
+            Self::Rgb => 3,
+            Self::Bgrx => 4,
+        }
     }
 }
 
@@ -473,6 +484,10 @@ pub struct Encoder {
     active: Vec<u8>,
     /// The encoder is holding a map, which it keeps until told otherwise.
     mapped: bool,
+    /// The dial each of the map's blocks was last coded at.
+    coded_at: Vec<u8>,
+    /// A frame has come out, so the next is not the stream's first.
+    begun: bool,
 }
 
 impl Encoder {
@@ -578,6 +593,8 @@ impl Encoder {
             pts: -1,
             active: vec![0; usize::from(width).div_ceil(ACTIVE_BLOCK) * usize::from(height).div_ceil(ACTIVE_BLOCK)],
             mapped: false,
+            coded_at: vec![quality; usize::from(width).div_ceil(ACTIVE_BLOCK) * usize::from(height).div_ceil(ACTIVE_BLOCK)],
+            begun: false,
         };
 
         // SAFETY: the context is live and each control's argument really is an
@@ -695,6 +712,17 @@ impl Encoder {
         Ok(())
     }
 
+    /// The coarsest dial any block of the picture a decoder now holds was last
+    /// coded at: [`Self::quality`] as each frame was encoded, for the blocks
+    /// that frame coded. A frame told where its picture changed leaves the
+    /// rest at the dial they had, so a picture the dial was walked down for is
+    /// coarse here until every block of it has been coded finer, which a whole
+    /// frame does at once — what a caller that settles a quiet picture asks
+    /// before deciding it owes one. Before the first frame, the dial.
+    pub fn coarsest(&self) -> u8 {
+        self.coded_at.iter().copied().min().unwrap_or(self.quality)
+    }
+
     /// The speed this encoder is coding at.
     pub fn speed(&self) -> Speed {
         self.speed
@@ -749,7 +777,9 @@ impl Encoder {
         let flags: vpx::vpx_enc_frame_flags_t = if keyframe { vpx::VPX_EFLAG_FORCE_KF as vpx::vpx_enc_frame_flags_t } else { 0 };
         let planes = picture.planes();
         let strides = picture.strides();
-        self.map(changed.filter(|_| !keyframe))?;
+        // An encoder's first frame is a keyframe whether asked or not, and a
+        // keyframe has no blocks to skip.
+        self.map(changed.filter(|_| !keyframe && self.begun))?;
 
         // SAFETY: the three planes outlive this call — they belong to `picture`,
         // which is borrowed for it — and the strides are the ones the picture
@@ -803,7 +833,20 @@ impl Encoder {
             if packets > 1 {
                 log::warn!("vp9: one encode produced {packets} packets; expected one");
             }
-            Ok((out.len() > from).then_some(keyframe))
+            if out.len() == from {
+                return Ok(None);
+            }
+            // What this frame coded is at this dial now: the blocks its map
+            // names, or all of them.
+            if self.mapped && !keyframe {
+                for (at, _) in self.coded_at.iter_mut().zip(&self.active).filter(|(_, active)| **active != 0) {
+                    *at = self.quality;
+                }
+            } else {
+                self.coded_at.fill(self.quality);
+            }
+            self.begun = true;
+            Ok(Some(keyframe))
         }
     }
 
@@ -876,6 +919,102 @@ impl Drop for Encoder {
         unsafe {
             vpx::vpx_codec_destroy(&mut *self.ctx);
         }
+    }
+}
+
+/// A desktop's stream from the pixels it is shown as: an [`Encoder`] and the
+/// [`Picture`] in front of it, fed a packed picture and where it changed. What
+/// both users of this crate would otherwise each keep: the rows that changed
+/// converted and the blocks they touch coded, and the whole picture read and
+/// coded where there is nothing for it to be a change to.
+pub struct Stream {
+    encoder: Encoder,
+    picture: Picture,
+    /// The planes hold the picture the last frame carried, which a frame of
+    /// changes alone is read over. Not so before the first frame, nor after
+    /// one the encoder produced nothing for: its rows were read and reached
+    /// no decoder, so the next frame is the whole picture's.
+    carried: bool,
+}
+
+impl Stream {
+    /// A stream of `width`×`height` pictures, as [`Encoder::new`] takes them.
+    pub fn new(width: u16, height: u16, chroma: Chroma, quality: u8, threads: usize) -> Result<Self, Error> {
+        Ok(Self { encoder: Encoder::new(width, height, chroma, quality, threads)?, picture: Picture::new(width, height, chroma)?, carried: false })
+    }
+
+    /// The picture size this stream codes.
+    pub fn size(&self) -> (u16, u16) {
+        self.encoder.size()
+    }
+
+    /// The sampling this stream codes.
+    pub fn chroma(&self) -> Chroma {
+        self.encoder.chroma()
+    }
+
+    /// The dial this stream is coding at.
+    pub fn quality(&self) -> u8 {
+        self.encoder.quality()
+    }
+
+    /// Move the dial without a keyframe, as [`Encoder::set_quality`] does.
+    pub fn set_quality(&mut self, quality: u8) -> Result<(), Error> {
+        self.encoder.set_quality(quality)
+    }
+
+    /// The coarsest dial any block of the decoder's picture was last coded at
+    /// ([`Encoder::coarsest`]).
+    pub fn coarsest(&self) -> u8 {
+        self.encoder.coarsest()
+    }
+
+    /// Encode `pixels` — `B, G, R, X`, this stream's size, rows `stride` bytes
+    /// apart — and append the frame to `out`, returning what
+    /// [`Encoder::encode`] does.
+    ///
+    /// `changed` is where the picture differs from the one the last frame
+    /// carried, or `None` for one that may differ anywhere. With it only the
+    /// rows the rectangles span are read, the other rows of `pixels` being
+    /// whatever they are, and only the blocks the rectangles touch are coded.
+    /// A keyframe, the stream's first frame and the frame after one the
+    /// encoder produced nothing for are the whole picture whatever `changed`
+    /// says, and read all of `pixels`.
+    pub fn encode_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        let changed = changed.filter(|_| self.carried && !keyframe);
+        match changed {
+            Some(rects) => {
+                for rect in rects {
+                    self.picture.read_bgrx_rows(pixels, stride, rect.y..rect.y.saturating_add(rect.height))?;
+                }
+            }
+            None => self.picture.read_bgrx(pixels, stride)?,
+        }
+        self.encode(changed, keyframe, out)
+    }
+
+    /// Encode `rgb` — packed RGB888, tight, for exactly this stream's picture
+    /// — as [`Self::encode_bgrx`] does `B, G, R, X`.
+    pub fn encode_rgb(&mut self, rgb: &[u8], changed: Option<&[Rect]>, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        let changed = changed.filter(|_| self.carried && !keyframe);
+        match changed {
+            Some(rects) => {
+                for rect in rects {
+                    self.picture.read_rgb_rows(rgb, rect.y..rect.y.saturating_add(rect.height))?;
+                }
+            }
+            None => self.picture.read_rgb(rgb)?,
+        }
+        self.encode(changed, keyframe, out)
+    }
+
+    /// Encode the planes as they stand.
+    fn encode(&mut self, changed: Option<&[Rect]>, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        // Until a frame comes out the planes are ahead of every decoder.
+        self.carried = false;
+        let encoded = self.encoder.encode(&self.picture, keyframe, changed, out)?;
+        self.carried = encoded.is_some();
+        Ok(encoded)
     }
 }
 
@@ -1265,19 +1404,35 @@ mod tests {
         };
 
         let mut encoder = Encoder::new(w, h, Chroma::Subsampled, QUALITY_MIN, 2).expect("an encoder");
+        assert_eq!(encoder.coarsest(), QUALITY_MIN, "before a frame, the dial");
         let mut frames = vec![encode(&mut encoder, &source, false).0];
         let coarse = error(&decode_chain(&frames, wu, hu));
+        assert_eq!(encoder.coarsest(), QUALITY_MIN);
 
         encoder.set_quality(90).expect("the encoder to accept a new quantizer");
+        assert_eq!(encoder.coarsest(), QUALITY_MIN, "a dial that moved has coded nothing yet");
         let mut partial = Vec::new();
         encoder.encode(&source, false, Some(&[named]), &mut partial).expect("an encode").expect("a frame");
         frames.push(partial);
         let skipped = error(&decode_chain(&frames, wu, hu));
         assert!(skipped > coarse * 0.9, "a frame told of one corner left the rest at error {skipped:.2}, from {coarse:.2}: it coded blocks it was to skip");
+        assert_eq!(encoder.coarsest(), QUALITY_MIN, "the blocks a frame skipped are as coarse as they were");
 
         frames.push(encode(&mut encoder, &source, false).0);
         let settled = error(&decode_chain(&frames, wu, hu));
         assert!(settled < coarse / 4.0, "a whole frame at quality 90 left the picture at error {settled:.2}, from {coarse:.2}");
+        assert_eq!(encoder.coarsest(), 90);
+
+        // Coarse where a frame coded and nowhere else, until frames told where
+        // have between them coded every block finer.
+        encoder.set_quality(40).expect("the encoder to accept a new quantizer");
+        encoder.encode(&source, false, Some(&[named]), &mut Vec::new()).expect("an encode").expect("a frame");
+        assert_eq!(encoder.coarsest(), 40);
+        encoder.set_quality(90).expect("the encoder to accept a new quantizer");
+        encoder.encode(&source, false, Some(&[Rect { x: 64, y: 0, width: 256, height: 240 }]), &mut Vec::new()).expect("an encode").expect("a frame");
+        assert_eq!(encoder.coarsest(), 40, "the corner coded at 40 was not in that frame");
+        encoder.encode(&source, false, Some(&[Rect { x: 10, y: 10, width: 40, height: 40 }]), &mut Vec::new()).expect("an encode").expect("a frame");
+        assert_eq!(encoder.coarsest(), 90, "every block has been coded at 90 since");
     }
 
     /// Converting some rows leaves the planes as converting the whole picture
@@ -1312,6 +1467,82 @@ mod tests {
                 assert!(partial.planes() == whole.planes(), "{chroma:?} rows {rows:?}: the planes are not the whole conversion's");
             }
             assert!(matches!(whole.read_bgrx_rows(&before[1..], stride, 0..1), Err(Error::Buffer { .. })), "a buffer too short for the picture was read");
+
+            // And packed RGB, which is tight.
+            let tight = |pixels: &[u8]| -> Vec<u8> { pixels.chunks(stride).flat_map(|row| row[..width * 4].chunks(4).flat_map(|px| [px[2], px[1], px[0]])).collect() };
+            let (before, after) = (tight(&before), tight(&after));
+            for rows in [0..1u16, 3..4, 5..12, 20..21, 19..40, 0..21, 7..7, 30..40] {
+                let mut changed = before.clone();
+                for row in usize::from(rows.start)..usize::from(rows.end).min(height) {
+                    changed[row * width * 3..][..width * 3].copy_from_slice(&after[row * width * 3..][..width * 3]);
+                }
+                whole.read_rgb(&changed).expect("its own picture");
+                let mut partial = Picture::new(width as u16, height as u16, chroma).expect("a picture");
+                partial.read_rgb(&before).expect("its own picture");
+                partial.read_rgb_rows(&changed, rows.clone()).expect("its own picture");
+                assert!(partial.planes() == whole.planes(), "{chroma:?} RGB rows {rows:?}: the planes are not the whole conversion's");
+            }
+            assert!(matches!(whole.read_rgb_rows(&before[3..], 0..1), Err(Error::Crop(..))), "a buffer that is not the picture was read");
+        }
+    }
+
+    /// A stream reads the rows a frame's changes span and nothing else of the
+    /// buffer, and leaves the rest of the decoder's picture as it was. Its
+    /// first frame and a keyframe have no picture to be changes to, and are
+    /// read whole whatever they are told.
+    #[test]
+    fn a_stream_reads_and_codes_only_what_a_frame_names() {
+        let (w, h) = (96u16, 80u16);
+        let (wu, hu) = (usize::from(w), usize::from(h));
+        const BACK: [u8; 3] = [20, 40, 80];
+        const LIT: [u8; 3] = [240, 240, 240];
+        const JUNK: [u8; 3] = [170, 85, 170];
+        let named = Rect { x: 32, y: 16, width: 32, height: 16 };
+        // `rgb` in the byte order a stream is fed: packed RGB, or `B, G, R, X`.
+        let packed = |rgb: &[u8], bgrx: bool| -> Vec<u8> { if bgrx { rgb.chunks(3).flat_map(|px| [px[2], px[1], px[0], 0]).collect() } else { rgb.to_vec() } };
+        let paint = |rgb: &mut [u8], rect: Rect, colour: [u8; 3]| {
+            for y in usize::from(rect.y)..usize::from(rect.y + rect.height) {
+                for x in usize::from(rect.x)..usize::from(rect.x + rect.width) {
+                    rgb[(y * wu + x) * 3..][..3].copy_from_slice(&colour);
+                }
+            }
+        };
+        let near = |got: [u8; 3], want: [u8; 3]| (0..3).all(|c| got[c].abs_diff(want[c]) <= 40);
+        for (chroma, bgrx) in [(Chroma::Full, true), (Chroma::Full, false), (Chroma::Subsampled, true), (Chroma::Subsampled, false)] {
+            let mut stream = Stream::new(w, h, chroma, 90, 2).expect("a stream");
+            assert_eq!((stream.size(), stream.chroma(), stream.quality(), stream.coarsest()), ((w, h), chroma, 90, 90));
+            let mut frames = Vec::new();
+            let mut step = |stream: &mut Stream, rgb: &[u8], changed: Option<&[Rect]>, keyframe: bool| {
+                let pixels = packed(rgb, bgrx);
+                let mut out = Vec::new();
+                let key = if bgrx { stream.encode_bgrx(&pixels, wu * 4, changed, keyframe, &mut out) } else { stream.encode_rgb(&pixels, changed, keyframe, &mut out) };
+                frames.push(out);
+                (key.expect("an encode").expect("a frame"), decode_chain(&frames, wu, hu))
+            };
+            let whole = flat(w, h, BACK);
+
+            // The first frame is told of changes it cannot be changes to.
+            let (key, back) = step(&mut stream, &whole, Some(&[named]), false);
+            assert!(key && near(rgb_at(&back, wu, 4, 70), BACK) && near(rgb_at(&back, wu, 48, 24), BACK), "{chroma:?}: the first frame was not the whole picture");
+
+            // A change, in a buffer whose other rows are not the picture.
+            let mut rows = flat(w, h, JUNK);
+            paint(&mut rows, Rect { x: 0, y: named.y, width: w, height: named.height }, BACK);
+            paint(&mut rows, named, LIT);
+            let (key, back) = step(&mut stream, &rows, Some(&[named]), false);
+            assert!(!key && near(rgb_at(&back, wu, 48, 24), LIT), "{chroma:?}: the change came back {:?}", rgb_at(&back, wu, 48, 24));
+            for (x, y) in [(4, 4), (4, 24), (90, 24), (48, 4), (48, 70)] {
+                assert!(near(rgb_at(&back, wu, x, y), BACK), "{chroma:?}: ({x}, {y}), outside the change, came back {:?}", rgb_at(&back, wu, x, y));
+            }
+
+            // A keyframe is the whole buffer, whatever it is told.
+            let mut all = whole.clone();
+            paint(&mut all, Rect { x: 0, y: 64, width: w, height: 16 }, LIT);
+            let (key, back) = step(&mut stream, &all, Some(&[named]), true);
+            assert!(key && near(rgb_at(&back, wu, 48, 24), BACK) && near(rgb_at(&back, wu, 48, 70), LIT), "{chroma:?}: the keyframe was not the whole picture");
+
+            assert!(matches!(stream.encode_rgb(&[0; 9], None, false, &mut Vec::new()), Err(Error::Crop(..))));
+            assert!(matches!(stream.encode_bgrx(&[0; 9], 4, None, false, &mut Vec::new()), Err(Error::Buffer { .. })));
         }
     }
 
