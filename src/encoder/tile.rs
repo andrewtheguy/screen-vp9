@@ -49,6 +49,7 @@ const SB_LOG2: u32 = 3;
 /// and around an eighth was best; keeping every square whole cost up to a
 /// third more bytes and 1–3 dB.
 const SPLIT_VARIANCE: i64 = 8;
+const SPLIT_NUM: i64 = 1;
 
 /// What a bit is worth in squared error when an inter block's transform size
 /// is chosen, in thousandths of the AC step squared over 64, a step in
@@ -65,6 +66,17 @@ const NEW_VECTOR_GAIN: i64 = 4;
 /// An intra mode other than DC is taken only where its residual varies
 /// `1 / INTRA_MODE_GAIN` less than DC's, for the bits it costs over DC's.
 const INTRA_MODE_GAIN: i64 = 16;
+
+/// An 8×8 intra block is coded as four 4×4 blocks, each predicted in a mode
+/// of its own, where the means of its luma 4×4s, each less 128, vary by
+/// more than this many AC steps over 256: libvpx's keyframe threshold for
+/// the split (`set_vbp_thresholds`, `thresholds[3]`, over
+/// `fill_variance_4x4avg`), which is a few grey levels, and where text is.
+const SPLIT_4X4_VARIANCE: i64 = 80;
+
+/// The partition context a 4×4 block leaves (libvpx's
+/// `partition_context_lookup[BLOCK_4X4]`).
+const PARTITION_CONTEXT_4X4: u8 = 15;
 
 /// What an intra neighbour adds to the mode context's counter (libvpx's
 /// `mode_2_counter`); `InterMode::counter` gives the rest.
@@ -208,6 +220,9 @@ pub(super) struct Previous<'a> {
 enum Mode {
     /// Predicted from the pixels around it, and the residual.
     Intra(IntraMode),
+    /// An 8×8 as four 4×4 blocks, each predicted from the pixels around it
+    /// in a mode of its own, in raster order, the chroma in the last one's.
+    Intra4([IntraMode; 4]),
     /// The previous frame at a vector from where the block is, and the
     /// residual against it.
     Inter(Mv),
@@ -261,8 +276,13 @@ impl InterMode {
 pub(super) struct ModeInfo {
     skip: bool,
     /// An intra block's mode, which a keyframe codes the next blocks' modes
-    /// by; DC for an inter block, as a decoder takes it.
+    /// by; DC for an inter block, as a decoder takes it. Of a block of
+    /// four 4×4s, the last's.
     mode: IntraMode,
+    /// Per 4×4 of an 8×8, its mode: the block's for a block of one, and
+    /// DC for an inter block. A block's neighbours read the ones along
+    /// their edge (libvpx's `vp9_above_block_mode`, `vp9_left_block_mode`).
+    sub: [IntraMode; 4],
     /// How an inter block's vector was coded, and the vector; none for an
     /// intra block.
     inter: Option<(InterMode, Mv)>,
@@ -423,6 +443,9 @@ pub(super) struct Frame<'a> {
     pub(super) quantizer: &'a Quantizer,
     /// What tokens cost at the probabilities the frame starts from.
     pub(super) costs: &'a tokens::Costs,
+    /// Whether the frame is coded at `Speed::Fastest`: an intra block's
+    /// mode by its line sums rather than coded each way.
+    pub(super) fast: bool,
 }
 
 /// One superblock row of a tile column: what it codes into, and what it
@@ -587,6 +610,7 @@ struct Tile<'a> {
     quantizer: &'a Quantizer,
     /// What tokens cost at the probabilities the frame starts from.
     costs: &'a tokens::Costs,
+    fast: bool,
     /// Whether a thread coding a row above has failed.
     failed: &'a AtomicBool,
     /// The variance a square is split above, `SPLIT_VARIANCE` of the step.
@@ -647,8 +671,9 @@ impl<'a> Tile<'a> {
             previous: frame.previous,
             quantizer: frame.quantizer,
             costs: frame.costs,
+            fast: frame.fast,
             failed,
-            split_variance: i64::from(frame.quantizer.ac_step()) / SPLIT_VARIANCE,
+            split_variance: i64::from(frame.quantizer.ac_step()) * SPLIT_NUM / SPLIT_VARIANCE,
             measures: [Measure::default(); 64],
             line_sums: [[([0; 8], [0; 8]); 3]; 64],
             summed: 0,
@@ -793,6 +818,29 @@ impl<'a> Tile<'a> {
                 self.measures[r * 8 + c] = Measure { source, residual };
             }
         }
+    }
+
+    /// Whether the means of the four luma 4×4s of the 8×8 at `(mi_row,
+    /// mi_col)` vary by more than `SPLIT_4X4_VARIANCE` (libvpx's
+    /// `get_variance` over `fill_variance_4x4avg`, which takes each 4×4 as
+    /// its rounded mean less 128).
+    fn quarters_vary(&self, mi_row: usize, mi_col: usize) -> bool {
+        let src = self.source;
+        let (px, py) = (mi_col * 8, mi_row * 8);
+        let mut sums = [0i64; 4];
+        for r in 0..8 {
+            let row = eight(src.row(0, py + r), px);
+            for (c, &v) in row.iter().enumerate() {
+                sums[(r / 4) * 2 + c / 4] += i64::from(v);
+            }
+        }
+        let (mut se, mut sse) = (0i64, 0i64);
+        for s in sums {
+            let e = ((s + 8) >> 4) - 128;
+            se += e;
+            sse += e * e;
+        }
+        (256 * (sse - ((se * se) >> 2))) >> 2 > SPLIT_4X4_VARIANCE * i64::from(self.quantizer.ac_step())
     }
 
     /// The moments of the source's 8×8 at `(px, py)` as it is coded: past
@@ -949,6 +997,11 @@ impl<'a> Tile<'a> {
         if n == 3 && matches!(mode, Mode::Inter(_)) {
             return None;
         }
+        // An 8×8 intra block of text, coded each way, is four 4×4s.
+        let mode = match mode {
+            Mode::Intra(_) if n == 0 && !self.fast && self.quarters_vary(mi_row, mi_col) => Mode::Intra4([IntraMode::Dc; 4]),
+            mode => mode,
+        };
         (n == 0 || variance <= self.split_variance * count * count).then_some((mode, moments))
     }
 
@@ -1062,7 +1115,7 @@ impl<'a> Tile<'a> {
         let has_rows = mi_row + half < g.mi_rows;
         let has_cols = mi_col + half < g.mi_cols;
         let mode = if has_rows && has_cols { self.choose(mi_row, mi_col, n) } else { None };
-        let split = mode.is_none();
+        let split = mode.is_none_or(|(mode, _)| matches!(mode, Mode::Intra4(_)));
         let ctx = self.partition_context(mi_row, mi_col, n);
         let probs = if self.previous.is_some() { PARTITION_PROBS[ctx] } else { KF_PARTITION_PROBS[ctx] };
         match (has_rows, has_cols) {
@@ -1090,7 +1143,7 @@ impl<'a> Tile<'a> {
             Some((mode, moments)) => {
                 self.block(mi_row, mi_col, n, mode, &moments);
                 let bw = 1 << n;
-                let ctx = partition_context_of(n);
+                let ctx = if matches!(mode, Mode::Intra4(_)) { PARTITION_CONTEXT_4X4 } else { partition_context_of(n) };
                 let x = mi_col - self.mi_col_start;
                 self.above_partition[x..x + bw].fill(ctx);
                 self.left_partition[mi_row & 7..(mi_row & 7) + bw].fill(ctx);
@@ -1246,31 +1299,44 @@ impl<'a> Tile<'a> {
         // which it does not code.
         let largest = (n as usize + 1).min(3);
         let count = 64 * self.count_inside(mi_row, mi_col, n) as i64;
+        let above = (mi_row > 0).then(|| self.mode_info(mi_row - 1, mi_col));
+        let left = (mi_col > self.mi_col_start).then(|| self.mode_info(mi_row, mi_col - 1));
         let mode = match mode {
             Mode::Inter(mv) => Mode::Inter(self.refine(mi_row, mi_col, n, mv)),
             mode => mode,
         };
         let tx = match mode {
             Mode::Intra(_) => self.intra_transform_size(n, moments, count),
+            Mode::Intra4(_) => 0,
             Mode::Inter(mv) => {
                 self.predict_inter(mi_row, mi_col, n, mv);
                 self.trial(mi_row, mi_col, n)
             }
             Mode::Unchanged => largest,
         };
+        // An 8×8 intra block's mode is chosen by coding it each way, and
+        // each of four 4×4s' in turn.
+        let mode = match mode {
+            Mode::Intra(_) if n == 0 && !self.fast => Mode::Intra(self.intra_trial(mi_row, mi_col, n, tx, above, left)),
+            Mode::Intra4(_) => Mode::Intra4(self.intra4_trial(mi_row, mi_col, above, left)),
+            mode => mode,
+        };
         self.reconstruct(mi_row, mi_col, n, mode, tx);
         let skip = self.eobs.iter().flatten().all(|&eob| eob == 0);
-        let tx = if skip && !matches!(mode, Mode::Intra(_)) { largest } else { tx };
-        let intra = if let Mode::Intra(intra) = mode { intra } else { IntraMode::Dc };
+        let tx = if skip && !matches!(mode, Mode::Intra(_) | Mode::Intra4(_)) { largest } else { tx };
+        let sub = match mode {
+            Mode::Intra(intra) => [intra; 4],
+            Mode::Intra4(sub) => sub,
+            _ => [IntraMode::Dc; 4],
+        };
+        let intra = sub[3];
         let inter = match mode {
-            Mode::Intra(_) => None,
+            Mode::Intra(_) | Mode::Intra4(_) => None,
             Mode::Inter(mv) => Some(self.inter_mode(mi_row, mi_col, n, mv)),
             // A decoder gives an inactive block ZEROMV, whatever it would
             // have cost to code.
             Mode::Unchanged => Some((InterMode::Zero, Mv::ZERO)),
         };
-        let above = (mi_row > 0).then(|| self.mode_info(mi_row - 1, mi_col));
-        let left = (mi_col > self.mi_col_start).then(|| self.mode_info(mi_row, mi_col - 1));
         let skips = usize::from(above.is_some_and(|m| m.skip)) + usize::from(left.is_some_and(|m| m.skip));
         let bw = 1 << n;
         let inactive = mode == Mode::Unchanged;
@@ -1292,12 +1358,14 @@ impl<'a> Tile<'a> {
             self.contexts.tape.put(skip, skip_slot(skips));
             self.contexts.coded[(mi_col - self.mi_col_start) >> SB_LOG2] = true;
             if self.previous.is_none() {
-                self.write_tx(n, tx, above, left);
+                // Four 4×4s take the one transform size without saying so.
+                if !matches!(mode, Mode::Intra4(_)) {
+                    self.write_tx(n, tx, above, left);
+                }
                 // The luma mode's probabilities are chosen by the modes above and
                 // to the left, DC by rule where there is no block; the chroma
                 // mode's, which is the luma's, by the luma's.
-                let (a, l) = (above.map_or(IntraMode::Dc, |m| m.mode), left.map_or(IntraMode::Dc, |m| m.mode));
-                self.write_intra(intra, &KF_Y_MODE_PROBS[a as usize][l as usize], &KF_UV_MODE_PROBS[intra as usize]);
+                self.write_modes(mode, sub, n, above, left);
             } else {
                 // libvpx's `get_intra_inter_context`.
                 let is_intra = |m: &ModeInfo| m.inter.is_none();
@@ -1308,7 +1376,7 @@ impl<'a> Tile<'a> {
                     (None, None) => 0,
                 };
                 self.contexts.tape.write(inter.is_some(), INTRA_INTER_PROBS[ctx]);
-                if !skip || inter.is_none() {
+                if (!skip || inter.is_none()) && !matches!(mode, Mode::Intra4(_)) {
                     self.write_tx(n, tx, above, left);
                 }
                 if let Some((mode, mv)) = inter {
@@ -1327,14 +1395,13 @@ impl<'a> Tile<'a> {
                         mv::code(mv - nearest, |b, p| tape.write(b, p));
                     }
                 } else {
-                    // At the probabilities of the block's size group.
-                    self.write_intra(intra, &Y_MODE_PROBS[(n as usize + 1).min(3)], &UV_MODE_PROBS[intra as usize]);
+                    self.write_modes(mode, sub, n, above, left);
                 }
             }
         }
         let (w, col) = (self.contexts.width, mi_col - self.mi_col_start);
         for row in mi_row..(mi_row + bw).min(g.mi_rows) {
-            self.contexts.mode_info[(row - self.top) * w + col..][..bw.min(w - col)].fill(ModeInfo { skip, mode: intra, inter, tx, n, inactive, predicted });
+            self.contexts.mode_info[(row - self.top) * w + col..][..bw.min(w - col)].fill(ModeInfo { skip, mode: intra, sub, inter, tx, n, inactive, predicted });
         }
         if skip {
             // A skipped block leaves no coefficient above or left of the
@@ -1349,22 +1416,208 @@ impl<'a> Tile<'a> {
         }
     }
 
-    /// Code the intra mode `mode` at the luma mode probabilities `y`, and as
-    /// the chroma mode too at `uv`.
-    fn write_intra(&mut self, mode: IntraMode, y: &[u8; 9], uv: &[u8; 9]) {
-        for probs in [y, uv] {
-            for &(b, node) in mode.bits() {
-                self.contexts.tape.write(b, probs[node]);
+    /// Of the intra modes, the one that codes the luma of the block of
+    /// `1 << n` 8×8s at `(mi_row, mi_col)` cheapest at transform size `tx`
+    /// in its squared error and its bits at `RATE_WEIGHT`: each is predicted
+    /// and coded as `reconstruct` codes it, the error measured on the
+    /// coefficients and the bits at the frame's starting probabilities, with
+    /// the mode's own bits for luma and chroma, `above` and `left` being
+    /// the blocks a keyframe chooses the mode's probabilities by. libvpx's
+    /// realtime encoder codes a keyframe's blocks under 16×16 this way.
+    fn intra_trial(&mut self, mi_row: usize, mi_col: usize, n: u32, tx: usize, above: Option<ModeInfo>, left: Option<ModeInfo>) -> IntraMode {
+        let g = self.geometry;
+        let ac = i64::from(self.quantizer.ac_step());
+        let keyframe = self.previous.is_none();
+        let y_probs = *self.y_mode_probs(&[IntraMode::Dc; 4], 0, false, n, above, left);
+        let (tx_log2, side) = (tx, 4 << tx);
+        let area = side * side;
+        let n4 = side / 4;
+        let wide4 = (2 << n).min((g.mi_cols - mi_col) * 2);
+        let high4 = (2 << n).min((g.mi_rows - mi_row) * 2);
+        let (stride, x0, y0) = (self.contexts.stride, self.contexts.x, self.top * 8);
+        let (ax, ly0) = ((mi_col - self.mi_col_start) * 2, (mi_row * 2) & 15);
+        let mut best = (i64::MAX, IntraMode::Dc);
+        for mode in IntraMode::ALL {
+            let uv_probs = if keyframe { &KF_UV_MODE_PROBS[mode as usize] } else { &UV_MODE_PROBS[mode as usize] };
+            let mut bits: i64 = mode.bits().iter().map(|&(b, node)| i64::from(bool_writer::cost(b, y_probs[node])) + i64::from(bool_writer::cost(b, uv_probs[node]))).sum();
+            let tx_type = Self::tx_type(Mode::Intra(mode), 0, tx_log2, 0);
+            let scan = tokens::scan(tx_log2, tx_type);
+            // The nonzero contexts as the block finds them, moved along by
+            // its own transform blocks without being left behind.
+            let mut above_nz = [0u8; 16];
+            let mut left_nz = [0u8; 16];
+            above_nz[..2 << n].copy_from_slice(&self.above_nonzero[0][ax..ax + (2 << n)]);
+            left_nz[..2 << n].copy_from_slice(&self.left_nonzero[0][ly0..ly0 + (2 << n)]);
+            let mut error = 0i64;
+            for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx_log2).1.enumerate() {
+                let (px, py) = (mi_col * 8 + x, mi_row * 8 + y);
+                let (lx, ly) = (px - x0, py - y0);
+                {
+                    let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8 - py, left: x > 0 || mi_col > self.mi_col_start, right: x + side < (8 << n) };
+                    let (before, rows) = self.contexts.planes[0].split_at_mut(ly * stride);
+                    let above = match ly {
+                        0 => (mi_row > 0).then_some(&self.above_pixels[0][..]),
+                        ly => Some(&before[(ly - 1) * stride..]),
+                    };
+                    predict::intra(mode, above, rows, stride, lx, side, &edges);
+                }
+                self.transform(0, px, py, side, tx_type);
+                let levels = &mut self.levels[0][i * area..][..area];
+                let (eob, e) = self.quantizer.quantize_with_error(side, scan.inverse, &self.coeffs[..area], levels);
+                error += e;
+                let (col4, row4) = (x / 4, y / 4);
+                let ctx = usize::from(above_nz[col4..col4 + n4].iter().any(|&a| a != 0)) + usize::from(left_nz[row4..row4 + n4].iter().any(|&l| l != 0));
+                let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: false, inter: false };
+                bits += i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.energy));
+                let coded = u8::from(eob > 0);
+                for k in 0..n4 {
+                    above_nz[col4 + k] = if col4 + k < wide4 { coded } else { 0 };
+                    left_nz[row4 + k] = if row4 + k < high4 { coded } else { 0 };
+                }
+                // The transform blocks after this one predict from it.
+                if eob > 0 {
+                    let levels = &self.levels[0][i * area..][..area];
+                    self.quantizer.dequantize(side, levels, scan.order, eob, &mut self.coeffs[..area]);
+                    transform::inverse_add(side, tx_type, &self.coeffs[..area], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
+                }
             }
+            let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
+            if cost < best.0 {
+                best = (cost, mode);
+            }
+        }
+        best.1
+    }
+
+    /// The modes of the four 4×4s of the 8×8 at `(mi_row, mi_col)`, each in
+    /// turn the one of the ten that codes its luma cheapest in squared
+    /// error and bits at `RATE_WEIGHT`, as `intra_trial` weighs them, the
+    /// 4×4s before it reconstructed in theirs, and each mode's bits at the
+    /// probabilities the modes beside it give (libvpx's
+    /// `rd_pick_intra_sub_8x8_y_mode`).
+    fn intra4_trial(&mut self, mi_row: usize, mi_col: usize, above: Option<ModeInfo>, left: Option<ModeInfo>) -> [IntraMode; 4] {
+        let g = self.geometry;
+        let ac = i64::from(self.quantizer.ac_step());
+        let (stride, x0, y0) = (self.contexts.stride, self.contexts.x, self.top * 8);
+        let (ax, ly0) = ((mi_col - self.mi_col_start) * 2, (mi_row * 2) & 15);
+        let wide4 = 2.min((g.mi_cols - mi_col) * 2);
+        let high4 = 2.min((g.mi_rows - mi_row) * 2);
+        let mut above_nz = [0u8; 2];
+        let mut left_nz = [0u8; 2];
+        above_nz.copy_from_slice(&self.above_nonzero[0][ax..ax + 2]);
+        left_nz.copy_from_slice(&self.left_nonzero[0][ly0..ly0 + 2]);
+        let mut sub = [IntraMode::Dc; 4];
+        for b in 0..4 {
+            let (x, y) = ((b & 1) * 4, (b >> 1) * 4);
+            let (px, py) = (mi_col * 8 + x, mi_row * 8 + y);
+            let (lx, ly) = (px - x0, py - y0);
+            if x >= wide4 * 4 || y >= high4 * 4 {
+                continue;
+            }
+            let y_probs = *self.y_mode_probs(&sub, b, true, 0, above, left);
+            let ctx = usize::from(above_nz[x / 4] != 0) + usize::from(left_nz[y / 4] != 0);
+            let mut best = (i64::MAX, IntraMode::Dc, 0usize);
+            for mode in IntraMode::ALL {
+                let bits: i64 = mode.bits().iter().map(|&(bit, node)| i64::from(bool_writer::cost(bit, y_probs[node]))).sum();
+                let tx_type = mode.tx_type();
+                let scan = tokens::scan(0, tx_type);
+                {
+                    let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8 - py, left: x > 0 || mi_col > self.mi_col_start, right: x + 4 < 8 };
+                    let (before, rows) = self.contexts.planes[0].split_at_mut(ly * stride);
+                    let above = match ly {
+                        0 => (mi_row > 0).then_some(&self.above_pixels[0][..]),
+                        ly => Some(&before[(ly - 1) * stride..]),
+                    };
+                    predict::intra(mode, above, rows, stride, lx, 4, &edges);
+                }
+                self.transform(0, px, py, 4, tx_type);
+                let levels = &mut self.levels[0][b * 16..][..16];
+                let (eob, error) = self.quantizer.quantize_with_error(4, scan.inverse, &self.coeffs[..16], levels);
+                let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
+                let bits = bits + i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.energy));
+                let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
+                if cost < best.0 {
+                    best = (cost, mode, eob);
+                }
+            }
+            sub[b] = best.1;
+            // Reconstructed in its mode, for the 4×4s after it to predict
+            // from.
+            let (mode, eob) = (best.1, best.2);
+            let tx_type = mode.tx_type();
+            let scan = tokens::scan(0, tx_type);
+            {
+                let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8 - py, left: x > 0 || mi_col > self.mi_col_start, right: x + 4 < 8 };
+                let (before, rows) = self.contexts.planes[0].split_at_mut(ly * stride);
+                let above = match ly {
+                    0 => (mi_row > 0).then_some(&self.above_pixels[0][..]),
+                    ly => Some(&before[(ly - 1) * stride..]),
+                };
+                predict::intra(mode, above, rows, stride, lx, 4, &edges);
+            }
+            if eob > 0 {
+                self.transform(0, px, py, 4, tx_type);
+                let levels = &mut self.levels[0][b * 16..][..16];
+                let eob = self.quantizer.quantize(4, scan.inverse, &self.coeffs[..16], levels);
+                self.quantizer.dequantize(4, levels, scan.order, eob, &mut self.coeffs[..16]);
+                transform::inverse_add(4, tx_type, &self.coeffs[..16], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
+            }
+            let coded = u8::from(eob > 0);
+            above_nz[x / 4] = if x / 4 < wide4 { coded } else { 0 };
+            left_nz[y / 4] = if y / 4 < high4 { coded } else { 0 };
+        }
+        sub
+    }
+
+    /// The luma mode probabilities of the 4×4 `b` (in raster order; 0 for a
+    /// block of one) of an intra block whose modes so far are `sub`, with
+    /// `above` and `left` the blocks beside it: in a keyframe, by the modes
+    /// of the 4×4s above and to the left (libvpx's `vp9_above_block_mode`
+    /// and `vp9_left_block_mode`), DC where there is no block or an inter
+    /// one; in an inter frame, by the block's size group.
+    fn y_mode_probs(&self, sub: &[IntraMode; 4], b: usize, split4: bool, n: u32, above: Option<ModeInfo>, left: Option<ModeInfo>) -> &'static [u8; 9] {
+        if self.previous.is_some() {
+            return &Y_MODE_PROBS[if split4 { 0 } else { (n as usize + 1).min(3) }];
+        }
+        let a = if b < 2 { above.map_or(IntraMode::Dc, |m| m.sub[b + 2]) } else { sub[b - 2] };
+        let l = if b & 1 == 0 { left.map_or(IntraMode::Dc, |m| m.sub[b + 1]) } else { sub[b - 1] };
+        &KF_Y_MODE_PROBS[a as usize][l as usize]
+    }
+
+    /// Code the modes of an intra block: one for a block of one, four for
+    /// four 4×4s, and then the chroma mode, which is the last of them.
+    fn write_modes(&mut self, mode: Mode, sub: [IntraMode; 4], n: u32, above: Option<ModeInfo>, left: Option<ModeInfo>) {
+        let (keyframe, uv) = (self.previous.is_none(), sub[3]);
+        let split4 = matches!(mode, Mode::Intra4(_));
+        for b in 0..if split4 { 4 } else { 1 } {
+            let probs = self.y_mode_probs(&sub, b, split4, n, above, left);
+            for &(bit, node) in sub[b].bits() {
+                self.contexts.tape.write(bit, probs[node]);
+            }
+        }
+        let probs = if keyframe { &KF_UV_MODE_PROBS[uv as usize] } else { &UV_MODE_PROBS[uv as usize] };
+        for &(bit, node) in uv.bits() {
+            self.contexts.tape.write(bit, probs[node]);
         }
     }
 
-    /// The type of the transforms of plane `plane` of a block coded in
+    /// The intra mode transform block `i` of `plane` of a block coded in
+    /// `mode` is predicted in: a block of one's, or its own 4×4's in luma
+    /// and the last's in chroma; none for an inter block.
+    fn intra_of(mode: Mode, plane: usize, i: usize) -> Option<IntraMode> {
+        match mode {
+            Mode::Intra(intra) => Some(intra),
+            Mode::Intra4(sub) => Some(if plane == 0 { sub[i] } else { sub[3] }),
+            _ => None,
+        }
+    }
+
+    /// The type of transform block `i` of plane `plane` of a block coded in
     /// `mode` at size `tx`: an intra block's luma below 32×32 its mode's,
     /// all else a DCT.
-    fn tx_type(mode: Mode, plane: usize, tx: usize) -> TxType {
-        match mode {
-            Mode::Intra(intra) if plane == 0 && tx < 3 => intra.tx_type(),
+    fn tx_type(mode: Mode, plane: usize, tx: usize, i: usize) -> TxType {
+        match Self::intra_of(mode, plane, i) {
+            Some(intra) if plane == 0 && tx < 3 => intra.tx_type(),
             _ => TxType::DctDct,
         }
     }
@@ -1579,19 +1832,19 @@ impl<'a> Tile<'a> {
         }
         for plane in 0..3 {
             // All but an inter block's luma, which `trial` left.
-            let fresh = matches!(mode, Mode::Intra(_)) || plane > 0;
+            let fresh = matches!(mode, Mode::Intra(_) | Mode::Intra4(_)) || plane > 0;
             if fresh {
                 self.eobs[plane].clear();
             }
-            let tx_type = Self::tx_type(mode, plane, tx_log2);
-            let scan = tokens::scan(tx_log2, tx_type);
             for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx_log2).1.enumerate() {
+                let tx_type = Self::tx_type(mode, plane, tx_log2, i);
+                let scan = tokens::scan(tx_log2, tx_type);
                 let (px, py) = (mi_col * 8 + x, mi_row * 8 + y);
                 // Where it is in the row's pixels.
                 let (lx, ly) = (px - x0, py - y0);
                 let eob = if fresh {
-                    if let Mode::Intra(intra) = mode {
-                        let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8 - py, left: x > 0 || mi_col > self.mi_col_start };
+                    if let Some(intra) = Self::intra_of(mode, plane, i) {
+                        let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8 - py, left: x > 0 || mi_col > self.mi_col_start, right: x + tx < (8 << n) };
                         let (before, rows) = self.contexts.planes[plane].split_at_mut(ly * stride);
                         let above = match ly {
                             0 => (mi_row > 0).then_some(&self.above_pixels[plane][..]),
@@ -1630,10 +1883,10 @@ impl<'a> Tile<'a> {
         // In 4×4 units, from the block's corner, how far the frame reaches.
         let wide4 = (2 << n).min((g.mi_cols - mi_col) * 2);
         let high4 = (2 << n).min((g.mi_rows - mi_row) * 2);
-        let inter = !matches!(mode, Mode::Intra(_));
+        let inter = !matches!(mode, Mode::Intra(_) | Mode::Intra4(_));
         for plane in 0..3 {
-            let tx_type = Self::tx_type(mode, plane, tx_log2);
             for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx_log2).1.enumerate() {
+                let tx_type = Self::tx_type(mode, plane, tx_log2, i);
                 let (col4, row4) = (x / 4, y / 4);
                 let ax = (mi_col - self.mi_col_start) * 2 + col4;
                 let ly = ((mi_row * 2) & 15) + row4;

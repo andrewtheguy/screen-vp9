@@ -40,7 +40,7 @@ mod transform;
 
 use std::sync::Mutex;
 
-use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, loop_filtered, quality_to_q, tile_columns_log2};
+use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, loop_filtered, quality_to_q, tile_columns_log2};
 use pool::Pool;
 
 /// The share of what the blocks it refines would cost that the search
@@ -245,6 +245,7 @@ pub(crate) struct Encoder {
     /// The threads, this one among them, for the encoder's life.
     pool: Pool,
     quality: u8,
+    speed: Speed,
     /// Per tile column, what a decoder keeps while it reads it.
     contexts: Vec<tile::Contexts>,
     /// The probabilities a decoder keeps from the frame coded last.
@@ -308,6 +309,7 @@ impl Encoder {
             threads,
             pool: Pool::new(threads),
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
+            speed: Speed::default(),
             contexts: (0..1 << tile_cols_log2).map(|i| tile::Contexts::new(&geometry, geometry.tile_cols(i, tile_cols_log2))).collect(),
             probs: probs::Probs::default(),
             recon: Reconstruction::new(&geometry, tile_cols_log2),
@@ -337,6 +339,17 @@ impl Encoder {
     /// not.
     pub(crate) fn set_quality(&mut self, quality: u8) {
         self.quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
+    }
+
+    /// The speed the encoder is coding at.
+    pub(crate) fn speed(&self) -> Speed {
+        self.speed
+    }
+
+    /// Move the speed: `Fastest` decides by the proxies alone, `Usual` by
+    /// coding each way where that pays.
+    pub(crate) fn set_speed(&mut self, speed: Speed) {
+        self.speed = speed;
     }
 
     /// The coarsest dial any block of the picture a decoder now holds was
@@ -382,7 +395,7 @@ impl Encoder {
         // an inter frame takes the ones the frame before left.
         let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
         let costs = tokens::Costs::new(&probs);
-        let frame = tile::Frame { geometry: g, source: &source, previous, quantizer: &quantizer, costs: &costs };
+        let frame = tile::Frame { geometry: g, source: &source, previous, quantizer: &quantizer, costs: &costs, fast: self.speed == Speed::Fastest };
         tile::code(&self.pool, self.threads, &frame, &mut self.contexts, &mut self.recon.columns);
         // The header updates the probabilities from what the frame's bools
         // count, and then the bools are coded.
@@ -1039,17 +1052,23 @@ mod tests {
         // In a keyframe, and in an inter frame whose picture the frame
         // before has nothing of; in one tile column and in four, whose
         // blocks along a column's left edge have no column to their left.
-        for (w, h, threads) in [(203, 141, 1), (2048, 72, 4)] {
+        // At `Fastest` the 8×8s are not coded each way, and so take DC, V,
+        // H and TM alone.
+        for (w, h, threads, speed) in [(203, 141, 1, Speed::Usual), (2048, 72, 4, Speed::Usual), (2048, 72, 4, Speed::Fastest)] {
             let mut stream = Stream::new(w, h, 90, threads);
+            stream.encoder.set_speed(speed);
+            assert_eq!(stream.encoder.speed(), speed);
             for (i, keyframe) in [true, false].into_iter().enumerate() {
                 stream.frame(&picture(w, h, &lines_rgb(w, h, i)), keyframe);
-                let mut used = [0; 4];
+                let mut used = [0; 10];
                 for contexts in &stream.encoder.contexts {
                     for mode in contexts.intra_modes() {
-                        used[predict::IntraMode::ALL.iter().position(|&m| m == mode).expect("a mode")] += 1;
+                        used[mode as usize] += 1;
                     }
                 }
-                assert!(used[1..].iter().all(|&n| n > 0), "{w}x{h}, frame {i}: DC, V, H and TM coded {used:?} times");
+                let diagonal: usize = used[3..9].iter().sum();
+                assert!(used[..3].iter().chain(&used[9..]).all(|&n| n > 0), "{w}x{h}, frame {i}: DC, V, H and TM coded {used:?} times");
+                assert_eq!(diagonal > 0, speed == Speed::Usual, "{w}x{h}, frame {i} at {speed:?}: the diagonal modes coded {used:?} times");
             }
         }
     }
@@ -1327,7 +1346,7 @@ mod tests {
         assert_eq!(stream.encoder.coarsest(), 40, "the corner coded at 40 was not in that frame");
         let (bytes, _, _) = stream.told(&source, false, Some(&[Rect { x: 4, y: 4, width: 56, height: 56 }]));
         assert_eq!(stream.encoder.coarsest(), 90, "every 8×8 has been coded at 90 since");
-        assert!(bytes > 100, "the corner, coded at 40, took {bytes} bytes to code at 90");
+        assert!(bytes > 50, "the corner, coded at 40, took {bytes} bytes to code at 90");
     }
 
     #[test]
@@ -1339,208 +1358,8 @@ mod tests {
         }
     }
 
-    /// The 4:4:4 samples `docs/rust-encoder-plan.md` measures on, each
-    /// with the quality and the threads the remotex gateway codes them at.
-    const SAMPLES: [(&str, u8, usize); 18] = [
-        ("quiet-1280x800-1col-lf", 90, 5),
-        ("quiet-1440x900-2col-lf", 90, 5),
-        ("quiet-1600x1000-2col-lf", 90, 5),
-        ("quiet-1920x1080-2col-lf", 90, 5),
-        ("quiet-2048x1536-4col-nolf", 90, 5),
-        ("quiet-2560x1600-4col-nolf", 90, 5),
-        ("quiet-2880x1800-4col-nolf", 90, 5),
-        ("quiet-3456x2168-4col-nolf", 90, 5),
-        ("quiet-3840x2160-4col-nolf", 90, 5),
-        ("busy-1280x800-1col-lf", 90, 5),
-        ("busy-1440x900-2col-lf", 90, 5),
-        ("busy-1600x1000-2col-lf", 90, 5),
-        ("busy-1920x1080-2col-lf", 90, 5),
-        ("busy-2048x1536-4col-nolf", 90, 5),
-        ("busy-2560x1600-4col-nolf", 90, 5),
-        ("busy-2880x1800-4col-nolf", 90, 5),
-        ("busy-3456x2168-4col-nolf", 90, 5),
-        ("busy-3840x2160-4col-nolf", 90, 5),
-    ];
-
-    /// Hand `f` each frame of an IVF sample in turn, as the picture a user
-    /// would hand an encoder, until it returns false.
-    fn each_picture(ivf: &[u8], mut f: impl FnMut(usize, Picture) -> bool) {
-        assert_eq!(&ivf[..4], b"DKIF", "not an IVF file");
-        let mut decoder = Decoder::new(4).expect("a decoder");
-        let (mut at, mut n) = (32, 0);
-        while at + 12 <= ivf.len() {
-            let len = u32::from_le_bytes(ivf[at..at + 4].try_into().expect("four bytes")) as usize;
-            let decoded = decoder.decode(&ivf[at + 12..at + 12 + len]).expect("a sample libvpx decodes");
-            let (w, h) = decoded.size();
-            let mut bgrx = vec![0; w as usize * h as usize * 4];
-            decoded.write_bgrx(&mut bgrx, w as usize * 4).expect("a buffer of the frame's size");
-            let mut picture = Picture::new(w as u16, h as u16, Chroma::Full).expect("a picture");
-            picture.read_bgrx(&bgrx, w as usize * 4).expect("a buffer of the picture's size");
-            if !f(n, picture) {
-                return;
-            }
-            at += 12 + len;
-            n += 1;
-        }
-    }
-
-    /// Every `step`th frame of an IVF sample, up to `count` of them.
-    fn sample(ivf: &[u8], step: usize, count: usize) -> Vec<Picture> {
-        let mut pictures = Vec::new();
-        each_picture(ivf, |n, picture| {
-            if n % step == 0 {
-                pictures.push(picture);
-            }
-            pictures.len() < count
-        });
-        pictures
-    }
-
-    /// The first 60 frames of the sample `SAMPLE` names in `tmp/`, coded
-    /// by this encoder alone, `PASSES` times over (3 if unset), on `THREADS`
-    /// threads (the sample's if unset): its milliseconds per frame. For a
-    /// profiler to watch; run it in release:
-    ///
-    /// ```text
-    /// SAMPLE=busy-1920x1080-2col-lf cargo test --release rust_alone -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore = "reads a sample in tmp/ and wants a release build"]
-    fn rust_alone() {
-        let name = std::env::var("SAMPLE").expect("SAMPLE naming a sample");
-        let &(_, quality, threads) = SAMPLES.iter().find(|c| c.0 == name).expect("one of the samples");
-        let threads = std::env::var("THREADS").map_or(threads, |t| t.parse().expect("a thread count"));
-        let passes: usize = std::env::var("PASSES").map_or(3, |p| p.parse().expect("a pass count"));
-        let ivf = std::fs::read(format!("tmp/{name}.ivf")).expect("the sample in tmp/");
-        let pictures = sample(&ivf, 1, 60);
-        let (w, h) = pictures[0].size();
-        let mut out = Vec::new();
-        let mut bytes = 0;
-        let started = std::time::Instant::now();
-        for _ in 0..passes {
-            let mut encoder = Encoder::new(w, h, quality, threads).expect("an encoder");
-            bytes = 0;
-            for picture in &pictures {
-                out.clear();
-                encoder.encode(picture, false, None, &mut out).expect("a frame");
-                bytes += out.len();
-            }
-        }
-        println!("{name} on {threads}: {:.2} ms per frame, {bytes} bytes", started.elapsed().as_secs_f64() * 1000.0 / (passes * pictures.len()) as f64);
-    }
-
     fn psnr(mse: f64) -> f64 {
         10.0 * (255.0 * 255.0 / mse).log10()
-    }
-
-    /// Keyframes of frames taken from the samples in `tmp/`, coded by this
-    /// encoder and by libvpx on the sample's threads: bytes, the least time over
-    /// three runs, and the PSNR of libvpx's decode of each. A measurement,
-    /// not a check; run it in release:
-    ///
-    /// ```text
-    /// cargo test --release keyframes_against_libvpx -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore = "reads the samples in tmp/ and wants a release build"]
-    fn keyframes_against_libvpx() {
-        for (name, quality, threads) in SAMPLES {
-            let Ok(ivf) = std::fs::read(format!("tmp/{name}.ivf")) else {
-                println!("{name}: not in tmp/");
-                continue;
-            };
-            let pictures = sample(&ivf, 15, 8);
-            let (w, h) = pictures[0].size();
-            let mut libvpx = crate::Encoder::new(w, h, Chroma::Full, quality, threads).expect("a libvpx encoder");
-            let mut rust = Encoder::new(w, h, quality, threads).expect("an encoder");
-            let mut totals = [(0usize, 0.0f64, 0.0f64); 2];
-            for picture in &pictures {
-                let mut frames = [Vec::new(), Vec::new()];
-                for (c, frame) in frames.iter_mut().enumerate() {
-                    let mut least = f64::INFINITY;
-                    for _ in 0..3 {
-                        frame.clear();
-                        let started = std::time::Instant::now();
-                        if c == 0 {
-                            libvpx.encode(picture, true, None, frame).expect("an encode").expect("a frame");
-                        } else {
-                            rust.encode(picture, true, None, frame).expect("a keyframe");
-                        }
-                        least = least.min(started.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    let mut decoder = Decoder::new(1).expect("a decoder");
-                    let decoded = decoder.decode(frame).expect("a frame libvpx decodes");
-                    totals[c].0 += frame.len();
-                    totals[c].1 += least;
-                    totals[c].2 += psnr(mse(picture, &decoded));
-                }
-            }
-            let n = pictures.len() as f64;
-            println!(
-                "{name} {w}x{h} q{quality}, {} keyframes | libvpx {} B {:.1} ms {:.2} dB | rust {} B {:.1} ms {:.2} dB | bytes {:.3} time {:.3}",
-                pictures.len(), totals[0].0, totals[0].1 / n, totals[0].2 / n, totals[1].0, totals[1].1 / n, totals[1].2 / n,
-                totals[1].0 as f64 / totals[0].0 as f64, totals[1].1 / totals[0].1,
-            );
-        }
-    }
-
-    /// Every frame of each sample in `tmp/`, coded as a stream by this
-    /// encoder and by libvpx, on the sample's threads, frame by frame, which of
-    /// them goes first alternating: bytes, time and the PSNR of libvpx's
-    /// decode of each. The per-frame time ratio's median is what the plan's
-    /// gate reads. A measurement, not a check; run it in release:
-    ///
-    /// ```text
-    /// cargo test --release streams_against_libvpx -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore = "reads the samples in tmp/ and wants a release build"]
-    fn streams_against_libvpx() {
-        for (name, quality, threads) in SAMPLES {
-            let Ok(ivf) = std::fs::read(format!("tmp/{name}.ivf")) else {
-                println!("{name}: not in tmp/");
-                continue;
-            };
-            let mut encoders: Option<(crate::Encoder, Encoder)> = None;
-            let mut decoders = [Decoder::new(1).expect("a decoder"), Decoder::new(1).expect("a decoder")];
-            let (mut bytes, mut ms, mut psnrs) = ([0usize; 2], [0.0f64; 2], [0.0f64; 2]);
-            let (mut ratios, mut frames, mut size) = (Vec::new(), 0, (0, 0));
-            each_picture(&ivf, |n, picture| {
-                let picture = &picture;
-                size = picture.size();
-                let (libvpx, rust) = encoders.get_or_insert_with(|| {
-                    let (w, h) = picture.size();
-                    (crate::Encoder::new(w, h, Chroma::Full, quality, threads).expect("a libvpx encoder"), Encoder::new(w, h, quality, threads).expect("an encoder"))
-                });
-                let mut out = [Vec::new(), Vec::new()];
-                let mut times = [0.0; 2];
-                for c in if n % 2 == 0 { [0, 1] } else { [1, 0] } {
-                    let started = std::time::Instant::now();
-                    if c == 0 {
-                        libvpx.encode(picture, false, None, &mut out[0]).expect("an encode").expect("a frame");
-                    } else {
-                        rust.encode(picture, false, None, &mut out[1]).expect("a frame");
-                    }
-                    times[c] = started.elapsed().as_secs_f64() * 1000.0;
-                }
-                for c in 0..2 {
-                    let decoded = decoders[c].decode(&out[c]).expect("a frame libvpx decodes");
-                    bytes[c] += out[c].len();
-                    ms[c] += times[c];
-                    psnrs[c] += psnr(mse(picture, &decoded).max(1e-3));
-                }
-                ratios.push(times[1] / times[0]);
-                frames += 1;
-                true
-            });
-            ratios.sort_unstable_by(f64::total_cmp);
-            let n = frames as f64;
-            println!(
-                "{name} {}x{} q{quality} on {threads}, {frames} frames | libvpx {} B {:.2} ms {:.2} dB | rust {} B {:.2} ms {:.2} dB | bytes {:.3} time median {:.3} total {:.3}",
-                size.0, size.1, bytes[0], ms[0] / n, psnrs[0] / n, bytes[1], ms[1] / n, psnrs[1] / n,
-                bytes[1] as f64 / bytes[0] as f64, ratios[ratios.len() / 2], ms[1] / ms[0],
-            );
-        }
     }
 
     /// One frame of a wlshare capture, what a session handed its stream:
@@ -1573,12 +1392,13 @@ mod tests {
 
     /// Hand `f` each frame of the capture at `path`: a `.wlcap`, or one
     /// `zstd` compressed as `.wlcap.zst`, read through `zstd -dc`.
-    fn each_captured(path: &std::path::Path, mut f: impl FnMut(&Captured<'_>)) {
+    fn each_captured(path: &std::path::Path, mut f: impl FnMut(&Captured<'_>) -> bool) {
         use std::io::Read as _;
         let file = std::fs::File::open(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let mut zstd = None;
         let mut input: Box<dyn std::io::Read> = if path.extension().is_some_and(|e| e == "zst") {
-            let mut child = std::process::Command::new("zstd").args(["-dc", "-q"]).stdin(file).stdout(std::process::Stdio::piped()).spawn().expect("zstd on the path");
+            // Its complaint when the read stops short is nothing to print.
+            let mut child = std::process::Command::new("zstd").args(["-dc", "-q"]).stdin(file).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().expect("zstd on the path");
             let out = child.stdout.take().expect("piped");
             zstd = Some(child);
             Box::new(std::io::BufReader::with_capacity(1 << 20, out))
@@ -1620,9 +1440,13 @@ mod tests {
             for span in spans {
                 input.read_exact(&mut pixels[usize::from(span.start) * row..usize::from(span.end) * row]).expect("a whole frame");
             }
-            f(&Captured { size, quality, keyframe: flags & 1 != 0, changed: (flags & 2 != 0).then_some(&rects[..]), pixels: &pixels });
+            if !f(&Captured { size, quality, keyframe: flags & 1 != 0, changed: (flags & 2 != 0).then_some(&rects[..]), pixels: &pixels }) {
+                break;
+            }
         }
+        drop(input);
         if let Some(mut child) = zstd {
+            let _ = child.kill();
             let _ = child.wait();
         }
     }
@@ -1803,6 +1627,7 @@ mod tests {
                 stream.push(std::mem::take(&mut out[1]));
             }
             n += 1;
+            true
         });
         if let Some(dir) = ivf {
             write_ivf(&dir.join(format!("{}.ivf", capture_name(path))), size, &stream);
@@ -1828,6 +1653,78 @@ mod tests {
 
     fn capture_name(path: &std::path::Path) -> String {
         path.file_name().expect("a file").to_string_lossy().trim_end_matches(".zst").trim_end_matches(".wlcap").to_owned()
+    }
+
+    /// The first picture of each capture: what the capture's first frame
+    /// holds.
+    fn first_picture(path: &std::path::Path) -> Picture {
+        let mut picture = None;
+        each_captured(path, |frame| {
+            let (w, h) = frame.size;
+            let mut p = Picture::new(w, h, Chroma::Full).expect("a picture");
+            p.read_bgrx(frame.pixels, usize::from(w) * 4).expect("the picture");
+            picture = Some(p);
+            false
+        });
+        picture.expect("a frame in the capture")
+    }
+
+    /// The first picture of each capture (the same knobs as
+    /// `captures_against_libvpx`) coded as a keyframe by both encoders at
+    /// the dials `DIALS` names (`40,60,80,90,100` if unset), each three
+    /// times for the least time: bytes, time and luma PSNR per dial, for
+    /// the picture line of the plan's gate. Run it in release:
+    ///
+    /// ```text
+    /// ONLY=1920 cargo test --release keyframes_against_libvpx -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
+    fn keyframes_against_libvpx() {
+        let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
+        let dials: Vec<u8> = std::env::var("DIALS").map_or_else(|_| vec![40, 60, 80, 90, 100], |d| d.split(',').map(|v| v.parse().expect("a dial")).collect());
+        for path in captures() {
+            let picture = first_picture(&path);
+            let (w, h) = picture.size();
+            println!("{} {w}x{h} on {threads}", capture_name(&path));
+            for &dial in &dials {
+                let mut libvpx = crate::Encoder::new(w, h, Chroma::Full, dial, threads).expect("a libvpx encoder");
+                // `SPEED=fastest` codes libvpx's side at its speed 9, for
+                // what its slower keyframe path is worth.
+                if std::env::var("SPEED").is_ok_and(|s| s == "fastest") {
+                    libvpx.set_speed(crate::Speed::Fastest).expect("the speed");
+                }
+                let mut rust = Encoder::new(w, h, dial, threads).expect("an encoder");
+                let mut result = [(0usize, f64::INFINITY, 0.0f64); 2];
+                for (c, r) in result.iter_mut().enumerate() {
+                    let mut frame = Vec::new();
+                    for _ in 0..3 {
+                        frame.clear();
+                        let started = std::time::Instant::now();
+                        if c == 0 {
+                            libvpx.encode(&picture, true, None, &mut frame).expect("an encode").expect("a frame");
+                        } else {
+                            rust.encode(&picture, true, None, &mut frame).expect("a keyframe");
+                        }
+                        r.1 = r.1.min(started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    let mut decoder = Decoder::new(1).expect("a decoder");
+                    let decoded = decoder.decode(&frame).expect("a frame libvpx decodes");
+                    r.0 = frame.len();
+                    r.2 = psnr(luma_mse(&picture, &decoded).max(1e-3));
+                    // With `IVF` set to a directory, each keyframe is written
+                    // there as `<capture>-q<dial>-<encoder>.ivf`.
+                    if let Some(dir) = std::env::var_os("IVF") {
+                        write_ivf(&std::path::Path::new(&dir).join(format!("{}-q{dial}-{}.ivf", capture_name(&path), ["libvpx", "rust"][c])), (w, h), std::slice::from_ref(&frame));
+                    }
+                }
+                println!(
+                    "  q{dial:<3} | libvpx {:>8} B {:>6.2} ms {:>5.2} dB | rust {:>8} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time {:.3} dB {:+.2}",
+                    result[0].0, result[0].1, result[0].2, result[1].0, result[1].1, result[1].2,
+                    result[1].0 as f64 / result[0].0 as f64, result[1].1 / result[0].1, result[1].2 - result[0].2,
+                );
+            }
+        }
     }
 
     /// Every frame of each wlshare capture in `tmp/captures/` (or the

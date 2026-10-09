@@ -140,9 +140,13 @@ Read from `wlshare/crates/wlshare-rfb/src/vp9.rs` and `crates/wlshare/src/sessio
   time. Its routine benchmark now decodes the samples `vp9-samples.sh`
   makes.
 
-Not needed, and not built: `Speed` and `set_speed`. Neither user calls them;
-only `examples/bench.rs` does, to name libvpx's two speeds. `Speed` is
-deleted at switch over.
+Kept, and given a meaning: `Speed` and `set_speed`. Neither user calls them
+today, and they stay in the API for a day one does (asked for on
+2026-10-09). The Rust encoder codes `Usual` with every decision phase 8
+builds, and `Fastest` with the proxies phase 5 built in their place: the
+intra mode by its line sums rather than coded each way, and later the
+transform size by rule and no search between pixels. `Fastest` is measured
+on the captures too, so that it is the faster of the two at every size.
 
 Untouched by this work: `Decoder`, `frame_header`, `codec_string`, `walk`, and
 the tile column and loop filter rules of `main` (`tile_columns_log2`,
@@ -510,19 +514,44 @@ The replan, from here. Each phase is measured on the captures of
 8. **Quality back to libvpx's at the same dial.** Measured by the picture
    line of the gate, before any more speed on whole frames, since every byte
    measured against a coarser picture is a false byte. Diagnosed on
-   keyframes first, where the gap is 0.7 to 1.0 dB at the same bytes on
-   every capture and so is intra's; then on the inter frames of `flood` and
-   `uncover`, where it is 0.4 to 0.6 dB and the bytes are level. Suspects,
-   in order, with their rows of
-   [Decided on the recordings](#decided-on-the-recordings-to-measure-again):
-   1. The partition rule: a square is kept whole where its variance is under
-      an eighth of a step, which was best on soft pictures and codes crisp
-      text in 32×32 transforms. Retune on real captures, or decide by the
-      edges the line sums already see.
-   2. 4×4 transforms wherever a block varies, and 4×4 blocks, for text.
-   3. `RATE_WEIGHT`, which trades coefficients for bits at a weight fitted
-      to bytes alone; refit to the gate's PSNR.
-   4. The intra modes: whether the six diagonal modes buy anything on text.
+   keyframes first, where the gap was 0.7 to 1.0 dB at the same bytes on
+   every capture and so was intra's; then on the inter frames of `flood`
+   and `uncover`, where it was 0.4 to 0.6 dB and the bytes were level.
+   **Found, by `keyframes_against_libvpx` on the captures' first pictures
+   at five dials and a block-by-block dump of both keyframes:** the gap was
+   1.2 to 2.7 dB on a keyframe, all of it libvpx's keyframe path at its
+   speed 7, which codes every block under 16×16 each way with real
+   transform and token costs over all ten intra modes, and codes an 8×8
+   whose four 4×4 means differ by a few grey levels (its `thresholds[3]`
+   over `fill_variance_4x4avg`) as four 4×4 blocks with a mode each, which
+   is what text is. libvpx at its speed 9, which has none of that, is level
+   with what this encoder had. The partition thresholds were not it: an
+   eighth of a step and a whole step code the same picture, and wider bands
+   are worse. Built, in order, each measured on the 1920×1080 keyframes at
+   dials 40 and 90:
+   1. **The 8×8 intra block's mode by coding it each way** (`intra_trial`),
+      the error on the coefficients and the bits at the frame's
+      probabilities with the mode's own: +0.2 dB, 3% fewer bytes, half as
+      long again.
+   2. **The six diagonal modes**, predicted as libvpx's decoder predicts
+      them with the row above read on to the right for a 4×4: +0.05 to
+      +0.1 dB.
+   3. **Four 4×4 blocks for an 8×8 whose quarters' means vary**
+      (`intra4_trial`, each 4×4's mode in turn by coding it): from −1.2 to
+      −2.7 dB at level bytes to −0.4 to −0.7 dB at 4 to 12% fewer bytes on
+      the keyframes, and over the captures at 1920×1080: `terminal`'s lines
+      of text −0.17 dB at 0.97× the bytes (from −0.71 at 1.02×), `uncover`
+      −0.17 dB (from −0.6), `flood` −0.04 dB at 0.94× the bytes, `drag`
+      +0.27 dB at 0.09×. Keyframes take 1.04 to 1.26× libvpx's time, which
+      is over the line and is the next thing.
+   Left, in order: the keyframe's time (the trial over modes whose edges
+   are not there, and over flat 4×4s, is wasted); the chroma mode, coded as
+   luma's where libvpx chooses it by cost, which in 4:4:4 is two planes of
+   three; `RATE_WEIGHT`, which trades coefficients for bits at a weight
+   fitted to bytes alone and is 13× lighter than libvpx's `rdmult`, refit to
+   the gate's PSNR; the transform size of an 8×8 intra block, which libvpx
+   leaves at 8×8; and every size measured, not 1920×1080 alone. `Fastest`
+   skips the trials and the 4×4s.
 9. **Whole frames: keyframes, scrolls, settles.** Measured by the other time
    line of the gate on `flood`, `browser`, `video`, `walk` and `uncover`,
    with the rest of the rows of
@@ -540,8 +569,8 @@ The replan, from here. Each phase is measured on the captures of
    3. The 32×32 cap on inter blocks, retried on real scrolls, where one
       vector for a 64×64 should be cheapest.
    4. The golden frame, only if `uncover` or `drag` shows it paying.
-10. **Switch over.** The libvpx encoder, `Chroma::Subsampled` and `Speed`
-    removed behind the same API, `AGENTS.md` reworded, a release tagged;
+10. **Switch over.** The libvpx encoder and `Chroma::Subsampled` removed
+    behind the same API, `Speed` kept, `AGENTS.md` reworded, a release tagged;
     then in wlshare and remotex: the pin bumped, 4:2:0 dropped,
     `-C target-feature=+avx2` set for their amd64 builds (a `.cargo/config.toml`
     or `RUSTFLAGS` in each container build), and wlshare's
