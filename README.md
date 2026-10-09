@@ -13,7 +13,11 @@ and the [remotex](https://github.com/andrewtheguy/remotex) gateway both code it.
   filter, which a software decoder's threads otherwise wait on; that costs 2%
   to 4% more bytes and 0.5 to 0.9 dB of luma. 4:2:0 always keeps the filter.
 - `Picture`: the 8-bit 4:2:0 or 4:4:4 BT.601 studio-swing planes libvpx reads,
-  converted from packed RGB or `B, G, R, X`.
+  converted from packed RGB or `B, G, R, X`, the whole picture or the rows that
+  changed.
+- A frame told where its picture changed skips every block outside those
+  rectangles, through libvpx's active map: a 4K frame with one small change
+  encodes in 11 ms for 26, and a 1440p one in 5 for 12.
 - `Decoder`: the planes back, for every test here and in a user.
 - `frame_header`: the profile and keyframe bit a frame says about itself;
   `codec_string`: the WebCodecs string a browser's `VideoDecoder` is configured
