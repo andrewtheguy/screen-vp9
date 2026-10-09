@@ -463,7 +463,13 @@ The replan, from here. Each phase is measured on the captures of
       thread or four, which is its own defect and is left to it.
    2. **One pool of threads for the encoder's life**, parked between frames,
       each phase one wake: the comparison, the index, the tiles, the tapes,
-      the filter. The band and row scheduling as now.
+      the filter. The band and row scheduling as now. **Done**
+      (`src/encoder/pool.rs`): the five phases each hand the pool one
+      closure, as `std::thread::scope` was handed, and the bytes are the
+      same to the byte. `terminal`'s frames of a line of text went from
+      1.13–1.26× libvpx's time to 0.85–1.0× at every size (0.50 ms at
+      1280×800, 3.5 ms at 3840×2160), its scrolls from 0.57–0.80× to
+      0.47–0.77×, `drag` at 1920×1080 from 0.77× to 0.70×.
    3. **The index of the frame before kept, not rebuilt**: anchors retaken
       and the table updated for the 8×8s that went stale, and the
       projections only over changed superblocks, as now.

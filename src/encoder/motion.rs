@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 use super::mv::{MAX_PIXELS, Mv};
+use super::pool::Pool;
 use super::{Geometry, Reconstruction, on_threads, on_workers};
 
 /// The vectors a superblock offers: its own anchors' best two, then its
@@ -160,7 +161,7 @@ impl Search {
     /// frame, coded against `reference`, give back per superblock in raster
     /// order the vectors it offers, the zero vector where it has fewer than
     /// `VECTORS`.
-    pub(super) fn update(&mut self, luma: &[u8], unchanged: Option<&[bool]>, reference: Option<&Reconstruction>) -> Vec<[Mv; VECTORS]> {
+    pub(super) fn update(&mut self, pool: &Pool, luma: &[u8], unchanged: Option<&[bool]>, reference: Option<&Reconstruction>) -> Vec<[Mv; VECTORS]> {
         let inter = reference.is_some();
         let shape = &self.shape;
         let mi_cols = shape.mi_cols;
@@ -174,14 +175,14 @@ impl Search {
             })
             .collect();
         if inter && stale.iter().any(|&s| s) {
-            self.index();
+            self.index(pool);
         }
         let shape = &self.shape;
         let tables = inter.then_some(&self.tables[..]);
         // A row of 8×8s at a time, as each thread is free for one: what
         // changed lies in some rows and not others.
         let rows = self.anchors.chunks_mut(mi_cols).zip(self.counts.chunks_mut(mi_cols)).zip(stale.chunks(mi_cols)).enumerate();
-        let found = on_workers(rows, &mut self.scratch, |(r, ((anchors, counts), stale)), scratch| {
+        let found = on_workers(pool, rows, &mut self.scratch, |(r, ((anchors, counts), stale)), scratch| {
             let mut found = Vec::new();
             let mut looked_up = 0;
             let mut c = 0;
@@ -218,7 +219,7 @@ impl Search {
         };
         // Per superblock, its projections' vector where it changed, a row
         // of superblocks at a time.
-        let projected = on_workers(0..shape.sb_rows, &mut self.scratch, |sb_row, scratch| {
+        let projected = on_workers(pool, 0..shape.sb_rows, &mut self.scratch, |sb_row, scratch| {
             (0..shape.sb_cols)
                 .map(|sb_col| {
                     let moved = (0..8).any(|r| (0..8).any(|c| shape.changed(unchanged, sb_row * 8 + r, sb_col * 8 + c)));
@@ -249,13 +250,13 @@ impl Search {
 
     /// Index the anchors kept, which are the source coded last's, by hash,
     /// each thread filling a table.
-    fn index(&mut self) {
+    fn index(&mut self, pool: &Pool) {
         let Self { shape, anchors, counts, tables, .. } = self;
         let shards = tables.len();
         // Each thread sorts a band's anchors by table, and then fills a
         // table from every band's, in order.
         let band = anchors.len().div_ceil(shards);
-        let sorted = on_threads(shards, anchors.chunks(band).zip(counts.chunks(band)).enumerate(), |(b, (anchors, counts))| {
+        let sorted = on_threads(pool, shards, anchors.chunks(band).zip(counts.chunks(band)).enumerate(), |(b, (anchors, counts))| {
             let mut sorted = vec![Vec::new(); shards];
             for (i, (anchors, &count)) in anchors.iter().zip(counts).enumerate() {
                 for &a in &anchors[..usize::from(count)] {
@@ -265,7 +266,7 @@ impl Search {
             }
             sorted
         });
-        on_threads(shards, tables.iter_mut().enumerate(), |(s, table)| {
+        on_threads(pool, shards, tables.iter_mut().enumerate(), |(s, table)| {
             table.clear();
             for &(hash, x, y) in sorted.iter().flat_map(|sorted| &sorted[s]) {
                 let (count, places) = table.entry(hash).or_insert((0, [(0, 0); MAX_REPEATS]));

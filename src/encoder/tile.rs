@@ -27,6 +27,7 @@ use super::bool_writer;
 use super::convolve::{self, TAPS};
 use super::motion;
 use super::mv::{self, Mv};
+use super::pool::Pool;
 use super::predict::{self, Edges, IntraMode};
 use super::probs::{skip_slot, tx_slot};
 use super::quantize::Quantizer;
@@ -443,11 +444,11 @@ struct Job<'a> {
 }
 
 /// Code every superblock row of every tile column of a frame, on `threads`
-/// threads: each takes the next row in the order rows are across the frame,
-/// and codes a superblock once the row above it in its column has coded the
-/// one above it. A row reads of the rows above only what they leave it, so
-/// the frame is the same on any number of threads.
-pub(super) fn code(threads: usize, frame: &Frame, contexts: &mut [Contexts], columns: &mut [Column]) {
+/// of `pool`'s threads: each takes the next row in the order rows are
+/// across the frame, and codes a superblock once the row above it in its
+/// column has coded the one above it. A row reads of the rows above only
+/// what they leave it, so the frame is the same on any number of threads.
+pub(super) fn code(pool: &Pool, threads: usize, frame: &Frame, contexts: &mut [Contexts], columns: &mut [Column]) {
     let mut columns: Vec<_> = contexts.iter_mut().zip(columns).map(|(contexts, column)| contexts.jobs(column)).collect();
     let mut queue = Vec::new();
     for _ in 0..frame.geometry.sb_rows {
@@ -463,12 +464,7 @@ pub(super) fn code(threads: usize, frame: &Frame, contexts: &mut [Contexts], col
             scratch = Tile::new(frame, job, scratch, &failed).code();
         }
     };
-    std::thread::scope(|scope| {
-        for _ in 1..threads.min(queue.len()) {
-            scope.spawn(work);
-        }
-        work();
-    });
+    pool.run(threads.min(queue.len()), |_| work());
     for contexts in contexts {
         contexts.searched = contexts.searched_rows.iter().fold([0.0; 2], |[c, s], row| [c + row[0], s + row[1]]);
     }

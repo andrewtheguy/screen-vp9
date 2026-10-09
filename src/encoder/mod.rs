@@ -28,6 +28,7 @@ mod loopfilter;
 mod motion;
 mod mv;
 mod pixels;
+mod pool;
 mod predict;
 mod probs;
 mod quantize;
@@ -37,7 +38,10 @@ mod tile;
 mod tokens;
 mod transform;
 
+use std::sync::Mutex;
+
 use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, loop_filtered, quality_to_q, tile_columns_log2};
+use pool::Pool;
 
 /// The share of what the blocks it refines would cost that the search
 /// between pixels has to save, as `tile::laplacian` models it, for it to
@@ -55,53 +59,46 @@ const MAX_TILE_WIDTH_B64: usize = 64;
 /// The narrowest a tile column may be, in superblocks.
 const MIN_TILE_WIDTH_B64: usize = 4;
 
-/// Run `work` on each of `jobs` on up to `threads` threads, this one among
-/// them, as many jobs to a thread as it takes to leave none over, and give
-/// back what each gives, in order.
-fn on_threads<J: Send, R: Send>(threads: usize, mut jobs: impl ExactSizeIterator<Item = J>, work: impl Fn(J) -> R + Sync) -> Vec<R> {
-    let per = jobs.len().div_ceil(threads).max(1);
-    std::thread::scope(|scope| {
-        let first: Vec<J> = jobs.by_ref().take(per).collect();
-        let work = &work;
-        let others: Vec<_> = (0..)
-            .map_while(|_| {
-                let chunk: Vec<J> = jobs.by_ref().take(per).collect();
-                (!chunk.is_empty()).then(|| scope.spawn(move || chunk.into_iter().map(work).collect::<Vec<R>>()))
-            })
-            .collect();
-        let mut done: Vec<R> = first.into_iter().map(work).collect();
-        for other in others {
-            done.extend(other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+/// Run `work` on each of `jobs` on up to `threads` of `pool`'s threads,
+/// this one among them, as many jobs to a thread as it takes to leave none
+/// over, and give back what each gives, in order.
+fn on_threads<J: Send, R: Send>(pool: &Pool, threads: usize, jobs: impl ExactSizeIterator<Item = J>, work: impl Fn(J) -> R + Sync) -> Vec<R> {
+    let per = jobs.len().div_ceil(threads.max(1)).max(1);
+    let mut chunks: Vec<Mutex<Vec<J>>> = Vec::new();
+    for (i, job) in jobs.enumerate() {
+        if i % per == 0 {
+            chunks.push(Mutex::new(Vec::with_capacity(per)));
         }
-        done
-    })
+        chunks.last_mut().expect("pushed above").get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).push(job);
+    }
+    let done: Vec<Mutex<Vec<R>>> = chunks.iter().map(|_| Mutex::new(Vec::new())).collect();
+    pool.run(chunks.len(), |i| {
+        let chunk = std::mem::take(&mut *chunks[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        *done[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner) = chunk.into_iter().map(&work).collect();
+    });
+    done.into_iter().flat_map(|d| d.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)).collect()
 }
 
-/// Run `work` on each of `jobs` on as many threads as there are `scratch`es,
-/// this one among them, each with a scratch of its own and taking the next
-/// job as it finishes one, so that a thread whose jobs have little to do
-/// takes more of them; and give back what each gives, in order.
-fn on_workers<J: Send, S: Send, R: Send>(jobs: impl Iterator<Item = J> + Send, scratch: &mut [S], work: impl Fn(J, &mut S) -> R + Sync) -> Vec<R> {
-    let queue = std::sync::Mutex::new(jobs.enumerate());
+/// Run `work` on each of `jobs` on as many of `pool`'s threads as there are
+/// `scratch`es, this one among them, each with a scratch of its own and
+/// taking the next job as it finishes one, so that a thread whose jobs have
+/// little to do takes more of them; and give back what each gives, in
+/// order.
+fn on_workers<J: Send, S: Send, R: Send>(pool: &Pool, jobs: impl Iterator<Item = J> + Send, scratch: &mut [S], work: impl Fn(J, &mut S) -> R + Sync) -> Vec<R> {
+    let queue = Mutex::new(jobs.enumerate());
     // The lock is let go of before the job is worked on.
     let next = || queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).next();
-    let run = |scratch: &mut S| {
-        let mut done = Vec::new();
-        while let Some((i, job)) = next() {
-            done.push((i, work(job, scratch)));
+    let slots: Vec<Mutex<&mut S>> = scratch.iter_mut().map(Mutex::new).collect();
+    let done = Mutex::new(Vec::new());
+    pool.run(slots.len(), |i| {
+        let mut scratch = slots[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut mine = Vec::new();
+        while let Some((k, job)) = next() {
+            mine.push((k, work(job, &mut scratch)));
         }
-        done
-    };
-    let run = &run;
-    let (first, others) = scratch.split_first_mut().expect("a scratch");
-    let mut done = std::thread::scope(|scope| {
-        let others: Vec<_> = others.iter_mut().map(|scratch| scope.spawn(move || run(scratch))).collect();
-        let mut done = run(first);
-        for other in others {
-            done.extend(other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
-        }
-        done
+        done.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(mine);
     });
+    let mut done = done.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     done.sort_unstable_by_key(|&(i, _)| i);
     done.into_iter().map(|(_, r)| r).collect()
 }
@@ -245,6 +242,8 @@ pub(crate) struct Encoder {
     filtered: bool,
     /// The most threads the tile columns are coded on.
     threads: usize,
+    /// The threads, this one among them, for the encoder's life.
+    pool: Pool,
     quality: u8,
     /// Per tile column, what a decoder keeps while it reads it.
     contexts: Vec<tile::Contexts>,
@@ -300,6 +299,7 @@ impl Encoder {
             tile_cols_log2,
             filtered: loop_filtered(Chroma::Full, width, threads),
             threads,
+            pool: Pool::new(threads),
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
             contexts: (0..1 << tile_cols_log2).map(|i| tile::Contexts::new(&geometry, geometry.tile_cols(i, tile_cols_log2))).collect(),
             probs: probs::Probs::default(),
@@ -361,7 +361,7 @@ impl Encoder {
         let keyframe = keyframe || !self.started;
         self.name(changed.filter(|_| !keyframe));
         self.compare(picture, keyframe);
-        let vectors = self.search.update(&self.previous[0], (!keyframe).then_some(&self.unchanged[..]), (!keyframe).then_some(&self.reference));
+        let vectors = self.search.update(&self.pool, &self.previous[0], (!keyframe).then_some(&self.unchanged[..]), (!keyframe).then_some(&self.reference));
         for contexts in &mut self.contexts {
             contexts.start(self.last_inter);
         }
@@ -375,7 +375,7 @@ impl Encoder {
         let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
         let costs = tokens::Costs::new(&probs);
         let frame = tile::Frame { geometry: g, source: &source, previous, quantizer: &quantizer, costs: &costs };
-        tile::code(self.threads, &frame, &mut self.contexts, &mut self.recon.columns);
+        tile::code(&self.pool, self.threads, &frame, &mut self.contexts, &mut self.recon.columns);
         // The header updates the probabilities from what the frame's bools
         // count, and then the bools are coded.
         let mut counts = probs::Counts::new();
@@ -395,7 +395,7 @@ impl Encoder {
         }
         let filter_level = if self.filtered { loopfilter::level(quantizer.ac_step(), keyframe) } else { 0 };
         let table = probs.table();
-        let tiles = on_threads(self.threads, self.contexts.iter(), |contexts| tape::code(&contexts.tapes, &table, segmentation.as_ref()));
+        let tiles = on_threads(&self.pool, self.threads, self.contexts.iter(), |contexts| tape::code(&contexts.tapes, &table, segmentation.as_ref()));
         let uncompressed = header::Uncompressed {
             keyframe,
             width: g.width,
@@ -476,7 +476,7 @@ impl Encoder {
                 planes[p].push((column.x, column.stride, plane));
             }
         }
-        on_threads(self.threads.min(3), planes.into_iter(), |mut columns| {
+        on_threads(&self.pool, self.threads.min(3), planes.into_iter(), |mut columns| {
             // A superblock that starts a tile column has its vertical pass
             // run on a copy of it with the eight pixels left of it, which
             // lie in the column before.
@@ -526,7 +526,7 @@ impl Encoder {
         let [p0, p1, p2] = &mut self.previous;
         let marks = self.unchanged.chunks_mut(band * g.mi_cols).zip(self.named.chunks(band * g.mi_cols)).zip(self.coded_at.chunks(band * g.mi_cols));
         let bands = marks.zip(p0.chunks_mut(band * 8 * width)).zip(p1.chunks_mut(band * 8 * width)).zip(p2.chunks_mut(band * 8 * width));
-        on_threads(self.threads, bands.enumerate(), |(b, (((((unchanged, named), coded_at), p0), p1), p2))| {
+        on_threads(&self.pool, self.threads, bands.enumerate(), |(b, (((((unchanged, named), coded_at), p0), p1), p2))| {
             let mut previous = [p0, p1, p2];
             let y0 = b * band * 8;
             let rows = previous[0].len() / width;
