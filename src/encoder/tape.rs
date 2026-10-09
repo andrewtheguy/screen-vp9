@@ -76,27 +76,28 @@ impl Tape {
         counts[MORE] += 1;
     }
 
-    /// Everything recorded, coded at the probabilities of `table`
-    /// (`probs::Probs::table`).
-    pub(super) fn code(&self, table: &[u8]) -> Vec<u8> {
-        let mut w = BoolWriter::new();
-        let mut run = w.run();
-        for &r in &self.records {
-            if r & TOKEN == 0 {
-                run.write(r & 1 == 1, table[(r >> 1) as usize]);
-                continue;
-            }
-            let at = coef_slot((r >> CONTEXT_SHIFT & 0x3ff) as usize);
-            let p: &[u8; NODES] = table[at..at + NODES].try_into().expect("a probability per node");
-            if r & END != 0 {
-                run.write(false, p[0]);
-            } else {
-                tokens::code(&mut run, r & MORE_FIRST != 0, i32::from(r as u16 as i16), p);
-            }
+}
+
+/// Everything `tapes` recorded, one after another, coded at the
+/// probabilities of `table` (`probs::Probs::table`).
+pub(super) fn code<'t>(tapes: impl IntoIterator<Item = &'t Tape>, table: &[u8]) -> Vec<u8> {
+    let mut w = BoolWriter::new();
+    let mut run = w.run();
+    for &r in tapes.into_iter().flat_map(|tape| &tape.records) {
+        if r & TOKEN == 0 {
+            run.write(r & 1 == 1, table[(r >> 1) as usize]);
+            continue;
         }
-        drop(run);
-        w.finish()
+        let at = coef_slot((r >> CONTEXT_SHIFT & 0x3ff) as usize);
+        let p: &[u8; NODES] = table[at..at + NODES].try_into().expect("a probability per node");
+        if r & END != 0 {
+            run.write(false, p[0]);
+        } else {
+            tokens::code(&mut run, r & MORE_FIRST != 0, i32::from(r as u16 as i16), p);
+        }
     }
+    drop(run);
+    w.finish()
 }
 
 #[cfg(test)]
@@ -121,8 +122,10 @@ mod tests {
         tape.token(context, true, 0, 0);
         tape.token(context, false, 70, 10);
         tape.end(context);
-        tape.put(true, skip_slot(1));
-        let data = tape.code(&table);
+        // Two tapes coded one after the other are one stream.
+        let mut after = Tape::new();
+        after.put(true, skip_slot(1));
+        let data = code([&tape, &after], &table);
         let mut r = BoolReader::new(&data);
         let at = coef_slot(context);
         let p = &table[at..at + NODES];
@@ -139,6 +142,6 @@ mod tests {
         assert_eq!(tape.counts.tokens[context][..TOKENS], [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1]);
         assert_eq!(tape.counts.tokens[context][MORE], 3, "the end of block's node before -3, 0 and the end");
         assert_eq!(tape.counts.tokens[context][EOB_TOKEN], 1);
-        assert_eq!(tape.counts.bools[counted(skip_slot(1)).expect("a counted slot")], [1, 1]);
+        assert_eq!(tape.counts.bools[counted(skip_slot(1)).expect("a counted slot")], [1, 0]);
     }
 }

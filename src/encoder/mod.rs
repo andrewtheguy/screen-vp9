@@ -319,14 +319,13 @@ impl Encoder {
         // an inter frame takes the ones the frame before left.
         let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
         let costs = tokens::Costs::new(&probs);
-        on_threads(self.threads, self.contexts.iter_mut().zip(&mut self.recon.columns), |(contexts, column)| {
-            tile::Tile::new(g, contexts, column, &source, previous, &quantizer, &costs).code()
-        });
+        let frame = tile::Frame { geometry: g, source: &source, previous, quantizer: &quantizer, costs: &costs };
+        tile::code(self.threads, &frame, &mut self.contexts, &mut self.recon.columns);
         // The header updates the probabilities from what the frame's bools
         // count, and then the bools are coded.
         let mut counts = probs::Counts::new();
-        for contexts in &self.contexts {
-            counts.add(&contexts.tape.counts);
+        for tape in self.contexts.iter().flat_map(|contexts| &contexts.tapes) {
+            counts.add(&tape.counts);
         }
         let compressed = header::compressed(keyframe, &mut probs, &counts);
         // Each frame's half again of what came before, so that a frame with
@@ -338,7 +337,7 @@ impl Encoder {
         }
         let filter_level = if self.filtered { loopfilter::level(quantizer.ac_step(), keyframe) } else { 0 };
         let table = probs.table();
-        let tiles = on_threads(self.threads, self.contexts.iter(), |contexts| contexts.tape.code(&table));
+        let tiles = on_threads(self.threads, self.contexts.iter(), |contexts| tape::code(&contexts.tapes, &table));
         let uncompressed = header::Uncompressed {
             keyframe,
             width: g.width,
@@ -725,6 +724,26 @@ mod tests {
             out
         });
         assert!(one == two && one == three, "{} bytes on one thread, {} on two, {} on three", one.len(), two.len(), three.len());
+    }
+
+    #[test]
+    fn the_rows_of_one_tile_column_change_nothing_but_the_time() {
+        // Under 1440 wide a frame is one tile column, whose superblock rows
+        // more threads code as a wavefront: each row reads only what the rows
+        // above it leave it, so the frames are the same on any number of
+        // threads and decode as the encoder made them.
+        let (w, h) = (640, 360);
+        let rgb = desktop_rgb(w, h);
+        let frames = [rgb.clone(), scroll(&rgb, w, 5), drag(&rgb, w, (100, 60, 300, 200), (17, 9)), edit(rgb, w, (300, 200, 200, 100), 7)];
+        let [one, two, five] = [1, 2, 5].map(|threads| {
+            let mut stream = Stream::new(w, h, 90, threads);
+            assert_eq!(stream.encoder.tile_cols_log2, 0);
+            frames.iter().map(|rgb| {
+                stream.frame(&picture(w, h, rgb), false);
+                stream.last.clone()
+            }).collect::<Vec<_>>()
+        });
+        assert!(one == two && one == five, "{} frames on one thread, {} on two, {} on five", one.len(), two.len(), five.len());
     }
 
     /// `rgb`, `w` wide, with its rectangle at `(x, y)` of `rw`×`rh` moved

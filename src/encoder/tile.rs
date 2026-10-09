@@ -12,6 +12,16 @@
 //! varies least from. A square whose source is what it was in the previous
 //! frame is the previous frame's, skipped, without being measured; one that
 //! is so only in part is split.
+//!
+//! A tile column is coded a superblock row at a time, the rows as a
+//! wavefront: a row codes a superblock once the row above has coded the one
+//! above it, which leaves it what a block below reads across its top edge
+//! (libvpx's row-based multithreading). Rows are what threads take, so a
+//! frame of one tile column is coded on as many of them as it has rows; the
+//! bools of each row are kept apart and coded one row after another.
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use super::bool_writer;
 use super::convolve::{self, TAPS};
@@ -251,45 +261,48 @@ pub(super) struct ModeInfo {
     n: u32,
 }
 
-/// What a decoder keeps while it reads a tile column, which nothing outside
-/// the column reads: the contexts read across a block's top edge, and the
-/// mode info of every 8×8 of the column coded so far, and of the frame
-/// before. Each is the column's alone, from its first 8×8 column.
+/// What a decoder keeps of a tile column, which nothing outside the column
+/// reads: the mode info of every 8×8 of it coded so far, and of the frame
+/// before; and, as the column is coded a superblock row at a time, each
+/// row's bools and what each superblock leaves the row below it. Each is the
+/// column's alone, from its first 8×8 column.
 pub(super) struct Contexts {
-    /// Per column of 8×8.
-    above_partition: Vec<u8>,
-    /// Per plane, per column of 4×4: whether the transform block above had
-    /// a coefficient.
-    above_nonzero: [Vec<u8>; 3],
     mode_info: Vec<ModeInfo>,
     last_mode_info: Vec<ModeInfo>,
-    /// The column's width in 8×8s.
+    /// The column's width in 8×8s, and in superblocks.
     width: usize,
+    sb_cols: usize,
     /// Whether a decoder predicts vectors from the frame before's too:
     /// when that was an inter frame (libvpx's `use_prev_frame_mvs`).
     use_last: bool,
     /// Of the blocks the search between pixels refined, what their luma
     /// would cost coded at the vectors they came with, and what the search
-    /// saved, as `laplacian` models them.
+    /// saved, as `laplacian` models them: the column's, and per superblock
+    /// row.
     pub(super) searched: [f64; 2],
-    /// The column's bools, to be coded once the frame's probabilities are
-    /// chosen.
-    pub(super) tape: Tape,
+    searched_rows: Vec<[f64; 2]>,
+    /// Per superblock row, its bools, to be coded once the frame's
+    /// probabilities are chosen.
+    pub(super) tapes: Vec<Tape>,
+    /// Per superblock, what it leaves the superblock below it, once its row
+    /// has coded it.
+    edges: Vec<OnceLock<Edge>>,
 }
 
 impl Contexts {
     /// The contexts of the tile column of the 8×8 columns `cols`.
     pub(super) fn new(geometry: &Geometry, cols: std::ops::Range<usize>) -> Self {
-        let sbs = cols.len().div_ceil(8);
+        let sb_cols = cols.len().div_ceil(8);
         Self {
-            above_partition: vec![0; sbs * 8],
-            above_nonzero: std::array::from_fn(|_| vec![0; sbs * 16]),
             mode_info: vec![ModeInfo::default(); geometry.mi_rows * cols.len()],
             last_mode_info: vec![ModeInfo::default(); geometry.mi_rows * cols.len()],
             width: cols.len(),
+            sb_cols,
             use_last: false,
             searched: [0.0; 2],
-            tape: Tape::new(),
+            searched_rows: vec![[0.0; 2]; geometry.sb_rows],
+            tapes: (0..geometry.sb_rows).map(|_| Tape::new()).collect(),
+            edges: (0..geometry.sb_rows * sb_cols).map(|_| OnceLock::new()).collect(),
         }
     }
 
@@ -310,15 +323,131 @@ impl Contexts {
     /// as the frame before's. `last_inter` says whether that frame was an
     /// inter frame.
     pub(super) fn start(&mut self, last_inter: bool) {
-        self.above_partition.fill(0);
-        for plane in &mut self.above_nonzero {
-            plane.fill(0);
-        }
         std::mem::swap(&mut self.mode_info, &mut self.last_mode_info);
         self.mode_info.fill(ModeInfo::default());
         self.use_last = last_inter;
         self.searched = [0.0; 2];
-        self.tape.clear();
+        self.searched_rows.fill([0.0; 2]);
+        for tape in &mut self.tapes {
+            tape.clear();
+        }
+        for edge in &mut self.edges {
+            edge.take();
+        }
+    }
+
+    /// A job for each superblock row of the column, which `column` holds
+    /// the pixels of.
+    fn jobs<'a>(&'a mut self, column: &'a mut Column) -> impl Iterator<Item = Job<'a>> {
+        let Contexts { mode_info, last_mode_info, width, sb_cols, use_last, searched_rows, tapes, edges, .. } = self;
+        let (width, sb_cols, use_last) = (*width, *sb_cols, *use_last);
+        let (last_mode_info, edges) = (&last_mode_info[..], &edges[..]);
+        let (x, stride) = (column.x, column.stride);
+        let [p0, p1, p2] = &mut column.planes;
+        let rows = 64 * stride;
+        let planes = p0.chunks_mut(rows).zip(p1.chunks_mut(rows)).zip(p2.chunks_mut(rows));
+        mode_info.chunks_mut(8 * width).zip(planes).zip(tapes.iter_mut().zip(searched_rows)).enumerate().map(move |(sb_row, ((mode_info, ((p0, p1), p2)), (tape, searched)))| Job {
+            sb_row,
+            x,
+            stride,
+            width,
+            sb_cols,
+            use_last,
+            last_mode_info,
+            edges,
+            mode_info,
+            planes: [p0, p1, p2],
+            tape,
+            searched,
+        })
+    }
+}
+
+/// What a superblock leaves the superblock below it once it is coded: the
+/// partition contexts and whether the transform blocks along its bottom
+/// edge had coefficients, the mode info of its last three rows of 8×8s, as
+/// far up as a block below predicts its vectors from, and its last row of
+/// pixels, which DC below it predicts from.
+struct Edge {
+    partition: [u8; 8],
+    nonzero: [[u8; 16]; 3],
+    mode_info: [[ModeInfo; 8]; 3],
+    pixels: [[u8; 64]; 3],
+}
+
+/// What every superblock row of a frame is coded with.
+pub(super) struct Frame<'a> {
+    pub(super) geometry: &'a Geometry,
+    pub(super) source: &'a Source<'a>,
+    /// What an inter frame is coded against; none in a keyframe.
+    pub(super) previous: Option<Previous<'a>>,
+    pub(super) quantizer: &'a Quantizer,
+    /// What tokens cost at the probabilities the frame starts from.
+    pub(super) costs: &'a tokens::Costs,
+}
+
+/// One superblock row of a tile column: what it codes into, and what it
+/// reads of the column.
+struct Job<'a> {
+    sb_row: usize,
+    /// The column's first pixel column of the frame, the rows' stride, and
+    /// its width in 8×8s and in superblocks.
+    x: usize,
+    stride: usize,
+    width: usize,
+    sb_cols: usize,
+    use_last: bool,
+    last_mode_info: &'a [ModeInfo],
+    /// The column's, per superblock.
+    edges: &'a [OnceLock<Edge>],
+    /// The mode info and the pixels of the row's own 8×8s.
+    mode_info: &'a mut [ModeInfo],
+    planes: [&'a mut [u8]; 3],
+    tape: &'a mut Tape,
+    searched: &'a mut [f64; 2],
+}
+
+/// Code every superblock row of every tile column of a frame, on `threads`
+/// threads: each takes the next row in the order rows are across the frame,
+/// and codes a superblock once the row above it in its column has coded the
+/// one above it. A row reads of the rows above only what they leave it, so
+/// the frame is the same on any number of threads.
+pub(super) fn code(threads: usize, frame: &Frame, contexts: &mut [Contexts], columns: &mut [Column]) {
+    let mut columns: Vec<_> = contexts.iter_mut().zip(columns).map(|(contexts, column)| contexts.jobs(column)).collect();
+    let mut queue = Vec::new();
+    for _ in 0..frame.geometry.sb_rows {
+        queue.extend(columns.iter_mut().map(|jobs| Mutex::new(jobs.next())));
+    }
+    drop(columns);
+    let (next, failed) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let work = || {
+        let _failed = Failed(&failed);
+        let mut scratch = Scratch::new();
+        while let Some(job) = queue.get(next.fetch_add(1, Ordering::Relaxed)) {
+            let job = job.lock().expect("a job taken whole").take().expect("a row for every job");
+            scratch = Tile::new(frame, job, scratch, &failed).code();
+        }
+    };
+    std::thread::scope(|scope| {
+        for _ in 1..threads.min(queue.len()) {
+            scope.spawn(work);
+        }
+        work();
+    });
+    for contexts in contexts {
+        contexts.searched = contexts.searched_rows.iter().fold([0.0; 2], |[c, s], row| [c + row[0], s + row[1]]);
+    }
+}
+
+/// Raises the flag it holds if its thread unwinds, so that the rows waiting
+/// on that thread's give up rather than wait for ever.
+struct Failed<'a>(&'a AtomicBool);
+
+impl Drop for Failed<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -362,23 +491,68 @@ fn eight(row: &[u8], x: usize) -> [u8; 8] {
     }
 }
 
-/// The coder of one tile of a frame.
-pub(super) struct Tile<'a> {
+/// What coding a superblock row works in and leaves nothing in that the
+/// next row reads, kept from row to row on a thread.
+struct Scratch {
+    moved: Vec<(Mv, [Moments; 64], u64)>,
+    levels: [Vec<i32>; 3],
+    eobs: [Vec<usize>; 3],
+    best_levels: Vec<i32>,
+    best_eobs: Vec<usize>,
+    patch: Vec<u8>,
+    planes: [Vec<u8>; 16],
+    predicted: Box<[u8; 64 * 64]>,
+    residual: Box<[i32; 1024]>,
+    coeffs: Box<[i32; 1024]>,
+    energy: Box<[u8; 1024]>,
+}
+
+impl Scratch {
+    fn new() -> Self {
+        Self {
+            moved: Vec::new(),
+            levels: std::array::from_fn(|_| vec![0; 64 * 64]),
+            eobs: std::array::from_fn(|_| Vec::with_capacity(256)),
+            best_levels: vec![0; 64 * 64],
+            best_eobs: Vec::with_capacity(256),
+            patch: Vec::new(),
+            planes: std::array::from_fn(|_| Vec::new()),
+            predicted: Box::new([0; 64 * 64]),
+            residual: Box::new([0; 1024]),
+            coeffs: Box::new([0; 1024]),
+            energy: Box::new([0; 1024]),
+        }
+    }
+}
+
+/// The coder of one superblock row of a tile column.
+struct Tile<'a> {
     geometry: &'a Geometry,
     mi_col_start: usize,
     mi_col_end: usize,
-    contexts: &'a mut Contexts,
+    /// The row's first row of 8×8s.
+    top: usize,
+    contexts: Job<'a>,
+    /// Per column of 8×8, and per plane per column of 4×4, of the column:
+    /// the partition context, and whether the transform block above had a
+    /// coefficient, read across a block's top edge.
+    above_partition: Vec<u8>,
+    above_nonzero: [Vec<u8>; 3],
+    /// The three rows of mode info above the row, and per plane the row of
+    /// pixels, as the row above left them.
+    above_mode_info: Vec<ModeInfo>,
+    above_pixels: [Vec<u8>; 3],
     left_partition: [u8; 8],
     /// Per plane, per row of 4×4 in the superblock row.
     left_nonzero: [[u8; 16]; 3],
-    /// The tile's column of the frame being coded.
-    recon: &'a mut Column,
     source: &'a Source<'a>,
     /// What an inter frame is coded against; none in a keyframe.
     previous: Option<Previous<'a>>,
     quantizer: &'a Quantizer,
     /// What tokens cost at the probabilities the frame starts from.
     costs: &'a tokens::Costs,
+    /// Whether a thread coding a row above has failed.
+    failed: &'a AtomicBool,
     /// The variance a square is split above, `SPLIT_VARIANCE` of the step.
     split_variance: i64,
     /// The superblock being coded, per 8×8 in raster order.
@@ -411,66 +585,122 @@ pub(super) struct Tile<'a> {
 }
 
 impl<'a> Tile<'a> {
-    /// The coder of the tile whose column of the frame being coded is
-    /// `recon`, as far as the frame reaches into it.
-    pub(super) fn new(
-        geometry: &'a Geometry,
-        contexts: &'a mut Contexts,
-        recon: &'a mut Column,
-        source: &'a Source<'a>,
-        previous: Option<Previous<'a>>,
-        quantizer: &'a Quantizer,
-        costs: &'a tokens::Costs,
-    ) -> Self {
-        let mi_col_start = recon.x / 8;
+    /// The coder of the superblock row `job`, working in `scratch`.
+    fn new(frame: &Frame<'a>, job: Job<'a>, scratch: Scratch, failed: &'a AtomicBool) -> Self {
+        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, planes, predicted, residual, coeffs, energy } = scratch;
+        moved.clear();
+        let mi_col_start = job.x / 8;
         Self {
-            geometry,
+            geometry: frame.geometry,
             mi_col_start,
-            mi_col_end: (mi_col_start + recon.stride / 8).min(geometry.mi_cols),
-            contexts,
+            mi_col_end: mi_col_start + job.width,
+            top: job.sb_row * 8,
+            above_partition: vec![0; job.sb_cols * 8],
+            above_nonzero: std::array::from_fn(|_| vec![0; job.sb_cols * 16]),
+            above_mode_info: vec![ModeInfo::default(); 3 * job.width],
+            above_pixels: std::array::from_fn(|_| vec![0; job.stride]),
+            contexts: job,
             left_partition: [0; 8],
             left_nonzero: [[0; 16]; 3],
-            recon,
-            source,
-            previous,
-            quantizer,
-            costs,
-            split_variance: i64::from(quantizer.ac_step()) / SPLIT_VARIANCE,
+            source: frame.source,
+            previous: frame.previous,
+            quantizer: frame.quantizer,
+            costs: frame.costs,
+            failed,
+            split_variance: i64::from(frame.quantizer.ac_step()) / SPLIT_VARIANCE,
             measures: [Measure::default(); 64],
-            moved: Vec::new(),
             searches: 0,
-            levels: std::array::from_fn(|_| vec![0; 64 * 64]),
-            eobs: std::array::from_fn(|_| Vec::with_capacity(256)),
-            best_levels: vec![0; 64 * 64],
-            best_eobs: Vec::with_capacity(256),
-            patch: Vec::new(),
-            planes: std::array::from_fn(|_| Vec::new()),
-            predicted: Box::new([0; 64 * 64]),
-            residual: Box::new([0; 1024]),
-            coeffs: Box::new([0; 1024]),
-            energy: Box::new([0; 1024]),
+            moved,
+            levels,
+            eobs,
+            best_levels,
+            best_eobs,
+            patch,
+            planes,
+            predicted,
+            residual,
+            coeffs,
+            energy,
         }
     }
 
-    /// Decide every superblock of the tile, its bools onto its contexts'
-    /// tape.
-    pub(super) fn code(mut self) {
-        for mi_row in (0..self.geometry.mi_rows).step_by(8) {
-            self.left_partition = [0; 8];
-            self.left_nonzero = [[0; 16]; 3];
-            for mi_col in (self.mi_col_start..self.mi_col_end).step_by(8) {
-                if !self.unchanged(mi_row, mi_col, SB_LOG2) {
-                    self.measure(mi_row, mi_col);
-                    self.moved.clear();
-                }
-                self.partition(mi_row, mi_col, SB_LOG2);
+    /// Decide every superblock of the row, its bools onto its tape, and give
+    /// back the scratch it worked in.
+    fn code(mut self) -> Scratch {
+        let mi_row = self.top;
+        for (sb_col, mi_col) in (self.mi_col_start..self.mi_col_end).step_by(8).enumerate() {
+            if mi_row > 0 {
+                self.take_edge(sb_col);
+            }
+            if !self.unchanged(mi_row, mi_col, SB_LOG2) {
+                self.measure(mi_row, mi_col);
+                self.moved.clear();
+            }
+            self.partition(mi_row, mi_col, SB_LOG2);
+            if mi_row + 8 < self.geometry.mi_rows {
+                self.leave_edge(sb_col);
             }
         }
+        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, planes, predicted, residual, coeffs, energy, .. } = self;
+        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, planes, predicted, residual, coeffs, energy }
     }
 
-    /// Where the tile keeps the mode info of the 8×8 at `(mi_row, mi_col)`.
+    /// Wait for the row above to code the superblock above superblock
+    /// `sb_col` of the row, and take what it leaves.
+    fn take_edge(&mut self, sb_col: usize) {
+        let edges = self.contexts.edges;
+        let cell = &edges[(self.top / 8 - 1) * self.contexts.sb_cols + sb_col];
+        let edge = loop {
+            if let Some(edge) = cell.get() {
+                break edge;
+            }
+            assert!(!self.failed.load(Ordering::Relaxed), "a row above failed");
+            std::thread::yield_now();
+        };
+        let (w, x) = (self.contexts.width, sb_col * 8);
+        let cols = (w - x).min(8);
+        self.above_partition[x..x + 8].copy_from_slice(&edge.partition);
+        for plane in 0..3 {
+            self.above_nonzero[plane][2 * x..2 * x + 16].copy_from_slice(&edge.nonzero[plane]);
+            self.above_pixels[plane][8 * x..8 * x + 64].copy_from_slice(&edge.pixels[plane]);
+        }
+        for (r, row) in edge.mode_info.iter().enumerate() {
+            self.above_mode_info[r * w + x..][..cols].copy_from_slice(&row[..cols]);
+        }
+    }
+
+    /// Leave the row below what superblock `sb_col` of the row, coded,
+    /// leaves it.
+    fn leave_edge(&self, sb_col: usize) {
+        let (w, x, stride) = (self.contexts.width, sb_col * 8, self.contexts.stride);
+        let cols = (w - x).min(8);
+        let mut edge = Edge {
+            partition: self.above_partition[x..x + 8].try_into().expect("a superblock's"),
+            nonzero: std::array::from_fn(|plane| self.above_nonzero[plane][2 * x..2 * x + 16].try_into().expect("a superblock's")),
+            mode_info: [[ModeInfo::default(); 8]; 3],
+            pixels: std::array::from_fn(|plane| self.contexts.planes[plane][63 * stride + 8 * x..][..64].try_into().expect("a superblock's")),
+        };
+        for (r, row) in edge.mode_info.iter_mut().enumerate() {
+            row[..cols].copy_from_slice(&self.contexts.mode_info[(5 + r) * w + x..][..cols]);
+        }
+        let left = self.contexts.edges[self.top / 8 * self.contexts.sb_cols + sb_col].set(edge);
+        assert!(left.is_ok(), "a superblock's edge left once");
+    }
+
+    /// The mode info of the 8×8 at `(mi_row, mi_col)` of the tile, coded
+    /// already: in the row, or in the three rows above it, as they left it.
+    fn mode_info(&self, mi_row: usize, mi_col: usize) -> ModeInfo {
+        let (w, col) = (self.contexts.width, mi_col - self.mi_col_start);
+        match mi_row.checked_sub(self.top) {
+            Some(r) => self.contexts.mode_info[r * w + col],
+            None => self.above_mode_info[(mi_row + 3 - self.top) * w + col],
+        }
+    }
+
+    /// Where the tile keeps the mode info of the 8×8 at `(mi_row, mi_col)`
+    /// of the frame before.
     fn at(&self, mi_row: usize, mi_col: usize) -> usize {
-        mi_row * (self.mi_col_end - self.mi_col_start) + mi_col - self.mi_col_start
+        mi_row * self.contexts.width + mi_col - self.mi_col_start
     }
 
     /// The 8×8s of the square of `1 << n` at `(mi_row, mi_col)` that the
@@ -704,7 +934,7 @@ impl<'a> Tile<'a> {
                 let bw = 1 << n;
                 let ctx = partition_context_of(n);
                 let x = mi_col - self.mi_col_start;
-                self.contexts.above_partition[x..x + bw].fill(ctx);
+                self.above_partition[x..x + bw].fill(ctx);
                 self.left_partition[mi_row & 7..(mi_row & 7) + bw].fill(ctx);
             }
         }
@@ -712,7 +942,7 @@ impl<'a> Tile<'a> {
 
     /// libvpx's `partition_plane_context`.
     fn partition_context(&self, mi_row: usize, mi_col: usize, n: u32) -> usize {
-        let above = (self.contexts.above_partition[mi_col - self.mi_col_start] >> n) & 1;
+        let above = (self.above_partition[mi_col - self.mi_col_start] >> n) & 1;
         let left = (self.left_partition[mi_row & 7] >> n) & 1;
         usize::from(left * 2 + above) + n as usize * 4
     }
@@ -726,7 +956,7 @@ impl<'a> Tile<'a> {
         // BLOCK_8X8 is the fourth size, and each square size the third after.
         MV_REF_BLOCKS[3 + 3 * n as usize][..count].iter().filter_map(move |&[dr, dc]| {
             let (r, c) = (mi_row.checked_add_signed(dr.into())?, mi_col.checked_add_signed(dc.into())?);
-            (r < g.mi_rows && (self.mi_col_start..self.mi_col_end).contains(&c)).then(|| self.contexts.mode_info[self.at(r, c)])
+            (r < g.mi_rows && (self.mi_col_start..self.mi_col_end).contains(&c)).then(|| self.mode_info(r, c))
         })
     }
 
@@ -874,8 +1104,8 @@ impl<'a> Tile<'a> {
             Mode::Inter(mv) => Some(self.inter_mode(mi_row, mi_col, n, mv)),
             Mode::Unchanged => Some(self.inter_mode(mi_row, mi_col, n, Mv::ZERO)),
         };
-        let above = (mi_row > 0).then(|| self.contexts.mode_info[self.at(mi_row - 1, mi_col)]);
-        let left = (mi_col > self.mi_col_start).then(|| self.contexts.mode_info[self.at(mi_row, mi_col - 1)]);
+        let above = (mi_row > 0).then(|| self.mode_info(mi_row - 1, mi_col));
+        let left = (mi_col > self.mi_col_start).then(|| self.mode_info(mi_row, mi_col - 1));
         let skips = usize::from(above.is_some_and(|m| m.skip)) + usize::from(left.is_some_and(|m| m.skip));
         let bw = 1 << n;
         self.contexts.tape.put(skip, skip_slot(skips));
@@ -920,16 +1150,16 @@ impl<'a> Tile<'a> {
                 self.contexts.tape.write(false, UV_MODE_PROBS[DC_PRED][0]);
             }
         }
+        let (w, col) = (self.contexts.width, mi_col - self.mi_col_start);
         for row in mi_row..(mi_row + bw).min(g.mi_rows) {
-            let at = self.at(row, mi_col);
-            self.contexts.mode_info[at..][..bw.min(self.mi_col_end - mi_col)].fill(ModeInfo { skip, inter, tx, n });
+            self.contexts.mode_info[(row - self.top) * w + col..][..bw.min(w - col)].fill(ModeInfo { skip, inter, tx, n });
         }
         if skip {
             // A skipped block leaves no coefficient above or left of the
             // blocks after it, over its whole size.
             let (x4, y4) = ((mi_col - self.mi_col_start) * 2, (mi_row * 2) & 15);
             for plane in 0..3 {
-                self.contexts.above_nonzero[plane][x4..x4 + 2 * bw].fill(0);
+                self.above_nonzero[plane][x4..x4 + 2 * bw].fill(0);
                 self.left_nonzero[plane][y4..y4 + 2 * bw].fill(0);
             }
         } else {
@@ -1087,10 +1317,10 @@ impl<'a> Tile<'a> {
         let (px, py) = (mi_col * 8, mi_row * 8);
         let wide = size.min(g.mi_cols * 8 - px);
         let high = size.min(g.mi_rows * 8 - py);
-        let (stride, x) = (self.recon.stride, px - self.recon.x);
+        let (stride, x, y) = (self.contexts.stride, px - self.contexts.x, py - self.top * 8);
         let (rx, ry) = (px as isize + dx, py as isize + dy);
-        for (plane, recon) in self.recon.planes.iter_mut().enumerate() {
-            let out = &mut recon[py * stride + x..];
+        for (plane, recon) in self.contexts.planes.iter_mut().enumerate() {
+            let out = &mut recon[y * stride + x..];
             if fraction == (0, 0) {
                 let (block, from) = reference.block(plane, (rx, ry), (wide, high), picture, &mut self.patch);
                 for r in 0..high {
@@ -1109,15 +1339,15 @@ impl<'a> Tile<'a> {
     /// into `coeffs`. Past the picture's edge the source repeats its last
     /// pixel.
     fn transform(&mut self, plane: usize, px: usize, py: usize, tx: usize) {
-        let (stride, lx) = (self.recon.stride, px - self.recon.x);
-        let (src, recon) = (self.source, &self.recon.planes[plane]);
+        let (stride, lx, ly) = (self.contexts.stride, px - self.contexts.x, py - self.top * 8);
+        let (src, recon) = (self.source, &self.contexts.planes[plane]);
         let (residual, area) = (&mut self.residual, tx * tx);
         if px + tx <= src.width && py + tx <= src.height {
-            pixels::subtract(tx, &src.planes[plane][py * src.stride + px..], src.stride, &recon[py * stride + lx..], stride, &mut residual[..area]);
+            pixels::subtract(tx, &src.planes[plane][py * src.stride + px..], src.stride, &recon[ly * stride + lx..], stride, &mut residual[..area]);
         } else {
             for r in 0..tx {
                 let srow = src.row(plane, py + r);
-                let prow = &recon[(py + r) * stride + lx..][..tx];
+                let prow = &recon[(ly + r) * stride + lx..][..tx];
                 for c in 0..tx {
                     residual[r * tx + c] = i32::from(srow[(px + c).min(src.width - 1)]) - i32::from(prow[c]);
                 }
@@ -1134,7 +1364,7 @@ impl<'a> Tile<'a> {
         let g = self.geometry;
         let (scan, _) = tokens::scan(tx);
         let (tx_log2, tx) = (tx, 4 << tx);
-        let (stride, x0) = (self.recon.stride, self.recon.x);
+        let (stride, x0, y0) = (self.contexts.stride, self.contexts.x, self.top * 8);
         let area = tx * tx;
         if mode == Mode::Unchanged {
             self.predict_inter(mi_row, mi_col, n, Mv::ZERO);
@@ -1149,12 +1379,17 @@ impl<'a> Tile<'a> {
             }
             for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx_log2).1.enumerate() {
                 let (px, py) = (mi_col * 8 + x, mi_row * 8 + y);
-                // Where it is in the tile's column.
-                let lx = px - x0;
+                // Where it is in the row's pixels.
+                let (lx, ly) = (px - x0, py - y0);
                 let eob = if fresh {
                     if mode == Mode::Intra {
-                        let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8, above: y > 0 || mi_row > 0, left: x > 0 || mi_col > self.mi_col_start };
-                        predict::dc(&mut self.recon.planes[plane], stride, lx, py, tx, &edges);
+                        let edges = Edges { width: g.mi_cols * 8 - x0, height: g.mi_rows * 8 - py, left: x > 0 || mi_col > self.mi_col_start };
+                        let (before, rows) = self.contexts.planes[plane].split_at_mut(ly * stride);
+                        let above = match ly {
+                            0 => (mi_row > 0).then_some(&self.above_pixels[plane][..]),
+                            ly => Some(&before[(ly - 1) * stride..]),
+                        };
+                        predict::dc(above, rows, stride, lx, tx, &edges);
                     }
                     self.transform(plane, px, py, tx);
                     let levels = &mut self.levels[plane][i * area..][..area];
@@ -1167,7 +1402,7 @@ impl<'a> Tile<'a> {
                 if eob > 0 {
                     let levels = &self.levels[plane][i * area..][..area];
                     self.quantizer.dequantize(tx, levels, scan, eob, &mut self.coeffs[..area]);
-                    transform::inverse_add(tx, &self.coeffs[..area], eob, &mut self.recon.planes[plane][py * stride + lx..], stride);
+                    transform::inverse_add(tx, &self.coeffs[..area], eob, &mut self.contexts.planes[plane][ly * stride + lx..], stride);
                 }
             }
         }
@@ -1192,15 +1427,15 @@ impl<'a> Tile<'a> {
                 let (col4, row4) = (x / 4, y / 4);
                 let ax = (mi_col - self.mi_col_start) * 2 + col4;
                 let ly = ((mi_row * 2) & 15) + row4;
-                let above = self.contexts.above_nonzero[plane][ax..ax + n4].iter().any(|&a| a != 0);
+                let above = self.above_nonzero[plane][ax..ax + n4].iter().any(|&a| a != 0);
                 let left = self.left_nonzero[plane][ly..ly + n4].iter().any(|&l| l != 0);
                 let eob = self.eobs[plane][i];
                 let kind = tokens::Kind { tx: tx_log2, chroma: plane > 0, inter };
                 let ctx = usize::from(above) + usize::from(left);
-                tokens::write(&mut self.contexts.tape, kind, ctx, &self.levels[plane][i * area..][..area], eob, &mut self.energy);
+                tokens::write(self.contexts.tape, kind, ctx, &self.levels[plane][i * area..][..area], eob, &mut self.energy);
                 let coded = u8::from(eob > 0);
                 for k in 0..n4 {
-                    self.contexts.above_nonzero[plane][ax + k] = if col4 + k < wide4 { coded } else { 0 };
+                    self.above_nonzero[plane][ax + k] = if col4 + k < wide4 { coded } else { 0 };
                     self.left_nonzero[plane][ly + k] = if row4 + k < high4 { coded } else { 0 };
                 }
             }

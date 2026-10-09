@@ -70,7 +70,7 @@ row's second column is built only if the first fails the gate on a capture.
 | Transforms | A size per block, which it signals: an inter block's the one whose luma costs least in error and bits, quantized at each; an intra block's 4×4 where it varies, otherwise the largest up to 16×16 | — |
 | Loop filter | libvpx's filter at the level its real-time encoder takes from the quantizer, an intra block's one more by the deltas a decoder starts with; none in four tile columns, where the libvpx encoder leaves it out for a decoder's threads | — |
 | Probabilities | The coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools, and kept for the next; no backward adaptation, which libvpx's real-time encoder does not use either | Updates to the other probabilities |
-| Tiles and threads | Tile columns by the width rule the crate has now, one thread per tile column; the source compared and hashed in a band of rows per thread | A wavefront over superblock rows |
+| Tiles and threads | Tile columns by the width rule the crate has now, their superblock rows a wavefront over the threads; the source compared and hashed in a band of rows per thread | — |
 | Segmentation, resizing, altref, lossless, high bit depth, error-resilient mode | Never | — |
 
 ## Where the speed should come from
@@ -84,8 +84,10 @@ row's second column is built only if the first fails the gate on a capture.
   built for, refusing a build without them (amd64 needs
   `-C target-feature=+avx2`), each with a scalar reference it is tested
   against: block difference, forward and inverse transforms, quantization.
-- **Threading:** one thread per tile column, and the comparison with the
-  previous source and the motion search's hashing in a band of rows per
+- **Threading:** the superblock rows of every tile column as a wavefront
+  over the threads, each a superblock behind the row above it, which leaves
+  it what a block below reads across its top edge; and the comparison with
+  the previous source and the motion search's hashing in a band of rows per
   thread.
 
 ## Phases
@@ -131,6 +133,12 @@ row's second column is built only if the first fails the gate on a capture.
    moves in them never arrives exactly: each changed superblock's row and
    column sums matched against the frame before, 64 pixels each way, done.
    It cut desktop's bytes 23% and proxmox-hidpi's 9%, for 5–9% more time.
+   On the eighteen samples, coded in main's tile columns and without the
+   loop filter in four: each tile column's superblock rows coded as a
+   wavefront, done, as vp9-wasm reconstructs and libvpx's row-based
+   multithreading codes. It took the quiet samples' median time on the Mac
+   from 1.07–1.64× libvpx's to 0.84–1.01×, and the busy samples' from
+   0.75–1.19× to 0.48–0.73×.
 6. **Switch over.** The libvpx encoder, `Chroma::Subsampled` and `Speed`
    removed behind the same API, a release tagged, the pins bumped in wlshare
    and remotex as they drop 4:2:0, and `AGENTS.md` reworded: the crate then
