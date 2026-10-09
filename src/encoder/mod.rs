@@ -33,7 +33,7 @@ mod tile;
 mod tokens;
 mod transform;
 
-use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, quality_to_q, tile_columns_log2};
+use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, loop_filtered, quality_to_q, tile_columns_log2};
 
 /// The share of what the blocks it refines would cost that the search
 /// between pixels has to save, as `tile::laplacian` models it, for it to
@@ -208,6 +208,8 @@ impl Reconstruction {
 pub(crate) struct Encoder {
     geometry: Geometry,
     tile_cols_log2: u32,
+    /// Whether frames are loop filtered: where the libvpx encoder's are.
+    filtered: bool,
     /// The most threads the tile columns are coded on.
     threads: usize,
     quality: u8,
@@ -257,6 +259,7 @@ impl Encoder {
         let pixels = usize::from(width) * usize::from(height);
         Ok(Self {
             tile_cols_log2,
+            filtered: loop_filtered(Chroma::Full, width, threads),
             threads,
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
             contexts: (0..1 << tile_cols_log2).map(|i| tile::Contexts::new(&geometry, geometry.tile_cols(i, tile_cols_log2))).collect(),
@@ -333,7 +336,7 @@ impl Encoder {
         if came > 0.0 {
             self.search_every = if saved < came * SEARCH_PAYS { SEARCH_PROBE } else { 1 };
         }
-        let filter_level = loopfilter::level(quantizer.ac_step(), keyframe);
+        let filter_level = if self.filtered { loopfilter::level(quantizer.ac_step(), keyframe) } else { 0 };
         let table = probs.table();
         let tiles = on_threads(self.threads, self.contexts.iter(), |contexts| contexts.tape.code(&table));
         let uncompressed = header::Uncompressed {
@@ -586,11 +589,13 @@ mod tests {
         encoder: Encoder,
         decoder: Decoder,
         frames: usize,
+        /// The frame coded last.
+        last: Vec<u8>,
     }
 
     impl Stream {
         fn new(w: u16, h: u16, quality: u8, threads: usize) -> Self {
-            Self { encoder: Encoder::new(w, h, quality, threads).expect("an encoder"), decoder: Decoder::new(1).expect("a decoder"), frames: 0 }
+            Self { encoder: Encoder::new(w, h, quality, threads).expect("an encoder"), decoder: Decoder::new(1).expect("a decoder"), frames: 0, last: Vec::new() }
         }
 
         /// Code `picture`, decode the frame, hold the decode to the
@@ -620,7 +625,9 @@ mod tests {
                     }
                 }
             }
-            (frame.len(), keyframe, mse(picture, &decoded))
+            let mse = mse(picture, &decoded);
+            self.last = frame;
+            (self.last.len(), keyframe, mse)
         }
     }
 
@@ -665,6 +672,20 @@ mod tests {
         // of blocks.
         assert!(bytes < 120, "{bytes} bytes");
         assert!(mse < 1.0, "squared error {mse}");
+    }
+
+    /// Where the libvpx encoder leaves the loop filter out, of 4:4:4 in four
+    /// tile columns, so does this one, and every frame's header says so.
+    #[test]
+    fn the_loop_filter_is_left_out_where_libvpx_leaves_it_out() {
+        for (w, threads, filtered) in [(2047, 4, true), (2048, 4, false), (2048, 2, true)] {
+            let rgb = desktop_rgb(w, 64);
+            let mut stream = Stream::new(w, 64, 50, threads);
+            for (n, rgb) in [scroll(&rgb, w, 5), rgb].iter().enumerate() {
+                stream.frame(&picture(w, 64, rgb), false);
+                assert_eq!(crate::tests::filter_level(&stream.last) > 0, filtered, "frame {n} of {w} wide on {threads} threads");
+            }
+        }
     }
 
     #[test]

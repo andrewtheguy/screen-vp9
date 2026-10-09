@@ -68,7 +68,7 @@ row's second column is built only if the first fails the gate on a capture.
 | Intra modes | DC only, which keeps every transform a DCT | V, H and TM, which bring ADST with them |
 | Inter modes | Zero, nearest, near and new motion vectors to a quarter pixel, at EIGHTTAP, the frame's one filter; the skip flag for a block that did not change | Eighth-pixel vectors, a filter per block |
 | Transforms | A size per block, which it signals: an inter block's the one whose luma costs least in error and bits, quantized at each; an intra block's 4×4 where it varies, otherwise the largest up to 16×16 | — |
-| Loop filter | libvpx's filter at the level its real-time encoder takes from the quantizer, an intra block's one more by the deltas a decoder starts with | — |
+| Loop filter | libvpx's filter at the level its real-time encoder takes from the quantizer, an intra block's one more by the deltas a decoder starts with; none in four tile columns, where the libvpx encoder leaves it out for a decoder's threads | — |
 | Probabilities | The coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools, and kept for the next; no backward adaptation, which libvpx's real-time encoder does not use either | Updates to the other probabilities |
 | Tiles and threads | Tile columns by the width rule the crate has now, one thread per tile column; the source compared and hashed in a band of rows per thread | A wavefront over superblock rows |
 | Segmentation, resizing, altref, lossless, high bit depth, error-resilient mode | Never | — |
@@ -145,7 +145,8 @@ remotex gateway capture of 2026-10-08, decoded by libvpx and coded again by
 this crate's libvpx encoder at quality 90, starting with a keyframe: a quiet
 one from each capture's start, where little of the desktop moves, and a busy
 one from the 300 frames of it that took the most bytes. Their names carry the
-tile columns and loop filter that encode used, which do not bear on this one.
+tile columns and loop filter that encode used, which both encoders use on them
+here too.
 
 | Samples | From the gateway's session with | Size |
 |---|---|---|

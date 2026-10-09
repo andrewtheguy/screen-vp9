@@ -1611,7 +1611,7 @@ mod tests {
     /// The loop filter level a frame's uncompressed header carries (VP9
     /// bitstream §6.2), for a frame of this crate's encoder: eight bits, shown,
     /// and after a keyframe predicted from frames of its own size.
-    fn filter_level(frame: &[u8]) -> u32 {
+    pub(crate) fn filter_level(frame: &[u8]) -> u32 {
         let mut bits = frame.iter().flat_map(|byte| (0..8).rev().map(move |i| u32::from(byte >> i & 1)));
         let mut read = |n: usize| (0..n).fold(0, |value, _| value << 1 | bits.next().expect("a whole header"));
         assert_eq!(read(2), 2, "frame_marker");
