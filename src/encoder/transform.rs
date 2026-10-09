@@ -129,9 +129,11 @@ fn fdct16<V: Lanes>(i: &[V; 16], o: &mut [V; 16]) {
 }
 
 // Everything from a kernel's entry down to the `Lanes` it runs on is called
-// directly and inlined, with no closure or function value between: AVX2's
-// intrinsics are inlined only into code compiled for AVX2, which is the
-// entry alone, so any function left out of line would call each of them.
+// directly and inlined, with no closure or function value between: out of
+// line, a 4×4 takes twice the time. Except in a debug build, where each
+// transform of a size and type, `inverse_n` or `forward_passes`, is a
+// function of its own: unoptimized, each inlined copy keeps stack of its
+// own, and `inverse_add` took 2.2 MiB in AVX2, more than a thread has.
 
 /// A one-dimensional transform of `N` points.
 trait OneD<const N: usize> {
@@ -330,7 +332,7 @@ fn forward_32<V: Lanes>(residual: &[i32], out: &mut [i32], scales: [Scale; 3]) {
 }
 
 /// `forward_n` of the one-dimensional transforms themselves.
-#[inline(always)]
+#[cfg_attr(not(debug_assertions), inline(always))]
 fn forward_passes<V: Lanes, C: OneD<N>, R: OneD<N>, const N: usize, const AREA: usize>(residual: &[i32], out: &mut [i32], [before, between, after]: [Scale; 3]) {
     let (mut a, mut b) = ([0; AREA], [0; AREA]);
     b.copy_from_slice(&residual[..AREA]);
@@ -408,7 +410,7 @@ fn inverse_add_in<V: Lanes>(n: usize, tx_type: TxType, coeffs: &[i32], eob: usiz
 
 /// The `N`×`N` inverse transform of `AREA` coefficients, `R` along the
 /// rows and then `C` down the columns, added to `dst`.
-#[inline(always)]
+#[cfg_attr(not(debug_assertions), inline(always))]
 fn inverse_n<V: Lanes, C: OneD<N>, R: OneD<N>, const N: usize, const AREA: usize>(shift: u32, coeffs: &[i32], dst: &mut [u8], stride: usize) {
     let (mut a, mut b) = ([0; AREA], [0; AREA]);
     // The rows, as columns; a row of zeros transforms to zeros.
