@@ -220,11 +220,13 @@ impl Search {
         let mi_cols = shape.mi_cols;
         let changed = |r, c| shape.changed(unchanged, r, c);
         // An 8×8's anchors are taken again when a window starting in it
-        // reaches a changed pixel: one in it, or right of it, or below.
+        // reaches a changed pixel: one in it, or right of it, or below. A
+        // row of 8×8s with no change in it or the row below has none.
+        let row_changed: Vec<bool> = (0..shape.mi_rows).map(|r| unchanged.is_none_or(|u| u[r * mi_cols..][..mi_cols].contains(&false))).collect();
         let stale: Vec<bool> = (0..shape.mi_rows * mi_cols)
             .map(|i| {
                 let (r, c) = (i / mi_cols, i % mi_cols);
-                changed(r, c) || changed(r, c + 1) || changed(r + 1, c) || changed(r + 1, c + 1)
+                (row_changed[r] || row_changed.get(r + 1).is_some_and(|&n| n)) && (changed(r, c) || changed(r, c + 1) || changed(r + 1, c) || changed(r + 1, c + 1))
             })
             .collect();
         // The tables are brought to the source coded last, which the

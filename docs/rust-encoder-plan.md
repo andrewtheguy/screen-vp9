@@ -484,10 +484,29 @@ The replan, from here. Each phase is measured on the captures of
       blocks this frame codes written in place, the pixels they overwrite
       kept aside for the blocks of this frame that read them as reference,
       a copy the size of the rectangles. A keyframe or a whole frame writes
-      everything.
+      everything. **Done**, the other way about: the reference stays whole
+      through the frame, so nothing is kept aside; the frame writes into
+      its reconstruction only the superblocks it touches (one with a named
+      8×8, or a neighbour of one, which intra prediction or the loop filter
+      reaches into), and once filtered writes those back into the
+      reference, a superblock row to a thread. A frame that touches every
+      superblock swaps the two, as before.
    5. **The comparison, the `coded_at` scan, the tapes and the counts over
       the named 8×8s only**, in the bands and rows that hold them; a
       superblock outside the rectangles costs its symbols and no scratch.
+      **Done** as far as the profile asked: a tape's token counts are
+      cleared in place and summed only where it recorded a token, the
+      mode info is not cleared between frames (every 8×8's is written
+      before it is read), and the index's stale scan skips rows with no
+      change in them or below. With 4 and 5 together, `terminal`'s frames
+      of a line of text went from 0.80–0.95× libvpx's time to 0.25–0.51×:
+      0.28 ms at 1280×800 and 1.00 ms at 3840×2160 on four threads, the
+      plan's latency line met at the median. Bytes unchanged. What the 4K
+      frame still spends: half in the tile coder over 2040 superblocks of
+      which a dozen are coded (partition, segment, mode info and nonzero
+      contexts written per superblock), a quarter in the index (the stale
+      scan and a job per 8×8 row), a tenth coding the tapes on the one
+      tile column's thread.
 8. **Quality back to libvpx's at the same dial.** Measured by the picture
    line of the gate, before any more speed on whole frames, since every byte
    measured against a coarser picture is a false byte. Diagnosed on

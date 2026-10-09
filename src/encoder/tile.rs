@@ -193,6 +193,10 @@ impl<'a> Source<'a> {
 pub(super) struct Previous<'a> {
     pub(super) reference: &'a Reconstruction,
     pub(super) unchanged: &'a [bool],
+    /// Per superblock of the frame, whether the frame touches it: it or a
+    /// neighbour of it may be coded. One it does not touch is left as it
+    /// is, in the reference, and not written to the reconstruction.
+    pub(super) touched: &'a [bool],
     pub(super) vectors: &'a [[Mv; motion::VECTORS]],
     /// Of the blocks the search between pixels could refine, the one in
     /// this many it does.
@@ -354,8 +358,9 @@ impl Contexts {
     /// as the frame before's. `last_inter` says whether that frame was an
     /// inter frame.
     pub(super) fn start(&mut self, last_inter: bool) {
+        // Every 8×8's mode info is written as the frame is coded, before
+        // anything reads it, so none is cleared.
         std::mem::swap(&mut self.mode_info, &mut self.last_mode_info);
-        self.mode_info.fill(ModeInfo::default());
         self.use_last = last_inter;
         self.searched = [0.0; 2];
         self.searched_rows.fill([0.0; 2]);
@@ -1563,7 +1568,12 @@ impl<'a> Tile<'a> {
         let (stride, x0, y0) = (self.contexts.stride, self.contexts.x, self.top * 8);
         let area = tx * tx;
         if mode == Mode::Unchanged {
-            self.predict_inter(mi_row, mi_col, n, Mv::ZERO);
+            // A superblock the frame does not touch is the reference's where
+            // it is, and nothing of this frame reads it here.
+            let previous = self.previous.as_ref().expect("an inter frame");
+            if previous.touched[(mi_row >> SB_LOG2) * g.sb_cols + (mi_col >> SB_LOG2)] {
+                self.predict_inter(mi_row, mi_col, n, Mv::ZERO);
+            }
             self.nothing(mi_row, mi_col, n, tx_log2);
             return;
         }

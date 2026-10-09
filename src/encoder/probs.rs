@@ -91,19 +91,34 @@ pub(super) struct SegmentCounts {
 /// and its segments.
 pub(super) struct Counts {
     pub(super) tokens: Box<[[u32; TOKENS + 1]; CONTEXTS]>,
+    /// Whether any token was counted, so that a tape of none is skipped.
+    pub(super) any_tokens: bool,
     pub(super) bools: [[u32; 2]; MODE_SLOTS],
     pub(super) segments: SegmentCounts,
 }
 
 impl Counts {
     pub(super) fn new() -> Self {
-        Self { tokens: Box::new([[0; TOKENS + 1]; CONTEXTS]), bools: [[0; 2]; MODE_SLOTS], segments: SegmentCounts::default() }
+        Self { tokens: Box::new([[0; TOKENS + 1]; CONTEXTS]), any_tokens: false, bools: [[0; 2]; MODE_SLOTS], segments: SegmentCounts::default() }
+    }
+
+    /// Back to nothing counted, in place.
+    pub(super) fn clear(&mut self) {
+        if self.any_tokens {
+            self.tokens.fill([0; TOKENS + 1]);
+            self.any_tokens = false;
+        }
+        self.bools = [[0; 2]; MODE_SLOTS];
+        self.segments = SegmentCounts::default();
     }
 
     /// Add `other`'s counts to these.
     pub(super) fn add(&mut self, other: &Self) {
-        for (mine, theirs) in self.tokens.iter_mut().flatten().zip(other.tokens.iter().flatten()) {
-            *mine += theirs;
+        if other.any_tokens {
+            self.any_tokens = true;
+            for (mine, theirs) in self.tokens.iter_mut().flatten().zip(other.tokens.iter().flatten()) {
+                *mine += theirs;
+            }
         }
         for (mine, theirs) in self.bools.iter_mut().flatten().zip(other.bools.iter().flatten()) {
             *mine += theirs;

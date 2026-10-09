@@ -262,6 +262,13 @@ pub(crate) struct Encoder {
     /// is in a rectangle the frame was told the picture changed in, or the
     /// frame was told nothing.
     named: Vec<bool>,
+    /// Per superblock, whether the frame touches it: one of its 8×8s is
+    /// named, or one of a neighbour's, whose intra prediction or loop filter
+    /// reaches into it. The rest the frame leaves in the reference as they
+    /// are, and the ones it touches it writes back once coded and filtered;
+    /// a frame that touches every superblock keeps its reconstruction as
+    /// the reference instead.
+    touched: Vec<bool>,
     /// Per 8×8 of the frame, the dial it was last coded at.
     coded_at: Vec<u8>,
     search: motion::Search,
@@ -308,6 +315,7 @@ impl Encoder {
             previous: std::array::from_fn(|_| vec![0; pixels]),
             unchanged: vec![false; geometry.mi_rows * geometry.mi_cols],
             named: vec![true; geometry.mi_rows * geometry.mi_cols],
+            touched: vec![true; geometry.sb_rows * geometry.sb_cols],
             coded_at: vec![quality; geometry.mi_rows * geometry.mi_cols],
             search: motion::Search::new(&geometry, threads),
             started: false,
@@ -369,7 +377,7 @@ impl Encoder {
         let q_index = tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize];
         let quantizer = quantize::Quantizer::new(q_index);
         let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
-        let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, vectors: &vectors, search_every: self.search_every });
+        let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, touched: &self.touched, vectors: &vectors, search_every: self.search_every });
         // A keyframe starts a decoder's probabilities over from the defaults;
         // an inter frame takes the ones the frame before left.
         let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
@@ -420,7 +428,11 @@ impl Encoder {
         if filter_level > 0 {
             self.filter(filter_level);
         }
-        std::mem::swap(&mut self.recon, &mut self.reference);
+        if self.touched.contains(&false) {
+            self.merge();
+        } else {
+            std::mem::swap(&mut self.recon, &mut self.reference);
+        }
         self.probs = probs;
         for (at, _) in self.coded_at.iter_mut().zip(&self.named).filter(|(_, named)| **named) {
             *at = self.quality;
@@ -438,10 +450,12 @@ impl Encoder {
     fn name(&mut self, changed: Option<&[Rect]>) {
         let Some(rects) = changed else {
             self.named.fill(true);
+            self.touched.fill(true);
             return;
         };
         let g = &self.geometry;
         self.named.fill(false);
+        self.touched.fill(false);
         for rect in rects {
             let (x, y) = (usize::from(rect.x), usize::from(rect.y));
             let right = (x + usize::from(rect.width)).min(usize::from(g.width));
@@ -452,7 +466,46 @@ impl Encoder {
             for row in y / 8..=(bottom - 1) / 8 {
                 self.named[row * g.mi_cols + x / 8..=row * g.mi_cols + (right - 1) / 8].fill(true);
             }
+            // The superblocks the rectangle lies in, and the ring around
+            // them.
+            let (first_row, last_row) = ((y / 64).saturating_sub(1), ((bottom - 1) / 64 + 1).min(g.sb_rows - 1));
+            let (first_col, last_col) = ((x / 64).saturating_sub(1), ((right - 1) / 64 + 1).min(g.sb_cols - 1));
+            for row in first_row..=last_row {
+                self.touched[row * g.sb_cols + first_col..=row * g.sb_cols + last_col].fill(true);
+            }
         }
+    }
+
+    /// Write the superblocks the frame touched from its reconstruction, coded
+    /// and filtered, into the reference, a superblock row to a thread.
+    fn merge(&mut self) {
+        let Self { geometry: g, pool, threads, recon, reference, touched, .. } = self;
+        // Per superblock row, per tile column and plane: the row's pixels in
+        // the reconstruction and in the reference, the column's first pixel
+        // column of the frame and its stride.
+        type Strip<'a> = (&'a [u8], &'a mut [u8], usize, usize);
+        let mut rows: Vec<Vec<Strip<'_>>> = (0..g.sb_rows).map(|_| Vec::new()).collect();
+        for (from, to) in recon.columns.iter().zip(&mut reference.columns) {
+            let (x, stride) = (from.x, from.stride);
+            for (from, to) in from.planes.iter().zip(&mut to.planes) {
+                for (row, (f, t)) in from.chunks(64 * stride).zip(to.chunks_mut(64 * stride)).enumerate() {
+                    rows[row].push((f, t, x, stride));
+                }
+            }
+        }
+        on_threads(pool, *threads, rows.into_iter().enumerate(), |(sb_row, planes)| {
+            for (from, to, x, stride) in planes {
+                for sb_col in x / 64..((x + stride) / 64).min(g.sb_cols) {
+                    if !touched[sb_row * g.sb_cols + sb_col] {
+                        continue;
+                    }
+                    let at = sb_col * 64 - x;
+                    for r in 0..64 {
+                        to[r * stride + at..][..64].copy_from_slice(&from[r * stride + at..][..64]);
+                    }
+                }
+            }
+        });
     }
 
     /// Run the loop filter at `level` over the frame just coded, as a
@@ -1198,6 +1251,33 @@ mod tests {
         let bytes = step(&rgb, Some(&[]), [(first, GREY), (second, [40, 40, 220]), (third, [40, 180, 40])]);
         assert!(bytes < 40, "a frame told of no change took {bytes} bytes");
         step(&rgb, Some(&[third]), [(first, GREY), (second, [40, 40, 220]), (third, GREY)]);
+    }
+
+    /// Frames told where the picture changed, in two tile columns: each
+    /// writes back what it touched and leaves the rest, through edits in
+    /// each column, an edit over the column boundary, an edit where nothing
+    /// was touched before, and then a dial change that codes everything,
+    /// every frame decoding to the encoder's own picture.
+    #[test]
+    fn frames_told_where_they_changed_keep_one_picture_across_tile_columns() {
+        let (w, h) = (1500u16, 200u16);
+        let mut stream = Stream::new(w, h, 70, 4);
+        assert_eq!(stream.encoder.tile_cols_log2, 1);
+        let mut rgb = desktop_rgb(w, h);
+        stream.frame(&picture(w, h, &rgb), false);
+        let edits = [(100, 20, 50, 30), (1200, 100, 60, 40), (700, 60, 120, 20), (1400, 150, 90, 45), (40, 150, 30, 30), (0, 0, 1500, 8)];
+        for (i, &(x, y, rw, rh)) in edits.iter().enumerate() {
+            rgb = edit(rgb, w, (x, y, rw, rh), 10 + i as u32);
+            let rect = Rect { x: x as u16, y: y as u16, width: rw as u16, height: rh as u16 };
+            let (bytes, keyframe, mse) = stream.told(&picture(w, h, &rgb), false, Some(&[rect]));
+            assert!(!keyframe && mse < 30.0, "edit {i}: {bytes} bytes, squared error {mse}");
+        }
+        stream.encoder.set_quality(95);
+        let (_, _, mse) = stream.frame(&picture(w, h, &rgb), false);
+        assert!(mse < 4.0, "squared error {mse} after the dial moved");
+        rgb = edit(rgb, w, (600, 100, 40, 40), 99);
+        let (_, _, mse) = stream.told(&picture(w, h, &rgb), false, Some(&[Rect { x: 600, y: 100, width: 40, height: 40 }]));
+        assert!(mse < 4.0, "squared error {mse}");
     }
 
     /// An 8×8 a frame skips keeps the quantizer it was last coded at, so a

@@ -47,7 +47,7 @@ impl Tape {
     /// Back to nothing recorded, keeping the room it took.
     pub(super) fn clear(&mut self) {
         self.records.clear();
-        self.counts = Counts::new();
+        self.counts.clear();
     }
 
     /// Code `bit` at the fixed `probability`.
@@ -71,6 +71,7 @@ impl Tape {
     pub(super) fn token(&mut self, context: usize, more: bool, level: i32, token: usize) {
         let more = if more { MORE_FIRST } else { 0 };
         self.records.push(TOKEN | (context as u32) << CONTEXT_SHIFT | more | u32::from(level as i16 as u16));
+        self.counts.any_tokens = true;
         let counts = &mut self.counts.tokens[context];
         counts[token] += 1;
         counts[MORE] += u32::from(more != 0);
@@ -79,6 +80,7 @@ impl Tape {
     /// Code an end of block at band and context `context`.
     pub(super) fn end(&mut self, context: usize) {
         self.records.push(TOKEN | END | (context as u32) << CONTEXT_SHIFT);
+        self.counts.any_tokens = true;
         let counts = &mut self.counts.tokens[context];
         counts[tokens::EOB_TOKEN] += 1;
         counts[MORE] += 1;
