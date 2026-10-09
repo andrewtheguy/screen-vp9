@@ -669,10 +669,13 @@ mod tests {
 
     #[test]
     fn tile_columns_follow_the_width_and_the_threads() {
-        // 3456 wide on 4 threads is two columns of 27 superblocks; on 1, one.
-        let two = Encoder::new(3456, 8, 90, 4).expect("an encoder");
+        // 3456 wide on 4 threads is four columns of 13 or 14 superblocks; on
+        // 2, two of 27; on 1, one.
+        let four = Encoder::new(3456, 8, 90, 4).expect("an encoder");
+        let two = Encoder::new(3456, 8, 90, 2).expect("an encoder");
         let one = Encoder::new(3456, 8, 90, 1).expect("an encoder");
-        assert_eq!((two.tile_cols_log2, one.tile_cols_log2), (1, 0));
+        assert_eq!((four.tile_cols_log2, two.tile_cols_log2, one.tile_cols_log2), (2, 1, 0));
+        assert_eq!(four.geometry.tile_cols(1, 2), 104..216);
         assert_eq!(two.geometry.tile_cols(1, 1), 216..432);
         round_trip(&desktop(3456, 8), 90, 4);
         // Past 4096 the format itself asks for a second column.
@@ -958,24 +961,30 @@ mod tests {
         }
     }
 
-    /// The 4:4:4 captures `docs/rust-encoder-plan.md` measures on, each
-    /// with the quality it was made at and the threads its program codes on.
-    const CAPTURES: [(&str, u8, usize); 12] = [
-        ("desktop-q100-444", 100, 4),
-        ("proxmox-q100-444", 100, 4),
-        ("proxmox-hidpi-q100-444", 100, 4),
-        ("mac-hp-444", 90, 5),
-        ("windows-elite-20261008-200653.406-3456x2168-444", 90, 5),
-        ("windows-elite-20261008-201711.039-1920x1080-444", 90, 5),
-        ("windows-elite-20261008-202401.400-1600x1000-444", 90, 5),
-        ("windows-elite-20261008-202726.077-1440x900-444", 90, 5),
-        ("windows-elite-20261008-203015.519-1280x800-444", 90, 5),
-        ("macvmhighperf-20261008-203729.907-3840x2160-444", 90, 5),
-        ("macvmhighperf-20261008-210446.075-2560x1600-444", 90, 5),
-        ("macvmhighperf-20261008-210735.075-2880x1800-444", 90, 5),
+    /// The 4:4:4 samples `docs/rust-encoder-plan.md` measures on, each
+    /// with the quality and the threads the remotex gateway codes them at.
+    const SAMPLES: [(&str, u8, usize); 18] = [
+        ("quiet-1280x800-1col-lf", 90, 5),
+        ("quiet-1440x900-2col-lf", 90, 5),
+        ("quiet-1600x1000-2col-lf", 90, 5),
+        ("quiet-1920x1080-2col-lf", 90, 5),
+        ("quiet-2048x1536-4col-nolf", 90, 5),
+        ("quiet-2560x1600-4col-nolf", 90, 5),
+        ("quiet-2880x1800-4col-nolf", 90, 5),
+        ("quiet-3456x2168-4col-nolf", 90, 5),
+        ("quiet-3840x2160-4col-nolf", 90, 5),
+        ("busy-1280x800-1col-lf", 90, 5),
+        ("busy-1440x900-2col-lf", 90, 5),
+        ("busy-1600x1000-2col-lf", 90, 5),
+        ("busy-1920x1080-2col-lf", 90, 5),
+        ("busy-2048x1536-4col-nolf", 90, 5),
+        ("busy-2560x1600-4col-nolf", 90, 5),
+        ("busy-2880x1800-4col-nolf", 90, 5),
+        ("busy-3456x2168-4col-nolf", 90, 5),
+        ("busy-3840x2160-4col-nolf", 90, 5),
     ];
 
-    /// Hand `f` each frame of an IVF capture in turn, as the picture a user
+    /// Hand `f` each frame of an IVF sample in turn, as the picture a user
     /// would hand an encoder, until it returns false.
     fn each_picture(ivf: &[u8], mut f: impl FnMut(usize, Picture) -> bool) {
         assert_eq!(&ivf[..4], b"DKIF", "not an IVF file");
@@ -983,7 +992,7 @@ mod tests {
         let (mut at, mut n) = (32, 0);
         while at + 12 <= ivf.len() {
             let len = u32::from_le_bytes(ivf[at..at + 4].try_into().expect("four bytes")) as usize;
-            let decoded = decoder.decode(&ivf[at + 12..at + 12 + len]).expect("a capture libvpx decodes");
+            let decoded = decoder.decode(&ivf[at + 12..at + 12 + len]).expect("a sample libvpx decodes");
             let (w, h) = decoded.size();
             let mut bgrx = vec![0; w as usize * h as usize * 4];
             decoded.write_bgrx(&mut bgrx, w as usize * 4).expect("a buffer of the frame's size");
@@ -997,7 +1006,7 @@ mod tests {
         }
     }
 
-    /// Every `step`th frame of an IVF capture, up to `count` of them.
+    /// Every `step`th frame of an IVF sample, up to `count` of them.
     fn sample(ivf: &[u8], step: usize, count: usize) -> Vec<Picture> {
         let mut pictures = Vec::new();
         each_picture(ivf, |n, picture| {
@@ -1009,22 +1018,22 @@ mod tests {
         pictures
     }
 
-    /// The first 60 frames of the capture `CAPTURE` names in `tmp/`, coded
+    /// The first 60 frames of the sample `SAMPLE` names in `tmp/`, coded
     /// by this encoder alone, `PASSES` times over (3 if unset), on `THREADS`
-    /// threads (the capture's if unset): its milliseconds per frame. For a
+    /// threads (the sample's if unset): its milliseconds per frame. For a
     /// profiler to watch; run it in release:
     ///
     /// ```text
-    /// CAPTURE=desktop-q100-444 cargo test --release rust_alone -- --ignored --nocapture
+    /// SAMPLE=busy-1920x1080-2col-lf cargo test --release rust_alone -- --ignored --nocapture
     /// ```
     #[test]
-    #[ignore = "reads a capture in tmp/ and wants a release build"]
+    #[ignore = "reads a sample in tmp/ and wants a release build"]
     fn rust_alone() {
-        let name = std::env::var("CAPTURE").expect("CAPTURE naming a capture");
-        let &(_, quality, threads) = CAPTURES.iter().find(|c| c.0 == name).expect("one of the captures");
+        let name = std::env::var("SAMPLE").expect("SAMPLE naming a sample");
+        let &(_, quality, threads) = SAMPLES.iter().find(|c| c.0 == name).expect("one of the samples");
         let threads = std::env::var("THREADS").map_or(threads, |t| t.parse().expect("a thread count"));
         let passes: usize = std::env::var("PASSES").map_or(3, |p| p.parse().expect("a pass count"));
-        let ivf = std::fs::read(format!("tmp/{name}.ivf")).expect("the capture in tmp/");
+        let ivf = std::fs::read(format!("tmp/{name}.ivf")).expect("the sample in tmp/");
         let pictures = sample(&ivf, 1, 60);
         let (w, h) = pictures[0].size();
         let mut out = Vec::new();
@@ -1046,8 +1055,8 @@ mod tests {
         10.0 * (255.0 * 255.0 / mse).log10()
     }
 
-    /// Keyframes of frames sampled from the captures in `tmp/`, coded by this
-    /// encoder and by libvpx on one thread each: bytes, the least time over
+    /// Keyframes of frames taken from the samples in `tmp/`, coded by this
+    /// encoder and by libvpx on the sample's threads: bytes, the least time over
     /// three runs, and the PSNR of libvpx's decode of each. A measurement,
     /// not a check; run it in release:
     ///
@@ -1055,14 +1064,14 @@ mod tests {
     /// cargo test --release keyframes_against_libvpx -- --ignored --nocapture
     /// ```
     #[test]
-    #[ignore = "reads the captures in tmp/ and wants a release build"]
+    #[ignore = "reads the samples in tmp/ and wants a release build"]
     fn keyframes_against_libvpx() {
-        for (name, quality, threads) in CAPTURES {
+        for (name, quality, threads) in SAMPLES {
             let Ok(ivf) = std::fs::read(format!("tmp/{name}.ivf")) else {
                 println!("{name}: not in tmp/");
                 continue;
             };
-            let pictures = sample(&ivf, 60, 8);
+            let pictures = sample(&ivf, 15, 8);
             let (w, h) = pictures[0].size();
             let mut libvpx = crate::Encoder::new(w, h, Chroma::Full, quality, threads).expect("a libvpx encoder");
             let mut rust = Encoder::new(w, h, quality, threads).expect("an encoder");
@@ -1097,8 +1106,8 @@ mod tests {
         }
     }
 
-    /// The first frames of each capture in `tmp/`, coded as a stream by this
-    /// encoder and by libvpx, each on one thread, frame by frame, which of
+    /// Every frame of each sample in `tmp/`, coded as a stream by this
+    /// encoder and by libvpx, on the sample's threads, frame by frame, which of
     /// them goes first alternating: bytes, time and the PSNR of libvpx's
     /// decode of each. The per-frame time ratio's median is what the plan's
     /// gate reads. A measurement, not a check; run it in release:
@@ -1107,10 +1116,9 @@ mod tests {
     /// cargo test --release streams_against_libvpx -- --ignored --nocapture
     /// ```
     #[test]
-    #[ignore = "reads the captures in tmp/ and wants a release build"]
+    #[ignore = "reads the samples in tmp/ and wants a release build"]
     fn streams_against_libvpx() {
-        const FRAMES: usize = 200;
-        for (name, quality, threads) in CAPTURES {
+        for (name, quality, threads) in SAMPLES {
             let Ok(ivf) = std::fs::read(format!("tmp/{name}.ivf")) else {
                 println!("{name}: not in tmp/");
                 continue;
@@ -1145,7 +1153,7 @@ mod tests {
                 }
                 ratios.push(times[1] / times[0]);
                 frames += 1;
-                frames < FRAMES
+                true
             });
             ratios.sort_unstable_by(f64::total_cmp);
             let n = frames as f64;

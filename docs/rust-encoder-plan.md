@@ -23,8 +23,8 @@ and nothing more. Decoding stays with libvpx permanently.
 - **No fallback:** when the Rust encoder passes the gate, the libvpx encoder
   path is deleted, not kept behind a feature. Until then the module is reachable
   only from tests and the benchmark.
-- **Acceptance gate**, on each of the twelve 4:4:4 captures, at the capture's own
-  quality and thread count:
+- **Acceptance gate**, on each of the eighteen 4:4:4 samples, at the quality
+  and thread count the remotex gateway codes them at:
   - median paired encode time at or below libvpx;
   - total bytes at most 15% above libvpx.
 
@@ -138,37 +138,34 @@ row's second column is built only if the first fails the gate on a capture.
 
 ## Test material
 
-Twelve 4:4:4 IVF captures, kept out of git in `tmp/`. Where a machine keeps the
-copies they come from is in that machine's `CLAUDE.local.md`, not here. The
-directory's own `README.md` describes the files; the 4:2:0 captures beside them
-are not used, and neither are the two made from a Mac screen recording, whose
-colour was never finer than 4:2:0 and which neither program ever sent.
+Eighteen 4:4:4 IVF samples of 120 frames, kept out of git in `tmp/`. Where a
+machine keeps the copies they come from is in that machine's `CLAUDE.local.md`,
+not here; their directory's own `README.md` describes them. Each is cut from a
+remotex gateway capture of 2026-10-08, decoded by libvpx and coded again by
+this crate's libvpx encoder at quality 90, starting with a keyframe: a quiet
+one from each capture's start, where little of the desktop moves, and a busy
+one from the 300 frames of it that took the most bytes. Their names carry the
+tile columns and loop filter that encode used, which do not bear on this one.
 
-| Capture | Content | Size | Quality | Threads | Frames |
-|---|---|---|---|---|---|
-| `desktop-q100-444` | wlshare: terminal typing and scrolling, browser scroll, dragged window | 1440×900 | 100 | 4 | 665 |
-| `proxmox-q100-444` | wlshare: full-frame shader animation | 1728×902 | 100 | 4 | 822 |
-| `proxmox-hidpi-q100-444` | the same at HiDPI | 3456×1804 | 100 | 4 | 212 |
-| `mac-hp-444` | remotex gateway from a Mac's HEVC | 1440×900 | 90 | 5 | 743 |
-| `windows-elite-…-3456x2168-444` | remotex gateway from RDP: a shader animation, a news page scrolled, a terminal printing, a documentation page, side by side, at HiDPI | 3456×2168 | 90 | 5 | 887 |
-| `windows-elite-…-1920x1080-444` | the same desktop | 1920×1080 | 90 | 5 | 1943 |
-| `windows-elite-…-1600x1000-444` | the same desktop | 1600×1000 | 90 | 5 | 2333 |
-| `windows-elite-…-1440x900-444` | the same desktop | 1440×900 | 90 | 5 | 1797 |
-| `windows-elite-…-1280x800-444` | the same desktop | 1280×800 | 90 | 5 | 1898 |
-| `macvmhighperf-…-3840x2160-444` | remotex gateway from a virtual Mac, the same four panes, at HiDPI | 3840×2160 | 90 | 5 | 1443 |
-| `macvmhighperf-…-2560x1600-444` | the same Mac, at HiDPI | 2560×1600 | 90 | 5 | 1986 |
-| `macvmhighperf-…-2880x1800-444` | the same Mac, at HiDPI | 2880×1800 | 90 | 5 | 2245 |
+| Samples | From the gateway's session with | Size |
+|---|---|---|
+| `quiet-` and `busy-1280x800-1col-lf` | Windows over RDP: a shader animation, a news page scrolled, a terminal printing, a documentation page, side by side | 1280×800 |
+| `quiet-` and `busy-1440x900-2col-lf` | the same desktop | 1440×900 |
+| `quiet-` and `busy-1600x1000-2col-lf` | the same desktop | 1600×1000 |
+| `quiet-` and `busy-1920x1080-2col-lf` | the same desktop | 1920×1080 |
+| `quiet-` and `busy-2048x1536-4col-nolf` | a virtual Mac, the same four panes, at HiDPI | 2048×1536 |
+| `quiet-` and `busy-2560x1600-4col-nolf` | the same Mac | 2560×1600 |
+| `quiet-` and `busy-2880x1800-4col-nolf` | the same Mac | 2880×1800 |
+| `quiet-` and `busy-3456x2168-4col-nolf` | the Windows desktop at HiDPI | 3456×2168 |
+| `quiet-` and `busy-3840x2160-4col-nolf` | the Mac | 3840×2160 |
 
-The thread counts are what each program picks on the six-core machine the
-baseline is measured on: wlshare the cores less two, remotex the cores less
-one. The frames fed to an encoder are libvpx decodes of these captures, so
-they are near the source, not the source. The last eight were written by the
-gateway as it coded them, each its own session; their full names carry the
-session's start, and the first frame of each is black, the desktop not yet
-painted. The 3456×2168 one's quality fell as low as 80 late in the session,
-past the frames measured.
+All are measured at quality 90 on five threads, what remotex picks on the
+six-core machine the baseline is measured on: the cores less one. The frames
+fed to an encoder are libvpx decodes of the samples, so they are near the
+source, not the source. Phases 1 to 5 above were measured on full captures,
+the wlshare ones among them, before these samples were cut.
 
-Beside each capture is a `.framemd5` of every decoded frame. That tests a
+Beside each sample is a `.framemd5` of every decoded frame. That tests a
 decoder, not an encoder, and is not used here.
 
 ## Reuse and licence
@@ -183,7 +180,7 @@ SIMD are new. Neither `rusty_vp9` nor `rivet-vp9` is used.
 
 ## Main risk
 
-Every capture but `desktop-q100-444` is full-frame animation or video with
-almost no cheap frames. There the cost is transform, quantization and entropy coding, which
+The busy samples are full-frame animation and scrolling with almost no cheap
+frames. There the cost is transform, quantization and entropy coding, which
 libvpx already does with tuned AVX2 and NEON. Phase 2 is where that is
 measured and the decision to go on is made.
