@@ -325,7 +325,7 @@ capture shows it paying, else deleted with its kernels.
 | Segmentation | A frame told where the picture changed codes the blocks outside in a segment that skips and is not filtered, its map whole or temporal; a whole frame leaves segmentation off | — | — |
 | Block sizes | 64×64 down to 8×8, partition chosen by the encoder | 4×4 blocks, for text in keyframes (19% of a desktop's bytes in libvpx) | An inter block 32×32 at most |
 | Intra modes | DC, V, H and TM, costed from line sums; in an inter frame tried only where the previous frame does not code the square whole | The six diagonal modes | — |
-| Inter modes | Zero, nearest, near and new vectors of whole pixels; the skip flag for a block that did not change | — | Quarter-pixel vectors, their search, `convolve` and EIGHTTAP_SMOOTH; the projection search |
+| Inter modes | Zero, nearest, near and new vectors of whole pixels; the skip flag for a block that did not change; the projection search | — | Quarter-pixel vectors, their search, `convolve` and EIGHTTAP_SMOOTH: deleted in phase 9, a twentieth of a decibel on one test pattern |
 | Transforms | A size per block, which it signals; an intra block's luma below 32×32 in the DCT and ADST its mode pairs | 4×4 wherever a block varies, for text | — |
 | Loop filter | libvpx's level from the quantizer; none in four tile columns (`main`'s rule); in one and two, the edges of the blocks coded, which is what a decoder filters when the segment outside is at level 0 | — | The filter at all in one and two columns, against its bytes and dB on real captures |
 | Probabilities | Coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools, kept for the next | Updates to the other probabilities | — |
@@ -348,9 +348,9 @@ the capture says it pays.
 | The golden frame not built: 2–9% in libvpx on the recordings | the recordings | `uncover`, `drag`: what a drag reveals | 9 |
 | An unchanged block at the zero vector left unfiltered "moved nothing" | the recordings, where no block is ever unchanged exactly | `terminal` `small` frames; subsumed by the segment at level 0 | 7 |
 | The loop filter kept in one and two columns for 0.6–1.8 dB | the recordings, filtered twice before | `terminal` and `flood` at 1280×800 to 1920×1080: bytes, dB, encoder and decoder time; then `main`'s `loop_filtered` rule, measured with vp9-wasm on `vp9-samples.sh` streams | 7, then `main` |
-| Sub-pixel vectors, searched where they pay (`SEARCH_PAYS`, `SEARCH_PROBE`) | proxmox and mac-hp recordings | `browser`, `drag`, `video`; deleted with `convolve` if the hashes find everything | 9 |
-| EIGHTTAP_SMOOTH as the frame's one filter; the switchable per-block filter not built | the four quiet four-column samples: a shader, a halftone, reeded glass | `video`, `walk`; on text, the regular filter or none | 9 |
-| The projection search, `REACH` 64 | the recordings, "what moves never arrives exactly" | `browser`, `drag`, `terminal` scrolls, which arrive exactly | 9 |
+| Sub-pixel vectors, searched where they pay (`SEARCH_PAYS`, `SEARCH_PROBE`) | proxmox and mac-hp recordings | `browser`, `drag`, `video`: a twentieth of a decibel on `video` and nothing else; deleted with `convolve` | 9 |
+| EIGHTTAP_SMOOTH as the frame's one filter; the switchable per-block filter not built | the four quiet four-column samples: a shader, a halftone, reeded glass | no vector is between pixels any more, so no filter runs; the header names EIGHTTAP | 9 |
+| The projection search, `REACH` 64 | the recordings, "what moves never arrives exactly" | kept: without it `video` takes 1.17× libvpx's bytes and `walk` 1.25×, `browser` 0.32× from 0.28× | 9 |
 | An inter block 32×32 at most | the four-column quiet samples | `browser` and `drag` scrolls, where one 64×64 vector should be cheapest | 9 |
 | Vectors ranked by the residual's squares | the busy samples | kept unless `browser` or `drag` loses by it | 9 |
 | `SPLIT_VARIANCE`, an eighth of a step | keyframes of the recordings | keyframes of text | 8 |
@@ -691,7 +691,21 @@ The replan, from here. Each phase is measured on the captures of
       sub-pixel refinement and `SEARCH_PAYS` still find anything the hashes
       miss on `browser`, `drag` and `video`; what finds nothing is deleted
       with its kernels (`convolve`, the search in `tile::refine`, the
-      one-filter header field back to its default).
+      one-filter header field back to its default). **Done.** Each turned
+      off in turn on the 1920×1080 captures. Without the projections
+      `video` took 1.17× libvpx's bytes (from 0.99×), `walk` 1.25× (from
+      1.05×) and `browser` 0.32× (from 0.28×): the test pattern moves by
+      what the hashes do not find, and the projections stay. Without the
+      search between pixels: `video` 0.992× at −0.05 dB (from 0.993×),
+      `walk` 1.059× at +0.17 dB (from 1.054× at +0.24), `browser` 0.269× at
+      the same picture (from 0.277×), `drag` the same, and `video`'s time
+      0.83× libvpx's from 0.89×. Nothing on a screen moves by a quarter
+      pixel but the one test pattern, and that by a twentieth of a decibel:
+      the search, its Laplacian model, `SEARCH_PAYS` and `SEARCH_PROBE`,
+      `convolve` with its NEON and AVX2 kernels and the filter table are
+      deleted, 760 lines, and the header names EIGHTTAP, which no block
+      uses. Vectors are whole pixels coded in the eighths the bitstream
+      counts in.
    3. The 32×32 cap on inter blocks, retried on real scrolls, where one
       vector for a 64×64 should be cheapest. **Measured, kept.** With a
       64×64 predicted whole, on the 1920×1080 captures `browser` went from

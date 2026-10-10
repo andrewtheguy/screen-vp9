@@ -24,7 +24,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use super::bool_writer;
-use super::convolve::{self, TAPS};
 use super::motion;
 use super::mv::{self, Mv};
 use super::pool::Pool;
@@ -160,60 +159,6 @@ impl Prices {
     }
 }
 
-/// The best so far of a search between pixels: what it costs, the vector,
-/// and its residual's squared deviation.
-type Found = (i64, Mv, i64);
-
-/// Try, by `cost`, the vector `row` and `col` eighths from `best`'s, which
-/// it becomes if it costs less; and give back what it costs.
-fn try_at(cost: &mut impl FnMut(Mv) -> (i64, i64), best: &mut Found, row: i32, col: i32) -> i64 {
-    let v = Mv { row: best.1.row + row, col: best.1.col + col };
-    let (c, deviation) = cost(v);
-    if c < best.0 {
-        *best = (c, v, deviation);
-    }
-    c
-}
-
-/// Try the vectors `step` eighths each way across and down from `best`'s,
-/// and then the corner between the better of each (libvpx's
-/// `FIRST_LEVEL_CHECKS`).
-fn around(cost: &mut impl FnMut(Mv) -> (i64, i64), best: &mut Found, step: i32) {
-    let centre = *best;
-    let mut from = |row, col| {
-        let mut there = (best.0, centre.1, 0);
-        let c = try_at(cost, &mut there, row, col);
-        if there.1 != centre.1 {
-            *best = there;
-        }
-        c
-    };
-    let (left, right, up, down) = (from(0, -step), from(0, step), from(-step, 0), from(step, 0));
-    from(if up < down { -step } else { step }, if left < right { -step } else { step });
-}
-
-/// `n / d` to the nearest whole number, halves away from zero (libvpx's
-/// `divide_and_round`).
-fn rounded(n: i64, d: i64) -> i64 {
-    if (n < 0) != (d < 0) { (n - d / 2) / d } else { (n + d / 2) / d }
-}
-
-/// The squared error and the bits of a residual whose squared deviation is
-/// `deviation` over `count` pixels, quantized at `step`, as a Laplacian
-/// source quantized uniformly (Hang and Chen, 1997): from the closed forms
-/// libvpx tables for `vp9_model_rd_from_var_lapndz`.
-fn laplacian(deviation: f64, count: f64, step: f64) -> (f64, f64) {
-    if deviation == 0.0 {
-        return (0.0, 0.0);
-    }
-    let x = step / (deviation / count).sqrt();
-    let r = (-std::f64::consts::SQRT_2 * x).exp();
-    let entropy = |p: f64| if p <= 0.0 || p >= 1.0 { 0.0 } else { -(p * p.log2() + (1.0 - p) * (1.0 - p).log2()) };
-    let bits = entropy(r.sqrt()) + r.sqrt() * (1.0 + entropy(r) / (1.0 - r));
-    let y = x / std::f64::consts::SQRT_2;
-    (deviation * (1.0 - y / y.sinh()), count * bits)
-}
-
 /// The picture being coded: three planes at its own size.
 pub(super) struct Source<'a> {
     pub(super) planes: [&'a [u8]; 3],
@@ -248,9 +193,6 @@ pub(super) struct Previous<'a> {
     /// is, in the reference, and not written to the reconstruction.
     pub(super) touched: &'a [bool],
     pub(super) vectors: &'a [[Mv; motion::VECTORS]],
-    /// Of the blocks the search between pixels could refine, the one in
-    /// this many it does.
-    pub(super) search_every: usize,
 }
 
 /// How a block is coded.
@@ -352,12 +294,6 @@ pub(super) struct Contexts {
     /// Whether a decoder predicts vectors from the frame before's too:
     /// when that was an inter frame (libvpx's `use_prev_frame_mvs`).
     use_last: bool,
-    /// Of the blocks the search between pixels refined, what their luma
-    /// would cost coded at the vectors they came with, and what the search
-    /// saved, as `laplacian` models them: the column's, and per superblock
-    /// row.
-    pub(super) searched: [f64; 2],
-    searched_rows: Vec<[f64; 2]>,
     /// Per superblock row, its bools, to be coded once the frame's
     /// probabilities are chosen.
     pub(super) tapes: Vec<Tape>,
@@ -379,18 +315,10 @@ impl Contexts {
             width: cols.len(),
             sb_cols,
             use_last: false,
-            searched: [0.0; 2],
-            searched_rows: vec![[0.0; 2]; geometry.sb_rows],
             tapes: (0..geometry.sb_rows).map(|_| Tape::new()).collect(),
             edges: (0..geometry.sb_rows * sb_cols).map(|_| OnceLock::new()).collect(),
             coded: vec![false; geometry.sb_rows * sb_cols],
         }
-    }
-
-    /// The vectors of the frame coded last's inter blocks, one per 8×8.
-    #[cfg(test)]
-    pub(super) fn vectors(&self) -> impl Iterator<Item = Mv> + '_ {
-        self.mode_info.iter().filter_map(|m| m.inter.map(|(_, mv)| mv))
     }
 
     /// The intra modes of the frame coded last's intra blocks, one per 8×8.
@@ -421,8 +349,6 @@ impl Contexts {
         // anything reads it, so none is cleared.
         std::mem::swap(&mut self.mode_info, &mut self.last_mode_info);
         self.use_last = last_inter;
-        self.searched = [0.0; 2];
-        self.searched_rows.fill([0.0; 2]);
         for tape in &mut self.tapes {
             tape.clear();
         }
@@ -435,15 +361,15 @@ impl Contexts {
     /// A job for each superblock row of the column, which `column` holds
     /// the pixels of.
     fn jobs<'a>(&'a mut self, column: &'a mut Column) -> impl Iterator<Item = Job<'a>> {
-        let Contexts { mode_info, last_mode_info, width, sb_cols, use_last, searched_rows, tapes, edges, coded, .. } = self;
+        let Contexts { mode_info, last_mode_info, width, sb_cols, use_last, tapes, edges, coded, .. } = self;
         let (width, sb_cols, use_last) = (*width, *sb_cols, *use_last);
         let (last_mode_info, edges) = (&last_mode_info[..], &edges[..]);
         let (x, stride) = (column.x, column.stride);
         let [p0, p1, p2] = &mut column.planes;
         let rows = 64 * stride;
         let planes = p0.chunks_mut(rows).zip(p1.chunks_mut(rows)).zip(p2.chunks_mut(rows));
-        let rows = mode_info.chunks_mut(8 * width).zip(planes).zip(tapes.iter_mut().zip(searched_rows)).zip(coded.chunks_mut(sb_cols));
-        rows.enumerate().map(move |(sb_row, (((mode_info, ((p0, p1), p2)), (tape, searched)), coded))| Job {
+        let rows = mode_info.chunks_mut(8 * width).zip(planes).zip(tapes.iter_mut()).zip(coded.chunks_mut(sb_cols));
+        rows.enumerate().map(move |(sb_row, (((mode_info, ((p0, p1), p2)), tape), coded))| Job {
             sb_row,
             x,
             stride,
@@ -455,7 +381,6 @@ impl Contexts {
             mode_info,
             planes: [p0, p1, p2],
             tape,
-            searched,
             coded,
         })
     }
@@ -505,7 +430,6 @@ struct Job<'a> {
     mode_info: &'a mut [ModeInfo],
     planes: [&'a mut [u8]; 3],
     tape: &'a mut Tape,
-    searched: &'a mut [f64; 2],
     /// Per superblock of the row, whether a block of it is active.
     coded: &'a mut [bool],
 }
@@ -532,9 +456,6 @@ pub(super) fn code(pool: &Pool, threads: usize, frame: &Frame, contexts: &mut [C
         }
     };
     pool.run(threads.min(queue.len()), |_| work());
-    for contexts in contexts {
-        contexts.searched = contexts.searched_rows.iter().fold([0.0; 2], |[c, s], row| [c + row[0], s + row[1]]);
-    }
 }
 
 /// Raises the flag it holds if its thread unwinds, so that the rows waiting
@@ -625,8 +546,6 @@ struct Scratch {
     best_levels: Vec<i32>,
     best_eobs: Vec<usize>,
     patch: Vec<u8>,
-    planes: [Vec<u8>; 16],
-    predicted: Box<[u8; 64 * 64]>,
     residual: Box<[i32; 1024]>,
     coeffs: Box<[i32; 1024]>,
     energy: Box<[u8; 1024]>,
@@ -641,8 +560,6 @@ impl Scratch {
             best_levels: vec![0; 64 * 64],
             best_eobs: Vec::with_capacity(256),
             patch: Vec::new(),
-            planes: std::array::from_fn(|_| Vec::new()),
-            predicted: Box::new([0; 64 * 64]),
             residual: Box::new([0; 1024]),
             coeffs: Box::new([0; 1024]),
             energy: Box::new([0; 1024]),
@@ -691,8 +608,6 @@ struct Tile<'a> {
     /// them, and which are there yet.
     line_sums: [[([u16; 8], [u16; 8]); 3]; 64],
     summed: u64,
-    /// The blocks the search between pixels could have refined so far.
-    searches: usize,
     /// The superblock being coded, per vector other than zero measured at
     /// so far: per 8×8, the moments of its residual at that vector, and
     /// which of them are measured yet.
@@ -705,12 +620,8 @@ struct Tile<'a> {
     /// far.
     best_levels: Vec<i32>,
     best_eobs: Vec<usize>,
-    /// Scratch for a block of the previous frame copied out past its edges,
-    /// for it filtered across at each sixteenth, and for a prediction
-    /// filtered from it.
+    /// Scratch for a block of the previous frame copied out past its edges.
     patch: Vec<u8>,
-    planes: [Vec<u8>; 16],
-    predicted: Box<[u8; 64 * 64]>,
     /// Scratch for a transform block's residual and coefficients, and for
     /// the token coder.
     residual: Box<[i32; 1024]>,
@@ -721,7 +632,7 @@ struct Tile<'a> {
 impl<'a> Tile<'a> {
     /// The coder of the superblock row `job`, working in `scratch`.
     fn new(frame: &Frame<'a>, job: Job<'a>, scratch: Scratch, failed: &'a AtomicBool) -> Self {
-        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, planes, predicted, residual, coeffs, energy } = scratch;
+        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy } = scratch;
         moved.clear();
         let mi_col_start = job.x / 8;
         Self {
@@ -747,15 +658,12 @@ impl<'a> Tile<'a> {
             measures: [Measure::default(); 64],
             line_sums: [[([0; 8], [0; 8]); 3]; 64],
             summed: 0,
-            searches: 0,
             moved,
             levels,
             eobs,
             best_levels,
             best_eobs,
             patch,
-            planes,
-            predicted,
             residual,
             coeffs,
             energy,
@@ -780,8 +688,8 @@ impl<'a> Tile<'a> {
                 self.leave_edge(sb_col);
             }
         }
-        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, planes, predicted, residual, coeffs, energy, .. } = self;
-        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, planes, predicted, residual, coeffs, energy }
+        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy, .. } = self;
+        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy }
     }
 
     /// Wait for the row above to code the superblock above superblock
@@ -957,7 +865,7 @@ impl<'a> Tile<'a> {
     fn residual_moments(&mut self, px: usize, py: usize, mv: Mv) -> Moments {
         let reference = self.previous.as_ref().expect("an inter frame").reference;
         let src = self.source;
-        let ((dx, dy), _) = mv.split();
+        let (dx, dy) = mv.split();
         let mut m = Moments::default();
         for plane in 0..3 {
             let (prediction, stride) = reference.block(plane, (px as isize + dx, py as isize + dy), (8, 8), (src.width, src.height), &mut self.patch);
@@ -988,7 +896,6 @@ impl<'a> Tile<'a> {
     fn square_residual(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> Moments {
         let (rows, cols) = self.inside(mi_row, mi_col, n);
         let (row0, col0) = (mi_row - (mi_row & 7), mi_col - (mi_col & 7));
-        let mv = mv.round();
         let at = match self.moved.iter().position(|m| m.0 == mv) {
             Some(at) => at,
             None => {
@@ -1411,11 +1318,6 @@ impl<'a> Tile<'a> {
         let count = 64 * self.count_inside(mi_row, mi_col, n) as i64;
         let above = (mi_row > 0).then(|| self.mode_info(mi_row - 1, mi_col));
         let left = (mi_col > self.mi_col_start).then(|| self.mode_info(mi_row, mi_col - 1));
-        // A block that settles has nothing to find between the pixels.
-        let mode = match mode {
-            Mode::Inter(mv) if !self.still(mi_row, mi_col, n) => Mode::Inter(self.refine(mi_row, mi_col, n, mv)),
-            mode => mode,
-        };
         let tx = match mode {
             Mode::Intra { .. } => self.intra_transform_size(n, moments, count),
             Mode::Intra4 { .. } => 0,
@@ -1857,123 +1759,6 @@ impl<'a> Tile<'a> {
         (Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]).of(mv).1, mv)
     }
 
-    /// The vector within three quarters of a pixel of `mv` that the square
-    /// block of `1 << n` 8×8s at `(mi_row, mi_col)` is best predicted at, by
-    /// its luma's variance from the prediction and the bits of the vector at
-    /// `RATE_WEIGHT`, the variance being an error to come in the residual,
-    /// and then kept only where it pays as `laplacian` models it: libvpx's
-    /// pruned sub-pixel search
-    /// (`vp9_find_best_sub_pixel_tree_pruned_more`), a half pixel where the
-    /// whole pixels around `mv` say, or each way, and then each way a quarter
-    /// pixel from the best. The patch around `mv` is filtered across once
-    /// per sixteenth the vectors tried ask for, so each of them is at most a
-    /// pass down. A block the picture does not hold whole keeps `mv`, as
-    /// does one whose luma `mv` predicts exactly.
-    fn refine(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> Mv {
-        let src = self.source;
-        let size = 8 << n;
-        let (px, py) = (mi_col * 8, mi_row * 8);
-        if px + size > src.width || py + size > src.height {
-            return mv;
-        }
-        let previous = self.previous.as_ref().expect("an inter frame");
-        let reference = previous.reference;
-        self.searches += 1;
-        if !self.searches.is_multiple_of(previous.search_every) {
-            return mv;
-        }
-        let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
-        let ac = i64::from(self.quantizer.ac_step());
-        let count = (size * size) as i64;
-        let ((dx, dy), _) = mv.split();
-        // Every vector tried is less than a pixel from `mv`, so a pixel more
-        // each way of the filter's reach holds what any of them reads; and
-        // filtered across, a row of whole eights from a pixel before `mv`'s
-        // holds any of them filtered across.
-        let before = convolve::BEFORE;
-        let (wide, high) = (size + 8, size + 2 + TAPS - 1);
-        let margin = 1 + before as isize;
-        let (block, stride) = reference.block(0, (px as isize + dx - margin, py as isize + dy - margin), (wide + TAPS - 1, high), (src.width, src.height), &mut self.patch);
-        // Per sixteenth across, the patch filtered across at it, once a
-        // vector tried has asked for it.
-        let (planes, prediction) = (&mut self.planes, &mut self.predicted[..]);
-        let mut filtered = 0u16;
-        let source = &src.planes[0][py * src.stride + px..];
-        let bits = |v: Mv| prices.of(v).0;
-        let rate = |v: Mv| RATE_WEIGHT * ac * ac * i64::from(bits(v));
-        // A vector's luma residual: its squared deviation from its mean, and
-        // that weighed with the vector's bits.
-        let mut cost = |v: Mv| {
-            let ((vx, vy), (fx, fy)) = v.split();
-            // Where the vector's whole pixels are from the patch's first.
-            let (x, y) = ((vx - dx + 1) as usize, (vy - dy + 1) as usize);
-            // What to filter down: the patch, or the patch filtered across,
-            // from `before` rows above the vector's.
-            let (across, from, x) = if fx == 0 {
-                (block, stride, x + before)
-            } else {
-                if filtered & 1 << fx == 0 {
-                    planes[fx].resize(wide * high, 0);
-                    convolve::across(block, stride, fx, (wide, high), &mut planes[fx], wide);
-                    filtered |= 1 << fx;
-                }
-                (&planes[fx][..], wide, x)
-            };
-            let (predicted, predicted_stride) = if fy == 0 {
-                (&across[(y + before) * from + x..], from)
-            } else {
-                convolve::down(&across[y * from + x..], from, fy, (size, size), prediction, size);
-                (&prediction[..], size)
-            };
-            let mut m = Moments::default();
-            for r in (0..size).step_by(8) {
-                for c in (0..size).step_by(8) {
-                    let (sum, squares) = pixels::difference_moments(&source[r * src.stride + c..], src.stride, &predicted[r * predicted_stride + c..], predicted_stride);
-                    m.sums[0] += i64::from(sum);
-                    m.squares += i64::from(squares);
-                }
-            }
-            let deviation = m.variance(count) / count;
-            // As `trial` weighs an error, on the coefficients' scale.
-            (deviation * 64 * 256_000 + rate(v), deviation)
-        };
-        let first = cost(mv);
-        // Nothing to take from a prediction that is the source.
-        if first.1 == 0 {
-            return mv;
-        }
-        let mut best = (first.0, mv, first.1);
-        // From a vector of whole pixels that predicts better than the whole
-        // pixels around it, a half pixel only where those say the least
-        // lies, fitting a parabola through them (libvpx's
-        // `get_cost_surf_min`); otherwise each way.
-        let mut whole = |row: i32, col: i32| cost(Mv { row: mv.row + row, col: mv.col + col }).0;
-        match (mv.split().1 == (0, 0)).then(|| [whole(0, -8), whole(0, 8), whole(-8, 0), whole(8, 0)]) {
-            Some([left, right, up, down]) if [left, right, up, down].iter().all(|&c| c > first.0) => {
-                let towards = |less: i64, more: i64| rounded(less - more, less - 2 * first.0 + more) as i32;
-                let (col, row) = (towards(left, right), towards(up, down));
-                if (row, col) != (0, 0) {
-                    try_at(&mut cost, &mut best, row * 4, col * 4);
-                }
-            }
-            _ => around(&mut cost, &mut best, 4),
-        }
-        around(&mut cost, &mut best, 2);
-        // What the residual costs coded is no straight line in its
-        // deviation: the vector found is taken only where its residual
-        // modelled as coded, and its bits, do better.
-        let (step, weight) = (ac as f64 / 8.0, (RATE_WEIGHT * ac * ac) as f64 / 64_000.0);
-        let coded = |deviation: i64, v: Mv| {
-            let (distortion, residual) = laplacian(deviation as f64, count as f64, step);
-            distortion + weight * (residual + f64::from(bits(v)) / 256.0)
-        };
-        let came = coded(first.1, mv);
-        let saved = if best.1 == mv { 0.0 } else { (came - coded(best.2, best.1)).max(0.0) };
-        self.contexts.searched[0] += came;
-        self.contexts.searched[1] += saved;
-        if saved > 0.0 { best.1 } else { mv }
-    }
-
     /// The transform blocks of size `tx` (log2 less 2) of a block at
     /// `(mi_row, mi_col)`, in the order they are predicted and coded: per
     /// plane, rows of them, each starting inside the frame's edge rounded up
@@ -1999,23 +1784,16 @@ impl<'a> Tile<'a> {
     fn predict_inter(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) {
         let reference = self.previous.as_ref().expect("an inter frame").reference;
         let picture = (self.source.width, self.source.height);
-        let ((dx, dy), fraction) = mv.split();
+        let (dx, dy) = mv.split();
         let size = 8 << n;
         let (px, py) = (mi_col * 8, mi_row * 8);
-        let (wide, high) = (size, size);
         let (stride, x, y) = (self.contexts.stride, px - self.contexts.x, py - self.top * 8);
         let (rx, ry) = (px as isize + dx, py as isize + dy);
         for (plane, recon) in self.contexts.planes.iter_mut().enumerate() {
             let out = &mut recon[y * stride + x..];
-            if fraction == (0, 0) {
-                let (block, from) = reference.block(plane, (rx, ry), (wide, high), picture, &mut self.patch);
-                for r in 0..high {
-                    out[r * stride..][..wide].copy_from_slice(&block[r * from..][..wide]);
-                }
-            } else {
-                let before = convolve::BEFORE as isize;
-                let (block, from) = reference.block(plane, (rx - before, ry - before), (wide + TAPS - 1, high + TAPS - 1), picture, &mut self.patch);
-                convolve::predict(block, from, fraction, wide, high, out, stride);
+            let (block, from) = reference.block(plane, (rx, ry), (size, size), picture, &mut self.patch);
+            for r in 0..size {
+                out[r * stride..][..size].copy_from_slice(&block[r * from..][..size]);
             }
         }
     }

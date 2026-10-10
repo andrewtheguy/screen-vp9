@@ -136,8 +136,6 @@ fn remove(table: &mut Table, hash: u32, place: (u16, u16)) {
 /// The share of a frame's 8×8s, as `1 / REFILL`, above which a table is
 /// filled again rather than brought up to date one anchor at a time.
 const REFILL: usize = 4;
-/// Whether a changed superblock is projected at all.
-const PROJECT: bool = true;
 
 /// Which of the tables, one per thread so that each thread fills one, holds
 /// the anchors whose hash is `hash`.
@@ -293,7 +291,7 @@ impl Search {
             (0..shape.sb_cols)
                 .map(|sb_col| {
                     let moved = (0..8).any(|r| (0..8).any(|c| shape.changed(unchanged, sb_row * 8 + r, sb_col * 8 + c)));
-                    if moved && PROJECT { shape.project(luma, reference, (sb_row, sb_col), &mut scratch.patch) } else { Mv::ZERO }
+                    if moved { shape.project(luma, reference, (sb_row, sb_col), &mut scratch.patch) } else { Mv::ZERO }
                 })
                 .collect::<Vec<_>>()
         });
