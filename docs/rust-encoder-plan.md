@@ -345,7 +345,7 @@ the capture says it pays.
 |---|---|---|---|
 | 4×4 blocks not built: 19% of libvpx's bytes on the one desktop recording, judged not worth it | the recordings | keyframes and `small` frames of `terminal`, `drag`, `uncover`: text | 8 |
 | The six diagonal intra modes not built; V, H and TM "bought nothing", then built and cut 1–10% | the recordings, then the samples | keyframes of text | 8 |
-| The golden frame not built: 2–9% in libvpx on the recordings | the recordings | `uncover`, `drag`: what a drag reveals | 9 |
+| The golden frame not built: 2–9% in libvpx on the recordings | the recordings | `uncover`, `drag`: what a drag reveals; stays out, `drag` codes 2% of its tokens intra and `uncover` a third, of which only what was seen before could come from a golden frame | 9 |
 | An unchanged block at the zero vector left unfiltered "moved nothing" | the recordings, where no block is ever unchanged exactly | `terminal` `small` frames; subsumed by the segment at level 0 | 7 |
 | The loop filter kept in one and two columns for 0.6–1.8 dB | the recordings, filtered twice before | `terminal` and `flood` at 1280×800 to 1920×1080: bytes, dB, encoder and decoder time; then `main`'s `loop_filtered` rule, measured with vp9-wasm on `vp9-samples.sh` streams | 7, then `main` |
 | Sub-pixel vectors, searched where they pay (`SEARCH_PAYS`, `SEARCH_PROBE`) | proxmox and mac-hp recordings | `browser`, `drag`, `video`: a twentieth of a decibel on `video` and nothing else; deleted with `convolve` | 9 |
@@ -718,6 +718,31 @@ The replan, from here. Each phase is measured on the captures of
       that is the quiet settle alone; on a scroll the quarters it gets
       wrong cost the picture. Not worth the half decibel.
    4. The golden frame, only if `uncover` or `drag` shows it paying.
+      **Measured, not built.** Counting the tokens of each capture's inter
+      frames by the block's kind at 1920×1080: `drag` codes 2% of its
+      tokens in intra blocks, `uncover` 33%, where the page the terminal
+      uncovers is coded fresh. Only the part of that which was on screen
+      before the terminal moved could be predicted from a golden frame,
+      the page under the terminal at the start never having been seen, and
+      `uncover` stands at 1.02× libvpx's bytes. A second reference for a
+      part of a sixth of one capture's bytes is not worth its slot, its
+      refresh rule and a second search.
+   **Done**, measured at 1920×1080 alone: the run over every size was
+   skipped at the user's call to close the phase, so the tables in
+   [Where it stands](#where-it-stands-on-real-captures) are phase 8's;
+   `tools/gate_tables.py` now reads the `whole` frames and a settles
+   section too, for the next run. At 1920×1080 after phase 9, over every
+   frame: `browser` +0.74 dB at 0.27× libvpx's bytes (from +0.8 at 0.29×),
+   `drag` +1.22 at 0.12× (from +1.1), `flood` +0.23 at 0.76×, `video`
+   +0.36 at 0.99× at 0.83× its time (from 0.89×), `walk` +0.17 at 1.06×
+   (from +0.3 at 1.09×), `uncover` −0.32 at 1.02×, `terminal` −0.15 at
+   0.82×. Settles from dial 20 or 65: 0.86–1.10× libvpx's bytes at +0.1 to
+   +1.4 dB; from 80, 1.0–1.25× at ±0.1 dB; from 89, 1.4–2.0× at −0.3 dB.
+   Over the line: a settle's time, 1.0–1.2× libvpx's from dial 20 and
+   1.7–2.6× from 65 on, which is the block coder on every block of the
+   picture, the transform trial and the three planes, as a keyframe's is;
+   and `walk`'s one quiet settle at 2.3× libvpx's bytes (382 against 167),
+   four 32×32 blocks where libvpx codes a 64×64.
 10. **Switch over.** The libvpx encoder and `Chroma::Subsampled` removed
     behind the same API, `Speed` kept, `AGENTS.md` reworded, a release tagged;
     then in wlshare and remotex: the pin bumped, 4:2:0 dropped,
