@@ -23,7 +23,9 @@
 //! one that does not leaves unsaid. [`Stream`] is the two together, and what a
 //! user holds: it is handed a packed picture and its damage, and keeps the
 //! rules a frame of damage needs — when a frame is the whole picture anyway,
-//! and how coarse the blocks no frame has touched since still are.
+//! and how coarse the blocks no frame has touched since still are — and the
+//! frame that settles them, the whole picture once at the ceiling with the
+//! dial left where the link had it ([`Stream::settle_bgrx`]).
 //!
 //! Frame metadata is handled here too: [`frame_header`] reads the profile and
 //! keyframe bit of a frame this process did not encode, and [`codec_string`]
@@ -1029,12 +1031,15 @@ pub struct Stream {
     /// one the encoder produced nothing for: its rows were read and reached
     /// no decoder, so the next frame is the whole picture's.
     carried: bool,
+    /// A frame was coded that no decoder was handed, so the frames after it
+    /// are coded against a picture none holds: the next is a keyframe.
+    lost: bool,
 }
 
 impl Stream {
     /// A stream of `width`×`height` pictures, as [`Encoder::new`] takes them.
     pub fn new(width: u16, height: u16, chroma: Chroma, quality: u8, threads: usize) -> Result<Self, Error> {
-        Ok(Self { encoder: Encoder::new(width, height, chroma, quality, threads)?, picture: Picture::new(width, height, chroma, threads)?, carried: false })
+        Ok(Self { encoder: Encoder::new(width, height, chroma, quality, threads)?, picture: Picture::new(width, height, chroma, threads)?, carried: false, lost: false })
     }
 
     /// The picture size this stream codes.
@@ -1106,12 +1111,62 @@ impl Stream {
         self.encode(changed, keyframe, out)
     }
 
+    /// Settle the picture at `quality`: encode `pixels`, as
+    /// [`Self::encode_bgrx`] takes them, whole and at that dial, and leave
+    /// the dial where it was. What a desktop that went quiet while the link
+    /// had it coarse is owed ([`walk::QualityWalk::settle_at`]): as an inter
+    /// frame the unchanged picture costs no keyframe and sharpens every block,
+    /// so [`Self::coarsest`] is `quality` after it, and the frames of the
+    /// motion that follows are at what the link bears again. `keyframe` makes
+    /// it one a decoder can start from, at `quality` all the same.
+    ///
+    /// Returns what [`Encoder::encode`] does. A dial the encoder would not
+    /// move to `quality` is an error before anything is coded. One it would
+    /// not move back is an error too, and the frame it had coded by then is
+    /// not appended: the stream stays at the [`Self::quality`] it reports,
+    /// and its next frame is a keyframe, since no decoder was handed the
+    /// picture it would otherwise be coded against.
+    pub fn settle_bgrx(&mut self, pixels: &[u8], stride: usize, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        self.picture.read_bgrx(pixels, stride)?;
+        self.settle(quality, keyframe, out)
+    }
+
+    /// Settle the picture at `quality` from `rgb` — packed RGB888, tight, for
+    /// exactly this stream's picture — as [`Self::settle_bgrx`] does from
+    /// `B, G, R, X`.
+    pub fn settle_rgb(&mut self, rgb: &[u8], quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        self.picture.read_rgb(rgb)?;
+        self.settle(quality, keyframe, out)
+    }
+
+    /// Encode the planes as they stand, whole, at `quality`, and put the dial
+    /// back.
+    fn settle(&mut self, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        // The planes are the whole picture now, which no decoder has yet.
+        self.carried = false;
+        let walked = self.encoder.quality();
+        self.encoder.set_quality(quality)?;
+        let from = out.len();
+        let encoded = self.encode(None, keyframe, out);
+        // Back whatever the encode came to: the dial is the walk's again.
+        if let Err(stuck) = self.encoder.set_quality(walked) {
+            if out.len() > from {
+                out.truncate(from);
+                self.carried = false;
+                self.lost = true;
+            }
+            return encoded.and(Err(stuck));
+        }
+        encoded
+    }
+
     /// Encode the planes as they stand.
     fn encode(&mut self, changed: Option<&[Rect]>, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
         // Until a frame comes out the planes are ahead of every decoder.
         self.carried = false;
-        let encoded = self.encoder.encode(&self.picture, keyframe, changed, out)?;
+        let encoded = self.encoder.encode(&self.picture, keyframe || self.lost, changed, out)?;
         self.carried = encoded.is_some();
+        self.lost &= encoded.is_none();
         Ok(encoded)
     }
 }
@@ -1995,6 +2050,68 @@ mod tests {
             settled < coarse / 4.0 && settled < fine * 2.0,
             "one frame at quality 90 left the unchanged picture at error {settled:.2} (coarse {coarse:.2}, a quality-90 keyframe {fine:.2}): the encoder skipped blocks that did not move"
         );
+    }
+
+    /// A stream settles its picture with one frame: whole and at the quality
+    /// asked whatever damage the frames before it were told, an inter frame
+    /// unless a keyframe is asked, and with the dial back where the link had it
+    /// for the frame after. A walk told what each frame left owes the settle
+    /// until that one has gone.
+    #[test]
+    fn a_stream_settles_a_coarse_picture_and_keeps_its_dial() {
+        let (w, h) = (320u16, 240u16);
+        let (wu, hu) = (usize::from(w), usize::from(h));
+        // Speckle, so a coarse quantizer has detail to lose.
+        let mut rgb = flat(w, h, [240, 240, 240]);
+        let mut seed = 12_345u32;
+        for px in rgb.chunks_mut(3) {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            if (seed >> 16).is_multiple_of(5) {
+                px.copy_from_slice(&[20, 20, 20]);
+            }
+        }
+        let bgrx: Vec<u8> = rgb.chunks(3).flat_map(|px| [px[2], px[1], px[0], 0]).collect();
+        let error = |back: &[u8]| {
+            let sum: u64 = (0..hu).flat_map(|y| (0..wu).map(move |x| (x, y))).map(|(x, y)| u64::from(rgb_at(back, wu, x, y)[1].abs_diff(rgb[(y * wu + x) * 3 + 1]))).sum();
+            sum as f64 / (wu * hu) as f64
+        };
+        let start = std::time::Instant::now();
+        for packed_rgb in [false, true] {
+            let mut walk = walk::QualityWalk::new(90, std::time::Duration::from_millis(33), true);
+            let mut stream = Stream::new(w, h, Chroma::Full, 90, 2).expect("a stream");
+            stream.set_quality(QUALITY_MIN).expect("a live encoder takes a new quality");
+            let mut frames = vec![Vec::new()];
+            stream.encode_rgb(&rgb, None, false, &mut frames[0]).expect("an encode").expect("a frame");
+            walk.sent(stream.coarsest(), start);
+            assert_eq!((stream.coarsest(), walk.settle_at()), (QUALITY_MIN, Some(start + walk::SETTLE_IDLE)));
+            let coarse = error(&decode_chain(&frames, wu, hu));
+
+            walk.settle(start + walk::SETTLE_IDLE);
+            let mut settle = Vec::new();
+            let key = if packed_rgb { stream.settle_rgb(&rgb, walk.ceiling(), false, &mut settle) } else { stream.settle_bgrx(&bgrx, wu * 4, walk.ceiling(), false, &mut settle) };
+            assert_eq!(key.expect("a settle"), Some(false), "the settle cost a keyframe");
+            frames.push(settle);
+            walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
+            assert_eq!((stream.quality(), stream.coarsest(), walk.settle_at()), (QUALITY_MIN, 90, None), "the settle left the dial or the picture where it was not");
+            let settled = error(&decode_chain(&frames, wu, hu));
+            assert!(settled < coarse / 4.0, "the settle left the picture at error {settled:.2} of {coarse:.2}");
+
+            // The motion after it is at what the link bears, and where it is.
+            let mut moved = Vec::new();
+            stream.encode_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }]), false, &mut moved).expect("an encode").expect("a frame");
+            walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
+            assert_eq!((stream.coarsest(), walk.settle_at().is_some()), (QUALITY_MIN, true), "a coarse frame after the settle owes none");
+
+            // A settle that is to be a keyframe is one, at the settle's quality.
+            let mut key = Vec::new();
+            assert_eq!(stream.settle_rgb(&rgb, 90, true, &mut key).expect("a settle"), Some(true));
+            assert_eq!((stream.quality(), stream.coarsest(), frame_header(&key).map(|header| header.keyframe)), (QUALITY_MIN, 90, Some(true)));
+
+            // A picture that is not the stream's moves nothing.
+            assert!(matches!(stream.settle_rgb(&[0; 9], 90, false, &mut Vec::new()), Err(Error::Crop(..))));
+            assert!(matches!(stream.settle_bgrx(&[0; 9], 4, 90, false, &mut Vec::new()), Err(Error::Buffer { .. })));
+            assert_eq!(stream.quality(), QUALITY_MIN);
+        }
     }
 
     /// The mechanism a quality walk rests on: quality can be given up
