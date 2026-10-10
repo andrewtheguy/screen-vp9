@@ -1,0 +1,62 @@
+name: Release
+
+# Tags the commit it is run on `v<version>`, the version being `Cargo.toml`'s,
+# and publishes that as a GitHub prerelease: always a prerelease, whatever the
+# branch. The tag is all a release is, since a user pins it and builds the
+# source; nothing is built to attach. Run it by hand; bump the version first.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine and validate version
+        id: version
+        run: |
+          # A real TOML parse and a semver check, not grep.
+          VERSION=$(python3 -c '
+          import re, sys, tomllib
+          with open("Cargo.toml", "rb") as f:
+              version = tomllib.load(f)["package"]["version"]
+          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version):
+              sys.exit(f"invalid version in Cargo.toml: {version!r}")
+          print(version)
+          ')
+          echo "Release tag: v${VERSION}"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Abort if tag already exists
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
+            echo "::error::Tag ${{ steps.version.outputs.tag }} already exists on remote. Bump the version in Cargo.toml first."
+            exit 1
+          fi
+
+  test:
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: [prepare, test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Publish the prerelease (creates the tag)
+        run: |
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            --title "${{ needs.prepare.outputs.tag }}" \
+            --generate-notes

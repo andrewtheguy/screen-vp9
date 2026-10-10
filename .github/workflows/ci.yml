@@ -2,17 +2,21 @@ name: CI
 
 # Every target a user builds this crate for, each of which libvpx-prebuilt ships
 # the tests' decoder for: Linux x86_64 and aarch64 for the daemon and the gateway,
-# macOS arm64 and Windows x86_64 for the gateway.
+# macOS arm64 and Windows x86_64 for the gateway. The release workflow calls it
+# too: nothing is tagged that these did not pass.
 on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The workflow's name is the caller's in a called run, so a release's tests
+  # and a push's on the same branch do not cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

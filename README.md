@@ -50,8 +50,9 @@ encoder works is in [docs/encoder.md](docs/encoder.md), what it was measured
 at in [docs/benchmarks.md](docs/benchmarks.md), and how it was planned and
 decided in [docs/plan.md](docs/plan.md).
 
-Use it by release tag:
+Use it by release tag, each of which the `Release` workflow publishes as a
+prerelease once the tests pass on every target:
 
 ```toml
-screen-vp9-native = { git = "https://github.com/andrewtheguy/screen-vp9-native", tag = "v0.0.1" }
+screen-vp9-native = { git = "https://github.com/andrewtheguy/screen-vp9-native", tag = "v0.0.1-alpha.1" }
 ```

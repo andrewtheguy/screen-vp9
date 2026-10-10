@@ -71,7 +71,6 @@ In the order it is taken up:
    encoder here it cannot be the gate of [Decisions](#decisions) as
    written; what this repository can assert is this encoder's own bytes
    and PSNR per capture, which are the same on every run. Not decided.
-5. **A release**: 0.0.1 is the version in `Cargo.toml` and is not tagged.
 
 ## Decisions
 
@@ -682,7 +681,8 @@ The replan, from here. Each phase is measured on the captures of
     `-C target-feature=+avx2` set for its amd64 builds (a
     `.cargo/config.toml` or `RUSTFLAGS` in each container build), and
     wlshare's `scripts/vp9-samples.sh` run once so that vp9-wasm's benchmark
-    decodes what this encoder writes. A release is not tagged yet.
+    decodes what this encoder writes. Released as `v0.0.1-alpha.1`, a prerelease
+    as every release of this repository is, by its `Release` workflow.
 11. **A settle costs what it sharpens.** What phase 9 left over the line: a
     settle's time, and `walk`'s one quiet settle at 2.3× libvpx's bytes.
     Measured by `settles_measured` at 1920×1080, the tables in
