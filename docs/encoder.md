@@ -50,8 +50,9 @@ bad evidence and what is done next, in order, are in
 - **Location:** this crate's `Encoder`, and so behind `Stream`, which is what
   both users hold. Until the fork it was a module of `screen-vp9` reachable
   only from tests, on its `rust-encoder` branch, which took `main` in as it
-  moved; `main`'s v0.0.13 (the settle, a rectangle's conversion on the
-  encoder's threads) was the last taken.
+  moved, and since the fork it takes `screen-vp9`'s `main` in the same way:
+  v0.0.14 (a stream reads a picture and then codes it, two calls) is the
+  last taken.
 - **No fallback:** there is no libvpx encoder here, behind a feature or
   otherwise. The fallback is the other crate.
 - **SIMD is the baseline, not a choice: NEON on arm64 and AVX2 on amd64,**
@@ -774,11 +775,14 @@ The replan, from here. Each phase is measured on the captures of
     an API, the walk's `stays_at` (a dial this encoder cannot refuse) and
     the harness that compared the two encoders deleted; `Speed` kept; libvpx
     a dev-dependency. What the API is now: `Encoder::new(width, height,
-    quality, threads)` and `Stream::new` the same, `encode` and the settles
+    quality, threads)` and `Stream::new` the same, `encode` and `settle`
     returning whether the frame is a keyframe (this encoder always makes
     one), `set_quality` infallible, `Picture::new(width, height, threads)`,
-    `codec_string(w, h, fps)`, and an `Error` of five cases, none of them
-    libvpx's. Left for a user that takes it: the dependency swapped, its
+    `codec_string(w, h, fps)`, and an `Error` of six cases, none of them
+    libvpx's. A `Stream` is read and then coded, as `screen-vp9`'s is from
+    v0.0.14: `read_bgrx` or `read_rgb` with where the picture changed, then
+    `encode`, which codes what was read since the last frame, or `settle`,
+    which reads nothing. Left for a user that takes it: the dependency swapped, its
     4:2:0 stream dropped (wlshare's `WLS0`, remotex's `420` chroma and the
     browser's answer that selected it), its own decoder for its tests,
     `-C target-feature=+avx2` set for its amd64 builds (a

@@ -22,12 +22,14 @@ whose encoder is libvpx's. Nothing a user builds links libvpx.
 - A frame told where its picture changed codes the 8×8s those rectangles touch
   and leaves every other block as the decoder has it, in a segment a decoder
   reads nothing more of and does not loop filter.
-- `Stream`: the encoder and its picture together, fed a packed picture and
-  where it changed, which is how both users drive it. It reads and codes the
-  whole picture where a frame has none to be a change to, and says how coarse
-  the coarsest block a decoder holds is, which is what a settle is owed for:
-  the whole picture as one inter frame at the ceiling, the dial left where the
-  link had it.
+- `Stream`: the encoder and its picture together, which is how both users
+  drive it. It reads a packed picture where that changed, straight from the
+  framebuffer or the mirror and for no longer than the conversion takes, and
+  then codes what it read since the last frame. It reads and codes the whole
+  picture where there is none to be a change to, and says how coarse the
+  coarsest block a decoder holds is, which is what a settle is owed for: the
+  whole picture as one inter frame at the ceiling, read from nowhere since
+  the planes hold it, the dial left where the link had it.
 - `frame_header`: the profile and keyframe bit a frame says about itself;
   `codec_string`: the WebCodecs string a browser's `VideoDecoder` is configured
   with for a stream's size and frame rate.
