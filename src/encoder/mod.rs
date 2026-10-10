@@ -91,6 +91,52 @@ fn on_workers<J: Send, S: Send, R: Send>(pool: &Pool, jobs: impl Iterator<Item =
     done.into_iter().map(|(_, r)| r).collect()
 }
 
+/// A tile column's part of a plane of the reconstruction: its first pixel
+/// column of the frame, its stride and its pixels.
+type Strip<'a> = (usize, usize, &'a mut Vec<u8>);
+
+/// What is left of a frame once its blocks are decided, a job each.
+enum Finish<'a> {
+    /// A tile column's tapes to code.
+    Tapes(&'a tile::Contexts),
+    /// A plane to loop filter, in its tile columns.
+    Plane(Vec<Strip<'a>>),
+}
+
+/// Loop filter one plane, in the tile columns `columns`, over the
+/// superblocks that have `masks`; `copy` is room for a superblock and the
+/// eight pixels left of it.
+fn filter_plane(g: &Geometry, masks: &[Option<loopfilter::Masks>], mut columns: Vec<Strip<'_>>, copy: &mut [u8]) {
+    for sb_row in 0..g.sb_rows {
+        let mi_row = sb_row * 8;
+        let rows = (g.mi_rows - mi_row).min(8);
+        for sb_col in 0..g.sb_cols {
+            let Some(m) = &masks[sb_row * g.sb_cols + sb_col] else { continue };
+            let x = sb_col * 64;
+            let t = columns.partition_point(|&(start, ..)| start <= x) - 1;
+            let (start, stride) = (columns[t].0, columns[t].1);
+            let at = mi_row * 8 * stride + x - start;
+            if x == start && t > 0 {
+                let (before, after) = columns.split_at_mut(t);
+                let (left, left_stride) = (&mut *before[t - 1].2, before[t - 1].1);
+                let this = &mut *after[0].2;
+                for y in 0..rows * 8 {
+                    copy[y * 72..][..8].copy_from_slice(&left[(mi_row * 8 + y + 1) * left_stride - 8..][..8]);
+                    copy[y * 72 + 8..][..64].copy_from_slice(&this[at + y * stride..][..64]);
+                }
+                loopfilter::vertical(copy, 8, 72, rows, m);
+                for y in 0..rows * 8 {
+                    left[(mi_row * 8 + y + 1) * left_stride - 8..][..8].copy_from_slice(&copy[y * 72..][..8]);
+                    this[at + y * stride..][..64].copy_from_slice(&copy[y * 72 + 8..][..64]);
+                }
+            } else {
+                loopfilter::vertical(columns[t].2, at, stride, rows, m);
+            }
+            loopfilter::horizontal(columns[t].2, at, stride, rows, m);
+        }
+    }
+}
+
 /// A frame's measures in the units the bitstream counts in: mode info units
 /// of 8×8 and superblocks of 64×64.
 pub(super) struct Geometry {
@@ -431,7 +477,8 @@ impl Encoder {
         let segmentation = (!keyframe).then(|| header::Segmentation::choose(&counts.segments, !self.segmented));
         let filter_level = if self.filtered { loopfilter::level(quantizer.ac_step(), keyframe) } else { 0 };
         let table = probs.table();
-        let tiles = on_threads(&self.pool, self.threads, self.contexts.iter(), |contexts| tape::code(&contexts.tapes, &table, segmentation.as_ref()));
+        let tiles = self.finish(&table, segmentation.as_ref(), filter_level);
+        let g = &self.geometry;
         let uncompressed = header::Uncompressed {
             keyframe,
             width: g.width,
@@ -452,9 +499,6 @@ impl Encoder {
                 out.extend((tile.len() as u32).to_be_bytes());
             }
             out.extend(tile);
-        }
-        if filter_level > 0 {
-            self.filter(filter_level);
         }
         if self.touched.contains(&false) {
             self.merge();
@@ -536,61 +580,45 @@ impl Encoder {
         });
     }
 
-    /// Run the loop filter at `level` over the frame just coded, as a
-    /// decoder does before it keeps the frame: each plane on a thread of its
-    /// own, as far as there are threads. A superblock with no active block
-    /// has no edge to filter and is passed over.
-    fn filter(&mut self, level: u8) {
-        let g = &self.geometry;
-        let log2 = self.tile_cols_log2;
-        let tiles: Vec<_> = (0..1 << log2).map(|i| g.tile_cols(i, log2).start).zip(&self.contexts).collect();
-        let masks: Vec<Option<loopfilter::Masks>> = (0..g.sb_rows * g.sb_cols)
+    /// Code each tile column's tapes at the probabilities of `table`, the
+    /// segments as `segmentation` says, and with a `level` above 0 run the
+    /// loop filter at it over the frame just coded, as a decoder does
+    /// before it keeps the frame: neither waits on the other, so a tile
+    /// column and a plane are each a job, a thread taking the next as it
+    /// finishes one. A superblock with no active block has no edge to
+    /// filter and is passed over. Gives back each tile column's bytes.
+    fn finish(&mut self, table: &[u8], segmentation: Option<&header::Segmentation>, level: u8) -> Vec<Vec<u8>> {
+        let Self { geometry: g, pool, threads, recon, contexts, tile_cols_log2: log2, .. } = self;
+        let tiles: Vec<_> = (0..1 << *log2).map(|i| g.tile_cols(i, *log2).start).zip(&*contexts).collect();
+        let masks: Vec<Option<loopfilter::Masks>> = (0..if level > 0 { g.sb_rows * g.sb_cols } else { 0 })
             .map(|i| {
                 let (mi_row, mi_col) = (i / g.sb_cols * 8, i % g.sb_cols * 8);
                 let &(start, contexts) = &tiles[tiles.partition_point(|&(start, _)| start <= mi_col) - 1];
                 contexts.coded(mi_row / 8, (mi_col - start) / 8).then(|| loopfilter::Masks::new(g, mi_row, mi_col, level, |r, c| contexts.filtered(r, c - start)))
             })
             .collect();
-        let mut planes: [Vec<(usize, usize, &mut Vec<u8>)>; 3] = Default::default();
-        for column in &mut self.recon.columns {
-            for (p, plane) in column.planes.iter_mut().enumerate() {
-                planes[p].push((column.x, column.stride, plane));
-            }
-        }
-        on_threads(&self.pool, self.threads.min(3), planes.into_iter(), |mut columns| {
-            // A superblock that starts a tile column has its vertical pass
-            // run on a copy of it with the eight pixels left of it, which
-            // lie in the column before.
-            let mut copy = vec![0u8; 72 * 64];
-            for sb_row in 0..g.sb_rows {
-                let mi_row = sb_row * 8;
-                let rows = (g.mi_rows - mi_row).min(8);
-                for sb_col in 0..g.sb_cols {
-                    let Some(m) = &masks[sb_row * g.sb_cols + sb_col] else { continue };
-                    let x = sb_col * 64;
-                    let t = columns.partition_point(|&(start, ..)| start <= x) - 1;
-                    let (start, stride) = (columns[t].0, columns[t].1);
-                    let at = mi_row * 8 * stride + x - start;
-                    if x == start && t > 0 {
-                        let (before, after) = columns.split_at_mut(t);
-                        let (left, left_stride) = (&mut *before[t - 1].2, before[t - 1].1);
-                        let this = &mut *after[0].2;
-                        for y in 0..rows * 8 {
-                            copy[y * 72..][..8].copy_from_slice(&left[(mi_row * 8 + y + 1) * left_stride - 8..][..8]);
-                            copy[y * 72 + 8..][..64].copy_from_slice(&this[at + y * stride..][..64]);
-                        }
-                        loopfilter::vertical(&mut copy, 8, 72, rows, m);
-                        for y in 0..rows * 8 {
-                            left[(mi_row * 8 + y + 1) * left_stride - 8..][..8].copy_from_slice(&copy[y * 72..][..8]);
-                            this[at + y * stride..][..64].copy_from_slice(&copy[y * 72 + 8..][..64]);
-                        }
-                    } else {
-                        loopfilter::vertical(columns[t].2, at, stride, rows, m);
-                    }
-                    loopfilter::horizontal(columns[t].2, at, stride, rows, m);
+        let mut planes: [Vec<Strip<'_>>; 3] = Default::default();
+        if level > 0 {
+            for column in &mut recon.columns {
+                for (p, plane) in column.planes.iter_mut().enumerate() {
+                    planes[p].push((column.x, column.stride, plane));
                 }
             }
+        }
+        // The tapes first: a tile column's is the longer job.
+        let jobs: Vec<Finish<'_>> = contexts.iter().map(Finish::Tapes).chain(planes.into_iter().filter(|plane| !plane.is_empty()).map(Finish::Plane)).collect();
+        // A superblock that starts a tile column has its vertical pass run
+        // on a copy of it with the eight pixels left of it, which lie in
+        // the column before.
+        let mut copies = vec![vec![0u8; 72 * 64]; (*threads).min(jobs.len())];
+        let done = on_workers(pool, jobs.into_iter(), &mut copies, |job, copy| match job {
+            Finish::Tapes(contexts) => Some(tape::code(&contexts.tapes, table, segmentation)),
+            Finish::Plane(columns) => {
+                filter_plane(g, &masks, columns, copy);
+                None
+            }
         });
+        done.into_iter().flatten().collect()
     }
 
     /// Mark each 8×8 of the frame still where `picture` is the previous
@@ -1388,7 +1416,9 @@ mod tests {
     /// column and on four.
     #[test]
     fn a_settle_leaves_what_a_decoder_holds_exactly() {
-        for (w, h, threads) in [(320u16, 240u16, 1), (2048, 136, 4)] {
+        // The second is no whole number of 8×8s either way: its last
+        // superblocks are held exactly as far as the picture holds them.
+        for (w, h, threads) in [(320u16, 240u16, 1), (322, 243, 2), (2048, 136, 4)] {
             // A grey the keyframe's DC lands on at this dial.
             let flat = vec![235u8; usize::from(w) * usize::from(h) * 3];
             let mut stream = Stream::new(w, h, 40, threads);

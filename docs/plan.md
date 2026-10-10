@@ -44,14 +44,16 @@ next in [What is open](#what-is-open).
 
 In the order it is taken up:
 
-1. **A settle's time on a busy picture**, the rest of phase 11. A settle of
-   a picture a decoder holds exactly costs a fifth of what it did; one of a
-   busy picture still runs the block coder on every block that is not
-   exact, the transform size trial and the three planes, as a keyframe
-   does, and takes three quarters of a keyframe's time for a third of its
-   bytes. A transform size by rule was measured and loses the picture
-   (phase 11); what is left to look at is the trial's token estimate and
-   the tapes, which one thread per tile column codes.
+1. **The tokens of a busy frame.** A settle of a busy picture is now 0.85
+   to 0.95 of what it took (phase 11), and what is left of it is the block
+   coder: counting, recording and coding tokens is a third of its
+   processor time, the transforms and the quantizer a fifth. The token
+   loops run some 55 instructions a coefficient with nothing waiting on
+   anything, so they are cut only by doing less a coefficient: the token
+   and energy of each level taken once, a vector of them at a time, in the
+   three kernels, for perhaps a tenth of a settle. Not begun. Seen on the
+   way and not looked into: a keyframe of a flat desktop takes 13 ms at
+   1920×1080 and 38 at 3840×2160 to make a few hundred bytes.
 2. **The run over every size after phases 9 and 11**, made from
    `screen-vp9` for libvpx's half, so that the tables of
    [benchmarks.md](benchmarks.md) are the encoder's as it is and not phase
@@ -715,6 +717,31 @@ The replan, from here. Each phase is measured on the captures of
       from 80: 47.65 to 47.20 at 0.73×), which is a coarser settle and not
       a faster one. A settle
       is the frame that is owed the picture; the trial stays.
+    - **A superblock the previous frame holds to the pixel is not
+      measured** (`Tile::exact`). The exact squares above were found by
+      measuring every 8×8 of them, source and residual, 192 calls a
+      superblock to find nothing. The superblock's pixels are compared
+      with the reference's first, and only what differs is measured.
+      **Done.** A quiet settle at 1920×1080 from 4.2 ms to 3.1, and 0.66
+      to 0.75 of its time at 2560 and 3840 wide; a frame after the dial
+      moves pays the same less.
+    - **The tapes and the loop filter in one wake** (`Encoder::finish`).
+      A tile column's tapes are coded by one thread and the filter took a
+      plane to a thread, one after the other, with threads idle in both.
+      They read nothing of each other's, so a tile column and a plane are
+      each a job and a thread takes the next as it finishes one. **Done.**
+      Busy settles and keyframes in one and two tile columns 0.89 to 0.96
+      of their time; from 2048 wide there is no filter and nothing moves.
+    - **Three cuts to the token estimate, measured and not taken.** Timed
+      by a settle's own processor cycles, which hold to a part in a
+      hundred: contexts read from the levels with no scratch array between
+      positions, a transform size given up as soon as it costs what the
+      best does, and a zero among zeros costed without its tables. One to
+      two parts in a hundred of the cycles together and nothing in the
+      time; the last saved four in a hundred of the instructions and none
+      of the cycles, its branch missing as often as it saved.
+    Every frame is the same to the byte after these as before. The tables
+    are in [benchmarks.md](benchmarks.md#settles-and-keyframes-the-rest-of-phase-11).
     Left: [What is open](#what-is-open), 1.
 
 ## Main risk

@@ -801,6 +801,12 @@ impl<'a> Tile<'a> {
     /// that the frame holds, the residual's against the previous frame where
     /// the 8×8 is.
     fn measure(&mut self, mi_row: usize, mi_col: usize) {
+        // What the previous frame holds exactly has nothing to measure:
+        // its residual is nothing, and that is all `choose` reads of it.
+        if self.exact(mi_row, mi_col) {
+            self.measures = [Measure::default(); 64];
+            return;
+        }
         let (rows, cols) = self.inside(mi_row, mi_col, SB_LOG2);
         for r in rows {
             for c in cols.clone() {
@@ -810,6 +816,19 @@ impl<'a> Tile<'a> {
                 self.measures[r * 8 + c] = Measure { source, residual };
             }
         }
+    }
+
+    /// Whether the previous frame holds the superblock at `(mi_row,
+    /// mi_col)` to the pixel, as far as the picture holds it: past the
+    /// picture's edge the source and a decoder's reference each repeat
+    /// their last pixel, so what is the same inside is the same there.
+    fn exact(&self, mi_row: usize, mi_col: usize) -> bool {
+        let Some(previous) = &self.previous else { return false };
+        let src = self.source;
+        let (px, py) = (mi_col * 8, mi_row * 8);
+        let (w, h) = (64.min(src.width - px), 64.min(src.height - py));
+        let Some(column) = previous.reference.holding(px, w) else { return false };
+        (0..3).all(|plane| (py..py + h).all(|y| src.planes[plane][y * src.stride + px..][..w] == *column.row(plane, y, px, w)))
     }
 
     /// Whether the means of the four luma 4×4s of the 8×8 at `(mi_row,

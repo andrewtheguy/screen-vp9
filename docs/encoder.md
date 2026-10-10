@@ -53,8 +53,7 @@ threads is one wake of the pool.
 | Search | `motion::Search::update` | Brings the hash index of the frame before up to date where 8×8s went stale, and gives each superblock the vectors it offers its blocks |
 | Tiles | `tile::code` | Decides every block and reconstructs it, a superblock row at a time; the bools go onto a tape per row, counted but not coded |
 | Headers | `header`, `probs` | Chooses the probability updates from what the tapes count, the segmentation's coding, and the loop filter's level from the quantizer |
-| Tapes | `tape::code` | Codes each tile column's tapes at the updated probabilities |
-| Filter | `Encoder::filter` | Runs the loop filter over the reconstruction, as a decoder does before it keeps the frame, over superblocks with an active block only |
+| Tapes and filter | `Encoder::finish` | Codes each tile column's tapes at the updated probabilities (`tape::code`), and runs the loop filter over the reconstruction, as a decoder does before it keeps the frame, over superblocks with an active block only. Neither waits on the other: a tile column and a plane are each a job of the one wake |
 | Keep | `Encoder::merge` | Writes the touched superblocks back into the reference; a frame that touched every superblock swaps the two instead |
 
 Afterwards every named 8×8 is marked as coded at the frame's dial.
@@ -104,8 +103,9 @@ The least VP9 that a decoder accepts and that a desktop is coded well with.
 ## How a block is decided
 
 `tile.rs`. A superblock is measured once, per 8×8: the moments of its source
-and, in an inter frame, of its source less the previous frame where it is.
-The partition tree is then walked from 64×64 down, and a square is coded
+and, in an inter frame, of its source less the previous frame where it is. A
+superblock the previous frame holds to the pixel is found by comparing the
+two and is not measured at all. The partition tree is then walked from 64×64 down, and a square is coded
 whole where `choose` finds a way to, and split where it does not.
 
 In an inter frame a square is, in this order:
@@ -163,7 +163,12 @@ The rules the encoder keeps to, in the order the users' frames come:
 - **One pool of threads for the encoder's life**, parked between a frame's
   phases and woken once for each. A frame spawns nothing.
 - **A settle costs what it sharpens.** What a decoder holds exactly is left
-  alone; the rest is the zero vector and a residual, with no search.
+  alone, a superblock of it for the price of comparing its pixels; the rest
+  is the zero vector and a residual, with no search.
+- **What is left of a frame once its blocks are decided is done at once.**
+  A tile column's tapes are coded by one thread, bool after bool, and the
+  loop filter takes a plane to a thread; they share the threads rather than
+  one waiting for the other.
 - **Scrolls and drags are found by hash**, which on exact pixels is cheap and
   exact.
 - **Tile columns are coded at once**, and within a column the superblock

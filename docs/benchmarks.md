@@ -289,6 +289,110 @@ Over the 1920×1080 captures played whole, the same change moved nothing but
 `walk`'s one quiet settle, from 387 bytes to 122 (libvpx's was 167), and
 `walk`'s other frames by 0.09% of their bytes and −0.03 dB.
 
+## Settles and keyframes, the rest of phase 11
+
+At 1920×1080 on four threads, before and after the two changes that ended
+phase 11: a superblock the previous frame holds to the pixel is compared and
+not measured, and a frame's tapes and its loop filter share one wake of the
+threads. Both leave every frame as it was to the byte, so there is one
+column of bytes. The two builds were run turn about, five rounds of five
+passes for a settle and four of five for a keyframe, and the least time of
+each kept, which holds a time to a few parts in a hundred where one run
+after another does not. "Before" is the encoder of
+[the tables above](#settles-before-and-after-phase-11), "after" in their
+sense.
+
+### A settle from dial 20 to 90, the rest of phase 11
+
+| First picture of | Bytes | Time before, ms | Time after, ms | Time ratio |
+|---|---:|---:|---:|---:|
+| `browser` | 1594 | 14.2 | $\color{green}{13.6}$ | $\color{green}{0.96}$ |
+| `drag` | 132982 | 28.6 | $\color{green}{25.7}$ | $\color{green}{0.90}$ |
+| `flood` | 169613 | 30.6 | $\color{green}{28.0}$ | $\color{green}{0.92}$ |
+| `terminal` | 1311 | 11.1 | $\color{green}{10.8}$ | $\color{green}{0.97}$ |
+| `uncover` | 299605 | 43.4 | $\color{green}{39.4}$ | $\color{green}{0.91}$ |
+| `video` | 85857 | 24.4 | $\color{green}{22.2}$ | $\color{green}{0.91}$ |
+| `walk` | 67160 | 21.0 | $\color{green}{20.6}$ | $\color{green}{0.98}$ |
+
+### A settle from dial 65 to 90, the rest of phase 11
+
+| First picture of | Bytes | Time before, ms | Time after, ms | Time ratio |
+|---|---:|---:|---:|---:|
+| `browser` | 61 | 4.3 | $\color{green}{3.2}$ | $\color{green}{0.74}$ |
+| `drag` | 41031 | 18.6 | $\color{green}{16.7}$ | $\color{green}{0.90}$ |
+| `flood` | 53905 | 22.3 | $\color{green}{20.6}$ | $\color{green}{0.92}$ |
+| `terminal` | 57 | 3.5 | $\color{green}{2.8}$ | $\color{green}{0.80}$ |
+| `uncover` | 91049 | 30.4 | $\color{green}{28.2}$ | $\color{green}{0.93}$ |
+| `video` | 26293 | 14.0 | $\color{green}{12.3}$ | $\color{green}{0.88}$ |
+| `walk` | 29575 | 13.4 | $\color{green}{12.7}$ | $\color{green}{0.95}$ |
+
+### A settle from dial 80 to 90, the rest of phase 11
+
+| First picture of | Bytes | Time before, ms | Time after, ms | Time ratio |
+|---|---:|---:|---:|---:|
+| `browser` | 45 | 4.1 | $\color{green}{3.1}$ | $\color{green}{0.76}$ |
+| `drag` | 15119 | 15.8 | $\color{green}{14.5}$ | $\color{green}{0.92}$ |
+| `flood` | 18342 | 18.1 | $\color{green}{17.1}$ | $\color{green}{0.94}$ |
+| `terminal` | 40 | 3.4 | $\color{green}{2.6}$ | $\color{green}{0.76}$ |
+| `uncover` | 33552 | 23.8 | $\color{green}{21.4}$ | $\color{green}{0.90}$ |
+| `video` | 8450 | 10.9 | $\color{green}{9.3}$ | $\color{green}{0.85}$ |
+| `walk` | 15111 | 11.9 | $\color{green}{11.3}$ | $\color{green}{0.95}$ |
+
+### A settle from dial 89 to 90, the rest of phase 11
+
+| First picture of | Bytes | Time before, ms | Time after, ms | Time ratio |
+|---|---:|---:|---:|---:|
+| `browser` | 45 | 4.2 | $\color{green}{3.0}$ | $\color{green}{0.71}$ |
+| `drag` | 2716 | 11.0 | $\color{green}{10.3}$ | $\color{green}{0.94}$ |
+| `flood` | 2706 | 12.3 | $\color{green}{11.5}$ | $\color{green}{0.93}$ |
+| `terminal` | 40 | 3.5 | $\color{green}{2.6}$ | $\color{green}{0.74}$ |
+| `uncover` | 6707 | 16.2 | $\color{green}{14.5}$ | $\color{green}{0.90}$ |
+| `video` | 1371 | 7.7 | $\color{green}{6.5}$ | $\color{green}{0.84}$ |
+| `walk` | 5348 | 10.2 | $\color{green}{9.5}$ | $\color{green}{0.93}$ |
+
+### A keyframe at dial 40, the rest of phase 11
+
+| First picture of | Bytes | Time before, ms | Time after, ms | Time ratio |
+|---|---:|---:|---:|---:|
+| `browser` | 203 | 13.2 | $\color{green}{13.0}$ | $\color{green}{0.98}$ |
+| `drag` | 66247 | 27.8 | $\color{green}{26.7}$ | $\color{green}{0.96}$ |
+| `flood` | 91460 | 32.1 | $\color{green}{31.5}$ | $\color{green}{0.98}$ |
+| `terminal` | 170 | 10.2 | $\color{green}{10.0}$ | $\color{green}{0.98}$ |
+| `uncover` | 161714 | 49.7 | $\color{green}{46.5}$ | $\color{green}{0.94}$ |
+| `video` | 44349 | 22.5 | $\color{green}{20.1}$ | $\color{green}{0.89}$ |
+| `walk` | 13603 | 16.1 | $\color{red}{16.5}$ | $\color{red}{1.02}$ |
+
+### A keyframe at dial 65, the rest of phase 11
+
+| First picture of | Bytes | Time before, ms | Time after, ms | Time ratio |
+|---|---:|---:|---:|---:|
+| `browser` | 208 | 13.0 | $\color{red}{13.1}$ | $\color{red}{1.01}$ |
+| `drag` | 100910 | 29.6 | $\color{green}{27.5}$ | $\color{green}{0.93}$ |
+| `flood` | 139796 | 34.1 | $\color{green}{32.3}$ | $\color{green}{0.95}$ |
+| `terminal` | 175 | 10.2 | $\color{green}{9.9}$ | $\color{green}{0.97}$ |
+| `uncover` | 253392 | 53.5 | $\color{green}{51.1}$ | $\color{green}{0.96}$ |
+| `video` | 68616 | 23.8 | $\color{green}{21.2}$ | $\color{green}{0.89}$ |
+| `walk` | 31622 | 18.9 | $\color{green}{18.4}$ | $\color{green}{0.97}$ |
+
+### A keyframe at dial 90, the rest of phase 11
+
+| First picture of | Bytes | Time before, ms | Time after, ms | Time ratio |
+|---|---:|---:|---:|---:|
+| `browser` | 205 | 12.9 | $\color{red}{13.0}$ | $\color{red}{1.01}$ |
+| `drag` | 129858 | 30.7 | $\color{green}{28.4}$ | $\color{green}{0.93}$ |
+| `flood` | 179973 | 35.1 | $\color{green}{32.4}$ | $\color{green}{0.92}$ |
+| `terminal` | 173 | 10.0 | $\color{red}{10.4}$ | $\color{red}{1.04}$ |
+| `uncover` | 324413 | 55.2 | $\color{green}{51.6}$ | $\color{green}{0.93}$ |
+| `video` | 88069 | 24.9 | $\color{green}{22.1}$ | $\color{green}{0.89}$ |
+| `walk` | 51252 | 20.6 | $\color{green}{20.1}$ | $\color{green}{0.98}$ |
+
+Over the 1920×1080 captures played whole, three rounds of each build, every
+kind of frame took 0.87 to 1.00 of its median time (a line of `terminal`
+0.91, a frame of `video` 0.94, `walk`'s quiet settle 0.79) and the same
+bytes. At 2560 and 3840 wide, where there is no loop filter to share the
+threads with, a quiet settle took 0.66 to 0.75 of its time, a busy one 0.88
+to 0.98, and a keyframe what it did.
+
 ## Test material
 
 The captures are what a wlshare session handed `Stream`, written by its own
