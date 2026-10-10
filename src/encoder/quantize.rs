@@ -42,6 +42,13 @@ impl Quantizer {
         (eob, error << (2 * u32::from(n == 32)))
     }
 
+    /// The squared error of coding nothing of the `n`×`n` `coeffs`, on the
+    /// scale `quantize_with_error` gives an error.
+    pub(super) fn energy(n: usize, coeffs: &[i32]) -> i64 {
+        let sum: i64 = coeffs[..n * n].iter().map(|&c| i64::from(c) * i64::from(c)).sum();
+        sum << (2 * u32::from(n == 32))
+    }
+
     /// `quantize`, with the squared error on the coefficients' own scale
     /// where `ERROR`, otherwise 0.
     fn quantize_in<const ERROR: bool>(&self, n: usize, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {

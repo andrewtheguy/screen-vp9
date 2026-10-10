@@ -51,6 +51,10 @@ const SB_LOG2: u32 = 3;
 const SPLIT_VARIANCE: i64 = 8;
 const SPLIT_NUM: i64 = 1;
 
+/// The variance per pixel, summed over the planes, above which a square
+/// predicted from the previous frame is split, in eighths of the AC step.
+const INTER_SPLIT: i64 = 1;
+
 /// What a bit is worth in squared error wherever a block's coding is chosen
 /// by cost (its intra modes, its transform size, its vector), in
 /// thousandths of the AC step squared over 64, a step in pixels being an
@@ -221,10 +225,16 @@ impl<'a> Source<'a> {
 
 /// What an inter frame is coded against: the previous frame as a decoder
 /// has it, per 8×8 of the frame whether the source there is the previous
-/// frame's, and per superblock the vectors the motion search offers it.
+/// frame's and whether it is to be skipped, and per superblock the vectors
+/// the motion search offers it.
 #[derive(Clone, Copy)]
 pub(super) struct Previous<'a> {
     pub(super) reference: &'a Reconstruction,
+    /// Per 8×8 of the frame, whether its source is the previous frame's:
+    /// nothing moved there, whatever the dial did.
+    pub(super) still: &'a [bool],
+    /// Per 8×8 of the frame, whether it is still and at the dial's
+    /// quantizer already: the frame skips it.
     pub(super) unchanged: &'a [bool],
     /// Per superblock of the frame, whether the frame touches it: it or a
     /// neighbour of it may be coded. One it does not touch is left as it
@@ -563,6 +573,33 @@ struct Measure {
     residual: Moments,
 }
 
+/// The `levels` of a transform block of side `side` and `kind`, which
+/// quantizing left at `error` from its `coeffs`, kept where they are worth
+/// their bits and cleared where coding nothing of the block costs less:
+/// the levels' bits at the frame's starting probabilities, and the end of
+/// block of the levels kept, and the error they leave, a bit weighed at
+/// `RATE_WEIGHT`. libvpx's realtime encoder skips a block whose residual
+/// costs more than it saves (`vp9_pick_inter_mode`); a settle's residual,
+/// the previous frame's quantization error, leaves a lone level deep in
+/// the scan of many a block, a hundred zero tokens for one coefficient.
+#[allow(clippy::too_many_arguments)]
+fn worth_coding(costs: &tokens::Costs, energy: &mut [u8; 1024], quantizer: &Quantizer, side: usize, kind: tokens::Kind, coeffs: &[i32], levels: &mut [i32], eob: usize, error: i64) -> (usize, u32, i64) {
+    let bits = tokens::estimate(costs, kind, 0, levels, eob, energy);
+    if eob == 0 {
+        return (0, bits, error);
+    }
+    let ac = i64::from(quantizer.ac_step());
+    let weight = RATE_WEIGHT * ac * ac;
+    let nothing = tokens::estimate(costs, kind, 0, &[], 0, energy);
+    let left = Quantizer::energy(side, coeffs);
+    if left * 256_000 + weight * i64::from(nothing) <= error * 256_000 + weight * i64::from(bits) {
+        levels.fill(0);
+        (0, nothing, left)
+    } else {
+        (eob, bits, error)
+    }
+}
+
 /// The eight pixels of a row of the source from `x`, as it is coded: past
 /// the row's end, its last pixel.
 fn eight(row: &[u8], x: usize) -> [u8; 8] {
@@ -637,6 +674,9 @@ struct Tile<'a> {
     failed: &'a AtomicBool,
     /// The variance a square is split above, `SPLIT_VARIANCE` of the step.
     split_variance: i64,
+    /// The variance an inter square is split above, `INTER_SPLIT` eighths
+    /// of the step.
+    inter_split_variance: i64,
     /// The superblock being coded, per 8×8 in raster order.
     measures: [Measure; 64],
     /// Per 8×8 of the superblock and per plane, the sums of its source's
@@ -696,6 +736,7 @@ impl<'a> Tile<'a> {
             fast: frame.fast,
             failed,
             split_variance: i64::from(frame.quantizer.ac_step()) * SPLIT_NUM / SPLIT_VARIANCE,
+            inter_split_variance: i64::from(frame.quantizer.ac_step()) * INTER_SPLIT / 8,
             measures: [Measure::default(); 64],
             line_sums: [[([0; 8], [0; 8]); 3]; 64],
             summed: 0,
@@ -811,13 +852,28 @@ impl<'a> Tile<'a> {
     }
 
     /// In an inter frame, how many of the 8×8s of the square of `1 << n` at
-    /// `(mi_row, mi_col)` that the frame holds are the previous frame's.
+    /// `(mi_row, mi_col)` that the frame holds are the previous frame's at
+    /// the dial's quantizer, which the frame skips.
     fn count_unchanged(&self, mi_row: usize, mi_col: usize, n: u32) -> Option<usize> {
-        let previous = self.previous.as_ref()?;
+        self.count_marked(mi_row, mi_col, n, |previous| previous.unchanged)
+    }
+
+    /// Whether, in an inter frame, the source of the square of `1 << n`
+    /// 8×8s at `(mi_row, mi_col)` is the previous frame's wherever the frame
+    /// holds it, at whatever dial: nothing moved there.
+    fn still(&self, mi_row: usize, mi_col: usize, n: u32) -> bool {
+        self.count_marked(mi_row, mi_col, n, |previous| previous.still) == Some(self.count_inside(mi_row, mi_col, n))
+    }
+
+    /// In an inter frame, how many of the 8×8s of the square of `1 << n` at
+    /// `(mi_row, mi_col)` that the frame holds are marked in the mask
+    /// `of` picks from the previous frame.
+    fn count_marked(&self, mi_row: usize, mi_col: usize, n: u32, of: impl Fn(&Previous<'a>) -> &'a [bool]) -> Option<usize> {
+        let mask = of(self.previous.as_ref()?);
         let mi_cols = self.geometry.mi_cols;
         let (rows, cols) = self.inside(mi_row, mi_col, n);
         let (row0, col0) = (mi_row - (mi_row & 7), mi_col - (mi_col & 7));
-        Some(rows.into_iter().map(|r| previous.unchanged[(row0 + r) * mi_cols + col0..][cols.clone()].iter().filter(|&&u| u).count()).sum())
+        Some(rows.into_iter().map(|r| mask[(row0 + r) * mi_cols + col0..][cols.clone()].iter().filter(|&&u| u).count()).sum())
     }
 
     /// How many 8×8s of the square of `1 << n` at `(mi_row, mi_col)` the
@@ -971,6 +1027,17 @@ impl<'a> Tile<'a> {
         }
         let dc = total.source.variance(count);
         let (mode, variance, moments) = match &self.previous {
+            // A square whose source is the previous frame's throughout, at
+            // another dial, settles: the previous frame where it is and the
+            // residual, which is that frame's quantization error, with
+            // nothing searched; an intra mode where DC's residual is
+            // smaller, which from a coarse dial it is where the neighbours
+            // have settled already.
+            Some(_) if self.still(mi_row, mi_col, n) => {
+                let residual = total.residual.variance(count);
+                let (intra, variance, moments) = if dc < residual { self.intra_mode(mi_row, mi_col, n, &total.source, count) } else { (IntraMode::Dc, dc, total.source) };
+                if residual <= variance { (Mode::Inter(Mv::ZERO), residual, total.residual) } else { (Mode::Intra { luma: intra, chroma: intra }, variance, moments) }
+            }
             Some(previous) => {
                 // Zero first, then the vectors a decoder predicts, then the
                 // search's, which are new vectors to code and so have to do
@@ -1024,7 +1091,8 @@ impl<'a> Tile<'a> {
             Mode::Intra { .. } if n == 0 && !self.fast && self.quarters_vary(mi_row, mi_col) => Mode::Intra4 { sub: [IntraMode::Dc; 4], chroma: IntraMode::Dc },
             mode => mode,
         };
-        (n == 0 || variance <= self.split_variance * count * count).then_some((mode, moments))
+        let split_variance = if matches!(mode, Mode::Inter(_)) { self.inter_split_variance } else { self.split_variance };
+        (n == 0 || variance <= split_variance * count * count).then_some((mode, moments))
     }
 
     /// Of the intra modes, the one whose residual over the square of
@@ -1254,26 +1322,33 @@ impl<'a> Tile<'a> {
     /// size that fits it, the one whose luma levels cost least in their
     /// squared error and their bits at `RATE_WEIGHT`, the error measured on
     /// the coefficients and the bits at the frame's starting probabilities.
-    /// Its luma levels and ends of block are left in `levels` and `eobs`.
-    /// Chroma takes the size luma chose: deciding each plane's part of the
-    /// cost too saved 0.4–3% of the bytes for a fifth more time.
+    /// A transform block whose levels save less than their bits are worth
+    /// codes nothing, as libvpx's realtime encoder skips a block whose
+    /// residual costs more than it saves (`vp9_pick_inter_mode`): a
+    /// settle's residual, the previous frame's quantization error, leaves
+    /// a lone level deep in the scan of many a block, a hundred zero
+    /// tokens for one coefficient. Its luma levels and ends of block are
+    /// left in `levels` and `eobs`. Chroma takes the size luma chose:
+    /// deciding each plane's part of the cost too saved 0.4–3% of the
+    /// bytes for a fifth more time.
     fn trial(&mut self, mi_row: usize, mi_col: usize, n: u32) -> usize {
         let ac = i64::from(self.quantizer.ac_step());
+        let weight = RATE_WEIGHT * ac * ac;
         let mut best = (i64::MAX, 0);
         for tx in (0..=(n as usize + 1).min(3)).rev() {
             let side = 4 << tx;
             let area = side * side;
+            let kind = tokens::Kind { tx, tx_type: TxType::DctDct, chroma: false, inter: true };
             let mut cost = 0;
             self.eobs[0].clear();
             for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx).1.enumerate() {
                 self.transform(0, mi_col * 8 + x, mi_row * 8 + y, side, TxType::DctDct);
                 let levels = &mut self.levels[0][i * area..][..area];
                 let (eob, error) = self.quantizer.quantize_with_error(side, tokens::scan(tx, TxType::DctDct).inverse, &self.coeffs[..area], levels);
-                let kind = tokens::Kind { tx, tx_type: TxType::DctDct, chroma: false, inter: true };
-                let bits = tokens::estimate(self.costs, kind, 0, levels, eob, &mut self.energy);
+                let (eob, bits, error) = worth_coding(self.costs, &mut self.energy, self.quantizer, side, kind, &self.coeffs[..area], levels, eob, error);
                 // In 256000ths of the squared error on the coefficients'
                 // scale, which is 64 times that in pixels.
-                cost += error * 256_000 + RATE_WEIGHT * ac * ac * i64::from(bits);
+                cost += error * 256_000 + weight * i64::from(bits);
                 self.eobs[0].push(eob);
             }
             if cost < best.0 {
@@ -1325,8 +1400,9 @@ impl<'a> Tile<'a> {
         let count = 64 * self.count_inside(mi_row, mi_col, n) as i64;
         let above = (mi_row > 0).then(|| self.mode_info(mi_row - 1, mi_col));
         let left = (mi_col > self.mi_col_start).then(|| self.mode_info(mi_row, mi_col - 1));
+        // A block that settles has nothing to find between the pixels.
         let mode = match mode {
-            Mode::Inter(mv) => Mode::Inter(self.refine(mi_row, mi_col, n, mv)),
+            Mode::Inter(mv) if !self.still(mi_row, mi_col, n) => Mode::Inter(self.refine(mi_row, mi_col, n, mv)),
             mode => mode,
         };
         let tx = match mode {
@@ -1902,18 +1978,20 @@ impl<'a> Tile<'a> {
     }
 
     /// Predict the block from the previous frame at `mv` from where it is,
-    /// over the part of it inside the frame's edge rounded up to 8: as a
-    /// decoder does, past the picture's edges the previous frame's edge
-    /// pixels repeat.
+    /// whole: as a decoder does, past the picture's edges the previous
+    /// frame's edge pixels repeat. The part past the frame's edge rounded
+    /// up to 8 is read by the transform blocks that overhang it, in a
+    /// picture whose 8×8 rows are not a multiple of the transform's (1080
+    /// has 135); left stale, their residual there was garbage, coded at a
+    /// thousand tokens a block in every inter frame that coded the bottom
+    /// row, unseen by a decoder and paid for.
     fn predict_inter(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) {
-        let g = self.geometry;
         let reference = self.previous.as_ref().expect("an inter frame").reference;
         let picture = (self.source.width, self.source.height);
         let ((dx, dy), fraction) = mv.split();
         let size = 8 << n;
         let (px, py) = (mi_col * 8, mi_row * 8);
-        let wide = size.min(g.mi_cols * 8 - px);
-        let high = size.min(g.mi_rows * 8 - py);
+        let (wide, high) = (size, size);
         let (stride, x, y) = (self.contexts.stride, px - self.contexts.x, py - self.top * 8);
         let (rx, ry) = (px as isize + dx, py as isize + dy);
         for (plane, recon) in self.contexts.planes.iter_mut().enumerate() {
@@ -1996,7 +2074,9 @@ impl<'a> Tile<'a> {
                     }
                     self.transform(plane, px, py, tx, tx_type);
                     let levels = &mut self.levels[plane][i * area..][..area];
-                    let eob = self.quantizer.quantize(tx, scan.inverse, &self.coeffs[..area], levels);
+                    let (eob, error) = self.quantizer.quantize_with_error(tx, scan.inverse, &self.coeffs[..area], levels);
+                    let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: plane > 0, inter: !matches!(mode, Mode::Intra { .. } | Mode::Intra4 { .. }) };
+                    let (eob, _, _) = worth_coding(self.costs, &mut self.energy, self.quantizer, tx, kind, &self.coeffs[..area], levels, eob, error);
                     self.eobs[plane].push(eob);
                     eob
                 } else {

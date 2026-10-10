@@ -617,7 +617,64 @@ The replan, from here. Each phase is measured on the captures of
       zero vector with its residual, skipping candidates, search, intra
       trial and the transform size trial where the residual's size is below
       a step; a settle is then libvpx's two hundred bytes in less than its
-      time, not twice both.
+      time, not twice both. Measured by `settles_against_libvpx`, new: each
+      capture's first picture coded as a keyframe at one dial and then
+      whole at another, the picture unchanged, as a caller sharpens a
+      quiet picture after the dial walked; and by `FRAMES=1` on the
+      capture harness, which prints every frame on a line, from which
+      `walk`'s frames are summed by dial. Before, at 1920×1080: settles
+      from 20 and 65 to 90 took 1.3–3.8× libvpx's time at 0.77–1.3× its
+      bytes, and `walk`'s one settle in the captures 2.3× its bytes at
+      1.85× its time. Built, in order:
+      - **Still 8×8s told apart from unchanged ones** (`still` beside
+        `unchanged` in `compare`): the source is the previous source there,
+        at whatever dial. The index and the projections go stale by
+        `still`, so a settle re-hashes and projects nothing; a square still
+        throughout settles in `choose` as the zero vector with its residual,
+        no candidate measured and no search, and the sub-pixel search is
+        not run on it. An intra mode is still taken where DC's residual is
+        smaller, which from a coarse dial it is where the neighbours have
+        settled already: without that, settles from 20 lost 0.4 dB and 10%
+        of the bytes. Time from 1.3–3.8× libvpx's to 1.0–3.0×.
+      - **An inter block predicted whole, past the frame's edge rounded up
+        to 8** (`predict_inter`). A 32×32 transform block at the bottom of
+        a 1080-high picture overhangs its 135 rows of 8×8s, and the rows it
+        overhangs held whatever the row buffer held: the residual there
+        was garbage, coded to the end of the scan at a thousand tokens a
+        block, in every inter frame that coded the bottom row, and unseen by
+        a decoder, which predicts those rows from its border. Found by
+        counting a settle's tokens: `browser`'s settle of a flat desktop
+        was 5952 bytes against libvpx's 53, two rows of 32×32 blocks coded
+        whole; now 418 and exact. Settles from 89 to 90 went from 3–6×
+        libvpx's bytes to 1.4–2.0×, from 65 from 1.12–1.34× to 1.03–1.10×.
+      - **A transform block that is not worth its bits codes nothing**
+        (`worth_coding`, in the inter trial and in every fresh plane): its
+        levels' error and bits at `RATE_WEIGHT` against the error of
+        leaving the residual whole and the bits of an empty block, as
+        libvpx's realtime encoder skips a block whose residual costs more
+        than it saves (`vp9_pick_inter_mode`). A settle's residual, the
+        previous frame's quantization error, leaves a lone level deep in
+        the scan of many a block, a hundred zero tokens for one
+        coefficient. Weighed at libvpx's own weight on the DC step (137)
+        it took `browser` and `drag` a decibel under for 3% of their
+        bytes; at `RATE_WEIGHT` it costs them nothing and takes the
+        settles from 80 to level bytes and picture.
+      With the three, settles at 1920×1080 against libvpx: from 20 to 90,
+      0.86–1.03× the bytes at +0.1 to +0.5 dB and 1.0–1.2× the time; from
+      65, 1.03–1.10× at +0.8 to +1.4 dB and 1.7–2.1×; from 80, 1.0–1.25×
+      at ±0.1 dB and 1.9–2.3×; from 89, 1.4–2.0× at −0.3 dB and 2.4–2.6×.
+      Over the 1920×1080 captures the picture is as it was (`browser`
+      +0.75 dB at 0.27× the bytes, `drag` +0.89 at 0.12×, `flood` +0.23 at
+      0.76×, `video` +0.42 at 0.995×, `walk` +0.20 at 1.09×, `uncover`
+      −0.32 at 1.02×). What `walk`'s bytes are, found by summing its
+      frames by dial: at dial 90 they are 1.007× libvpx's; at 20 to 30,
+      1.5–1.9× at the same picture, where each frame codes some seven
+      hundred intra 8×8s chosen over inter by residual variance alone,
+      which an intra block's modes cost several bits more than a
+      predicted vector; that, the settle's time, which is the transform
+      trial and the rest of the block coder, and the one settle's 405
+      bytes against 167, which is four 32×32 blocks where libvpx codes a
+      64×64, are what follows.
    2. The hash search on exact pixels: whether the projections, the
       sub-pixel refinement and `SEARCH_PAYS` still find anything the hashes
       miss on `browser`, `drag` and `video`; what finds nothing is deleted

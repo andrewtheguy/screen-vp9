@@ -257,7 +257,13 @@ pub(crate) struct Encoder {
     reference: Reconstruction,
     /// The source of the frame coded last, tight at the picture's width.
     previous: [Vec<u8>; 3],
-    /// Per 8×8 of the frame, whether the source is `previous` there.
+    /// Per 8×8 of the frame, whether the source is `previous` there, or the
+    /// frame may not code it: what the index and the projections go stale
+    /// by.
+    still: Vec<bool>,
+    /// Per 8×8 of the frame, whether it is `still` and was last coded at
+    /// the dial's quantizer: what the frame skips. One still at another
+    /// quantizer settles, coded where it is with its residual.
     unchanged: Vec<bool>,
     /// Per 8×8 of the frame, whether the frame being coded may code it: it
     /// is in a rectangle the frame was told the picture changed in, or the
@@ -315,6 +321,7 @@ impl Encoder {
             recon: Reconstruction::new(&geometry, tile_cols_log2),
             reference: Reconstruction::new(&geometry, tile_cols_log2),
             previous: std::array::from_fn(|_| vec![0; pixels]),
+            still: vec![false; geometry.mi_rows * geometry.mi_cols],
             unchanged: vec![false; geometry.mi_rows * geometry.mi_cols],
             named: vec![true; geometry.mi_rows * geometry.mi_cols],
             touched: vec![true; geometry.sb_rows * geometry.sb_cols],
@@ -382,7 +389,7 @@ impl Encoder {
         let keyframe = keyframe || !self.started;
         self.name(changed.filter(|_| !keyframe));
         self.compare(picture, keyframe);
-        let vectors = self.search.update(&self.pool, &self.previous[0], (!keyframe).then_some(&self.unchanged[..]), (!keyframe).then_some(&self.reference));
+        let vectors = self.search.update(&self.pool, &self.previous[0], (!keyframe).then_some(&self.still[..]), (!keyframe).then_some(&self.reference));
         for contexts in &mut self.contexts {
             contexts.start(self.last_inter);
         }
@@ -390,7 +397,7 @@ impl Encoder {
         let q_index = tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize];
         let quantizer = quantize::Quantizer::new(q_index);
         let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
-        let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, unchanged: &self.unchanged, touched: &self.touched, vectors: &vectors, search_every: self.search_every });
+        let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, still: &self.still, unchanged: &self.unchanged, touched: &self.touched, vectors: &vectors, search_every: self.search_every });
         // A keyframe starts a decoder's probabilities over from the defaults;
         // an inter frame takes the ones the frame before left.
         let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
@@ -578,11 +585,12 @@ impl Encoder {
         });
     }
 
-    /// Mark each 8×8 of the frame unchanged where `picture` is the previous
-    /// source over the part of it the picture holds and the 8×8 was last
-    /// coded at the dial's quantizer, or where the frame may not code it;
-    /// and make the previous source `picture` where it may, in a band of 8×8
-    /// rows on each thread. With `everything`, every 8×8 is changed.
+    /// Mark each 8×8 of the frame still where `picture` is the previous
+    /// source over the part of it the picture holds, or where the frame may
+    /// not code it, and unchanged where it is still and was last coded at
+    /// the dial's quantizer; and make the previous source `picture` where
+    /// the frame may code it, in a band of 8×8 rows on each thread. With
+    /// `everything`, every 8×8 is changed.
     fn compare(&mut self, picture: &Picture, everything: bool) {
         let g = &self.geometry;
         let width = usize::from(g.width);
@@ -590,9 +598,9 @@ impl Encoder {
         let q = quality_to_q(self.quality);
         let band = g.mi_rows.div_ceil(self.threads);
         let [p0, p1, p2] = &mut self.previous;
-        let marks = self.unchanged.chunks_mut(band * g.mi_cols).zip(self.named.chunks(band * g.mi_cols)).zip(self.coded_at.chunks(band * g.mi_cols));
+        let marks = self.still.chunks_mut(band * g.mi_cols).zip(self.unchanged.chunks_mut(band * g.mi_cols)).zip(self.named.chunks(band * g.mi_cols)).zip(self.coded_at.chunks(band * g.mi_cols));
         let bands = marks.zip(p0.chunks_mut(band * 8 * width)).zip(p1.chunks_mut(band * 8 * width)).zip(p2.chunks_mut(band * 8 * width));
-        on_threads(&self.pool, self.threads, bands.enumerate(), |(b, (((((unchanged, named), coded_at), p0), p1), p2))| {
+        on_threads(&self.pool, self.threads, bands.enumerate(), |(b, ((((((still, unchanged), named), coded_at), p0), p1), p2))| {
             let mut previous = [p0, p1, p2];
             let y0 = b * band * 8;
             let rows = previous[0].len() / width;
@@ -603,12 +611,14 @@ impl Encoder {
                         previous[y * width..][..width].copy_from_slice(source(plane, y));
                     }
                 }
+                still.fill(false);
                 unchanged.fill(false);
                 return;
             }
-            let marks = unchanged.chunks_exact_mut(g.mi_cols).zip(named.chunks_exact(g.mi_cols)).zip(coded_at.chunks_exact(g.mi_cols));
-            for (r, ((unchanged, named), coded_at)) in marks.enumerate() {
+            let marks = still.chunks_exact_mut(g.mi_cols).zip(unchanged.chunks_exact_mut(g.mi_cols)).zip(named.chunks_exact(g.mi_cols)).zip(coded_at.chunks_exact(g.mi_cols));
+            for (r, (((still, unchanged), named), coded_at)) in marks.enumerate() {
                 let rows = r * 8..(r * 8 + 8).min(rows);
+                still.fill(true);
                 unchanged.fill(true);
                 if !named.contains(&true) {
                     continue;
@@ -618,22 +628,23 @@ impl Encoder {
                     for y in rows.clone() {
                         let (old, old_rest) = previous[y * width..][..width].as_chunks::<8>();
                         let (new, new_rest) = source(plane, y).as_chunks::<8>();
-                        for (same, (a, b)) in unchanged.iter_mut().zip(old.iter().zip(new)) {
+                        for (same, (a, b)) in still.iter_mut().zip(old.iter().zip(new)) {
                             *same &= u64::from_ne_bytes(*a) == u64::from_ne_bytes(*b);
                         }
                         if !old_rest.is_empty() {
-                            unchanged[g.mi_cols - 1] &= old_rest == new_rest;
+                            still[g.mi_cols - 1] &= old_rest == new_rest;
                         }
                     }
                 }
-                for ((same, named), &at) in unchanged.iter_mut().zip(named).zip(coded_at) {
-                    *same = !named || *same && quality_to_q(at) == q;
+                for (((same, still), named), &at) in unchanged.iter_mut().zip(still.iter_mut()).zip(named).zip(coded_at) {
+                    *still = !named || *still;
+                    *same = !named || *still && quality_to_q(at) == q;
                 }
-                // Where the source is unchanged it is the previous source
+                // Where the source is still it is the previous source
                 // already, so a row with a change is taken whole where the
                 // frame may code it: elsewhere the previous source is what
                 // was coded.
-                if !unchanged.contains(&false) {
+                if !still.contains(&false) {
                     continue;
                 }
                 let mut c = 0;
@@ -1316,7 +1327,7 @@ mod tests {
     fn a_skipped_block_keeps_its_quantizer_until_a_whole_frame() {
         let (w, h) = (320u16, 240u16);
         let (wu, hu) = (usize::from(w), usize::from(h));
-        let source = desktop(w, h);
+        let source = noise(w, h);
         let named = Rect { x: 0, y: 0, width: 64, height: 64 };
         // The error of everything the rectangle leaves out.
         let error = |recon: &[Vec<u8>; 3]| {
@@ -1346,16 +1357,31 @@ mod tests {
         assert_eq!(stream.encoder.coarsest(), 90);
 
         // Coarse where a frame coded and nowhere else, until frames told
-        // where have between them coded every 8×8 finer.
+        // where have between them coded every 8×8 finer: the corner
+        // changes and is coded at 40, the rest is coded at 90, and then
+        // the corner as it stands.
+        let mut rgb = noise_rgb(w, h, 0x9e37_79b9);
+        for i in (0..64).flat_map(|y| (0..64).map(move |x| (y * wu + x) * 3)) {
+            for v in &mut rgb[i..i + 3] {
+                *v = !*v;
+            }
+        }
+        let changed = picture(w, h, &rgb);
+        let corner = |recon: &[Vec<u8>; 3]| {
+            let sum: u64 = (0..64).flat_map(|y| (0..64).map(move |x| (x, y))).map(|(x, y)| u64::from(recon[0][y * wu + x].abs_diff(changed.planes()[0][y * wu + x]))).sum();
+            sum as f64 / (64.0 * 64.0)
+        };
         stream.encoder.set_quality(40);
-        stream.told(&source, false, Some(&[named]));
+        stream.told(&changed, false, Some(&[named]));
         assert_eq!(stream.encoder.coarsest(), 40);
+        let coarse = corner(&stream.encoder.reconstruction());
         stream.encoder.set_quality(90);
-        stream.told(&source, false, Some(&[Rect { x: 64, y: 0, width: 256, height: 240 }, Rect { x: 0, y: 64, width: 64, height: 176 }]));
+        stream.told(&changed, false, Some(&[Rect { x: 64, y: 0, width: 256, height: 240 }, Rect { x: 0, y: 64, width: 64, height: 176 }]));
         assert_eq!(stream.encoder.coarsest(), 40, "the corner coded at 40 was not in that frame");
-        let (bytes, _, _) = stream.told(&source, false, Some(&[Rect { x: 4, y: 4, width: 56, height: 56 }]));
+        stream.told(&changed, false, Some(&[Rect { x: 4, y: 4, width: 56, height: 56 }]));
         assert_eq!(stream.encoder.coarsest(), 90, "every 8×8 has been coded at 90 since");
-        assert!(bytes > 50, "the corner, coded at 40, took {bytes} bytes to code at 90");
+        let settled = corner(&stream.encoder.reconstruction());
+        assert!(settled < coarse / 2.0, "the corner, coded at 40, was left at error {settled:.2} by the frame at 90, from {coarse:.2}");
     }
 
     #[test]
@@ -1555,6 +1581,7 @@ mod tests {
         // With `IVF` set to a directory, this encoder's stream is kept and
         // written there as `<capture>-<WxH>.ivf`, a file per size.
         let ivf = std::env::var_os("IVF").map(std::path::PathBuf::from);
+        let frames = std::env::var_os("FRAMES").is_some();
         type Stream = ((u16, u16), Vec<Vec<u8>>);
         let mut streams: Vec<Stream> = Vec::new();
         each_captured(path, |frame| {
@@ -1621,6 +1648,7 @@ mod tests {
             libvpx_carried = produced;
             let tally = tallies.entry(kind).or_default();
             tally.frames += 1;
+            let mut quality = [0.0; 2];
             for c in 0..2 {
                 if c == 0 && (!against || !produced) {
                     continue;
@@ -1628,10 +1656,26 @@ mod tests {
                 let decoded = decoders[c].decode(&out[c]).expect("a frame libvpx decodes");
                 tally.bytes[c] += out[c].len();
                 tally.times[c].push(times[c]);
-                tally.psnr[c] += psnr(luma_mse(picture, &decoded).max(1e-3));
+                quality[c] = psnr(luma_mse(picture, &decoded).max(1e-3));
+                tally.psnr[c] += quality[c];
             }
             if against && produced {
                 tally.ratios.push(times[1] / times[0]);
+            }
+            // With `FRAMES` set, each frame on a line of its own: its
+            // number, dial and kind, and both encoders' bytes, time and PSNR.
+            if frames {
+                println!(
+                    "    #{n:<4} q{:<3} {:<5} | libvpx {:>8} B {:>6.2} ms {:>5.2} dB | rust {:>8} B {:>6.2} ms {:>5.2} dB",
+                    frame.quality,
+                    kind.name(),
+                    out[0].len(),
+                    times[0],
+                    quality[0],
+                    out[1].len(),
+                    times[1],
+                    quality[1]
+                );
             }
             if ivf.is_some() {
                 if fresh {
@@ -1741,6 +1785,71 @@ mod tests {
                 // three planes, for what the chroma does.
                 println!(
                     "  q{dial:<3} | libvpx {:>8} B {:>6.2} ms {:>5.2} dB | rust {:>8} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time {:.3} dB {:+.2} all {:+.2}",
+                    result[0].0, result[0].1, result[0].2, result[1].0, result[1].1, result[1].2,
+                    result[1].0 as f64 / result[0].0 as f64, result[1].1 / result[0].1, result[1].2 - result[0].2, result[1].3 - result[0].3,
+                );
+            }
+        }
+    }
+
+    /// The first picture of each capture (the same knobs as
+    /// `captures_against_libvpx`) coded as a keyframe at the first dial of
+    /// each pair `SETTLES` names (`20:90,65:90` if unset), and then again
+    /// whole at the second, the picture unchanged: a settle, as a caller
+    /// sharpens a quiet picture after the dial walked. Each settle is coded
+    /// `PASSES` times (3 if unset) from the same keyframe for the least
+    /// time; its bytes, time and luma PSNR per pair, for the settle line of
+    /// the plan's gate. Run it in release:
+    ///
+    /// ```text
+    /// ONLY=1920 cargo test --release settles_against_libvpx -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
+    fn settles_against_libvpx() {
+        let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
+        let pairs: Vec<(u8, u8)> = std::env::var("SETTLES").map_or_else(
+            |_| vec![(20, 90), (65, 90)],
+            |d| d.split(',').map(|p| p.split_once(':').map(|(a, b)| (a.parse().expect("a dial"), b.parse().expect("a dial"))).expect("from:to")).collect(),
+        );
+        let passes: usize = std::env::var("PASSES").map_or(3, |t| t.parse().expect("a pass count"));
+        for path in captures() {
+            let picture = first_picture(&path);
+            let (w, h) = picture.size();
+            println!("{} {w}x{h} on {threads}", capture_name(&path));
+            for &(from, to) in &pairs {
+                let mut result = [(0usize, f64::INFINITY, 0.0f64, 0.0f64); 2];
+                for (c, r) in result.iter_mut().enumerate() {
+                    for _ in 0..passes {
+                        let mut libvpx = crate::Encoder::new(w, h, Chroma::Full, from, threads).expect("a libvpx encoder");
+                        let mut rust = Encoder::new(w, h, from, threads).expect("an encoder");
+                        let mut frames = [Vec::new(), Vec::new()];
+                        if c == 0 {
+                            libvpx.encode(&picture, true, None, &mut frames[0]).expect("an encode").expect("a frame");
+                            libvpx.set_quality(to).expect("the dial");
+                        } else {
+                            rust.encode(&picture, true, None, &mut frames[0]).expect("a keyframe");
+                            rust.set_quality(to);
+                        }
+                        let started = std::time::Instant::now();
+                        if c == 0 {
+                            libvpx.encode(&picture, false, None, &mut frames[1]).expect("an encode").expect("a frame");
+                        } else {
+                            rust.encode(&picture, false, None, &mut frames[1]).expect("a settle");
+                        }
+                        r.1 = r.1.min(started.elapsed().as_secs_f64() * 1000.0);
+                        let mut decoder = Decoder::new(1).expect("a decoder");
+                        decoder.decode(&frames[0]).expect("a keyframe libvpx decodes");
+                        let decoded = decoder.decode(&frames[1]).expect("a settle libvpx decodes");
+                        r.0 = frames[1].len();
+                        r.2 = psnr(luma_mse(&picture, &decoded).max(1e-3));
+                        r.3 = psnr(mse(&picture, &decoded).max(1e-3));
+                    }
+                }
+                // The PSNR is luma's, the gate's; the second is over all
+                // three planes, for what the chroma does.
+                println!(
+                    "  q{from}:{to:<3} | libvpx {:>8} B {:>6.2} ms {:>5.2} dB | rust {:>8} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time {:.3} dB {:+.2} all {:+.2}",
                     result[0].0, result[0].1, result[0].2, result[1].0, result[1].1, result[1].2,
                     result[1].0 as f64 / result[0].0 as f64, result[1].1 / result[0].1, result[1].2 - result[0].2, result[1].3 - result[0].3,
                 );
