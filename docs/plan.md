@@ -8,7 +8,8 @@ of how it was built on `screen-vp9`'s branch is in this file's history,
 up to the commit that replaced it with this one.
 
 Replanned on 2026-10-10, at release 0.0.1-alpha.2, with the use and the
-scope final.
+scope final; the open items were taken up again the same day, after release
+0.0.1-alpha.3.
 
 ## What it is for
 
@@ -84,12 +85,13 @@ desktop as drawn:
 [benchmarks.md](benchmarks.md), one run of 2026-10-10 over every size:
 
 - Over a whole capture, every one at every size takes less time than libvpx
-  (0.30 to 0.93, frame for frame) at a picture level or better in 68 cells
-  of 70 and at 0.12 to 1.09 of the bytes.
-- A first picture coded alone as a keyframe is level with libvpx up to 1920
-  wide and up to a quarter slower from 2048 wide.
-- A settle of a busy picture from 65 is 0.93 to 1.34 of libvpx's time, for
-  1.2 to 1.5 dB more picture.
+  (0.13 to 0.82, frame for frame) at a picture level or better in 68 cells
+  of 70 and at 0.12 to 1.09 of the bytes. A line of text is 0.13 to 0.18.
+- A first picture coded alone as a keyframe is 0.52 to 0.95 of libvpx's
+  time up to 1920 wide and 0.70 to 1.02 from 2048 wide.
+- A settle of a busy picture from 65 is 0.93 to 1.25 of libvpx's time, for
+  1.2 to 1.5 dB more picture, where libvpx's time is at the higher of the
+  two levels it comes out at, and up to 1.8 where it is at the lower.
 - A settle of one dial step takes up to 1.7 of libvpx's bytes.
 
 ## Measured again in this replan
@@ -106,6 +108,12 @@ On the AVX2 machine, four threads, each run alone.
 | Tile rows on a busy frame, two or four by what its heaviest tile column recorded | the bools of a tile column were coded by one thread, a third of a busy keyframe's time: 17.6 → 7.7 ms at 1920×1080, 33.5 → 19.7 at 3840×2160, for 0.02% more bytes |
 | A 4×4 block is tried in TM beside DC, V and H | +0.16 to +0.18 dB on keyframes at 1920×1080 for 3% of their time |
 
+| A phase is a queue its caller works too, waiting on no thread that has not woken; a worker spins 0.1 ms before it parks; a frame naming 1024 8×8s or fewer is coded on one thread | a line of text 2.1 → 0.41 ms at 1280×800, 2.06 → 0.57 at 1920×1080, 3.23 → 1.48 at 3840×2160; the same bytes |
+| A superblock a frame does not touch is recorded without being looked at | `uncover`'s frames 2.34 → 1.15 ms at 1280×800 |
+| A keyframe leaves the search's anchors to the frame after it | a first picture's keyframe 5 to 25% less; the frame after pays the 4 to 9 ms |
+| The reference is made by whichever is fewer to copy | `video` 26.4 → 23.4 ms at 2560×1600, `walk` 23.3 → 19.9 |
+
+The last four rows are after release 0.0.1-alpha.3 and change no stream.
 Tile rows were out of the subset until now. A tile row splits the bool
 coder and nothing else, libvpx and ffvp9 decode every frame of the captures
 played through them this way, and vp9-wasm reads the header's tile rows;
@@ -137,25 +145,30 @@ vp9-wasm has not been run on these streams.
 
 In the order it is taken up:
 
-1. **A first picture from 2048 wide**, 0.87 to 1.27 of libvpx's time. Seen
-   and not yet acted on: the tile phase of a busy 1920×1080 keyframe takes
-   27 ms of wall time for 86 ms of processor time on four threads, and 79
-   for 267 at 3840×2160; a keyframe at 3840×2160 still spends 7.5 ms in the
-   search's index and 3 ms comparing; the first keyframe of a stream runs
-   on cold buffers (130 ms against 40 for the next at 1920×1080).
-2. **A settle of a busy picture**, 0.93 to 1.34 of libvpx's time from 65,
+1. **A settle of a busy picture**, 0.93 to 1.25 of libvpx's time from 65
+   or 1.2 to 1.8, by which of two levels libvpx's own time comes out at,
    and its bytes from one dial step under: 0.8 to 1.7 of libvpx's at −0.1
-   to −0.4 dB. Not profiled since the token loops changed.
-3. **The frames of `video` and `walk`**, 0.68 to 0.93 of libvpx's time, the
-   nearest the line of the whole captures. Not profiled.
+   to −0.4 dB. Profiled: no one hot spot, and the time buys 1.2 to 1.5 dB.
+   What would make it cheaper without the picture is not found.
+2. **libvpx's settle time is one of two levels a process**, 1.3 to 1.4
+   apart (`uncover` at 2048×1536 from 65: 23.3, 17.3 and 25.9 ms in three
+   runs, this encoder 31 in each). Why is not known, and until it is a
+   settle's ratio is good to no better than that.
+3. **The frames of `video` and `walk`**, 0.63 to 0.82 of libvpx's time, the
+   nearest the line of the whole captures. Profiled: the token estimate,
+   the block walk, the intra mode and the transforms 5 to 11% each, and
+   the search 11 to 14% (its index rebuilt and its projections), which is
+   the one part not yet tried.
 4. **The 4×4 split threshold**: what makes it safe at 10 is a diagonal mode
    for a 4×4 where the 8×8 would have taken one, and knowing why a churning
    picture costs more at a low dial with it.
 5. **The transforms run in 32-bit lanes** (`vpmulld` on AVX2), where
    libvpx's are 16-bit. Not measured.
-6. **1280×800**: a line of text is 0.79 of libvpx's time where the sizes
-   beside it are 0.46 to 0.58, and a settle from 80 or 89 up to 1.45. Not
-   looked into.
+6. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
+   four (27 ms of wall time for 86 of processor time at 1920×1080). No
+   thread was found waiting; what is left is memory, and not looked into.
+   The first keyframe of a stream runs on cold buffers (130 ms against 40
+   for the next at 1920×1080).
 7. **A flat desktop settled from dial 20** takes 4 to 10 times libvpx's
    bytes: one or two kilobytes against a few hundred bytes.
 8. **`Speed::Fastest` was not measured in this replan.**
