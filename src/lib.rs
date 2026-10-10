@@ -1124,8 +1124,11 @@ impl Stream {
     /// move to `quality` is an error before anything is coded. One it would
     /// not move back is an error too, and the frame it had coded by then is
     /// not appended: the stream stays at the [`Self::quality`] it reports,
-    /// and its next frame is a keyframe, since no decoder was handed the
-    /// picture it would otherwise be coded against.
+    /// the settle's and no longer the walk's, and its next frame is a
+    /// keyframe, since no decoder was handed the picture it would otherwise
+    /// be coded against. The walk is told where the encoder stayed
+    /// ([`walk::QualityWalk::stays_at`]) so that its next verdict starts from
+    /// the quality in force.
     pub fn settle_bgrx(&mut self, pixels: &[u8], stride: usize, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
         self.picture.read_bgrx(pixels, stride)?;
         self.settle(quality, keyframe, out)
