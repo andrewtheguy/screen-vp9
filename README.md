@@ -46,8 +46,9 @@ repository's `.cargo/config.toml` does.
 Every frame the encoder makes in a test is decoded by libvpx, from
 [libvpx-prebuilt](https://github.com/andrewtheguy/libvpx-prebuilt)'s static
 archive: a dev-dependency, which no build of a user fetches or links. How the
-encoder is built and what it was measured on is in
-[docs/encoder.md](docs/encoder.md).
+encoder works is in [docs/encoder.md](docs/encoder.md), what it was measured
+at in [docs/benchmarks.md](docs/benchmarks.md), and how it was planned and
+decided in [docs/plan.md](docs/plan.md).
 
 Use it by release tag:
 

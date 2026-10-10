@@ -208,7 +208,8 @@ enum Mode {
     /// residual against it.
     Inter(Mv),
     /// The previous frame where the block is, as it is: the source has not
-    /// changed there, so nothing is coded but the skip.
+    /// changed there, or the previous frame holds it exactly, so nothing
+    /// is coded but its segment.
     Unchanged,
 }
 
@@ -936,6 +937,13 @@ impl<'a> Tile<'a> {
                 total.residual.add(&m.residual);
                 count += 64;
             }
+        }
+        // A square the previous frame holds exactly is the previous frame's
+        // at any dial: there is no finer to code it, so it is left as the
+        // blocks the frame skips are, in the inactive segment and
+        // unfiltered. A settle of a quiet desktop is mostly these.
+        if self.previous.is_some() && total.residual.squares == 0 {
+            return Some((Mode::Unchanged, Moments::default()));
         }
         let dc = total.source.variance(count);
         // An intra block's modes, weighed as the variances are: per pixel

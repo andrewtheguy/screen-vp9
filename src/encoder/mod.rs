@@ -1381,6 +1381,41 @@ mod tests {
         assert!(settled < coarse / 2.0, "the corner, coded at 40, was left at error {settled:.2} by the frame at 90, from {coarse:.2}");
     }
 
+    /// A settle codes nothing where a decoder holds the picture exactly
+    /// already, however coarse the dial that left it so: a flat picture
+    /// settles in the bytes of its segment map, and one flat but for a
+    /// patch of noise in the patch's, the flat part left exact. On one tile
+    /// column and on four.
+    #[test]
+    fn a_settle_leaves_what_a_decoder_holds_exactly() {
+        for (w, h, threads) in [(320u16, 240u16, 1), (2048, 136, 4)] {
+            // A grey the keyframe's DC lands on at this dial.
+            let flat = vec![235u8; usize::from(w) * usize::from(h) * 3];
+            let mut stream = Stream::new(w, h, 40, threads);
+            let (_, _, mse) = stream.frame(&picture(w, h, &flat), true);
+            assert_eq!(mse, 0.0, "{w}x{h}: a flat keyframe is not exact");
+            let (bytes, keyframe, mse) = stream.settle(&picture(w, h, &flat), 90, false);
+            assert!(!keyframe && mse == 0.0);
+            assert!(bytes < 100, "{w}x{h}: a settle of a picture held exactly took {bytes} bytes");
+            assert_eq!(stream.encoder.coarsest(), 90);
+
+            let patched = picture(w, h, &edit(flat.clone(), w, (64, 64, 64, 64), 7));
+            let mut stream = Stream::new(w, h, 40, threads);
+            let (_, _, coarse) = stream.frame(&patched, true);
+            let (bytes, _, settled) = stream.settle(&patched, 90, false);
+            assert!(settled < coarse / 4.0, "{w}x{h}: the settle left the patch at error {settled:.2} of {coarse:.2}");
+            let (whole, _, _) = Stream::new(w, h, 90, threads).frame(&patched, true);
+            assert!(bytes < whole, "{w}x{h}: a settle of one patch took {bytes} bytes, a keyframe {whole}");
+            let recon = stream.encoder.reconstruction();
+            let width = usize::from(w);
+            for (plane, source) in recon.iter().zip(patched.planes()) {
+                for y in 136..usize::from(h) {
+                    assert_eq!(plane[y * width..][..width], source[y * patched.strides()[0]..][..width], "{w}x{h}: row {y}, flat and exact before the settle, is not after it");
+                }
+            }
+        }
+    }
+
     /// A settle is one frame: whole and at the quality asked whatever the
     /// frames before it were told, an inter frame unless a keyframe is
     /// asked, and with the dial back where the link had it for the frame
