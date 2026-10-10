@@ -351,6 +351,25 @@ impl Encoder {
         self.coded_at.iter().copied().min().unwrap_or(self.quality)
     }
 
+    /// Settle the picture at `quality`: code `picture` whole at that dial
+    /// and leave the dial where it was, as `crate::Stream::settle_bgrx`
+    /// does. What a desktop that went quiet while the link had it coarse is
+    /// owed (`crate::walk::QualityWalk::settle_at`): as an inter frame every
+    /// 8×8 still at a coarser dial is coded where it is with its residual,
+    /// so [`Self::coarsest`] is `quality` after it, and the frames of the
+    /// motion that follows are at what the link bears again. `keyframe`
+    /// makes it one a decoder can start from, at `quality` all the same.
+    /// Returns what [`Self::encode`] does; a picture that is not this
+    /// encoder's is refused with the dial as it was.
+    pub(crate) fn settle(&mut self, picture: &Picture, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
+        let walked = self.quality;
+        self.set_quality(quality);
+        let encoded = self.encode(picture, keyframe, None, out);
+        // Back whatever the encode came to: the dial is the walk's again.
+        self.quality = walked;
+        encoded
+    }
+
     /// Code `picture` and append the frame to `out`: a keyframe when
     /// `keyframe` asks for one or nothing has been coded yet, otherwise an
     /// inter frame against the frame before. Returns whether it is a
@@ -763,12 +782,26 @@ mod tests {
 
         /// `frame`, told where the picture changed.
         fn told(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>) -> (usize, bool, f64) {
+            let mut frame = Vec::new();
+            let keyframe = self.encoder.encode(picture, keyframe, changed, &mut frame).expect("a frame");
+            self.decoded(picture, frame, keyframe)
+        }
+
+        /// `frame`, as a settle at `quality`: the whole picture at that
+        /// dial, and the encoder's left where it was.
+        fn settle(&mut self, picture: &Picture, quality: u8, keyframe: bool) -> (usize, bool, f64) {
+            let mut frame = Vec::new();
+            let keyframe = self.encoder.settle(picture, quality, keyframe, &mut frame).expect("a settle");
+            self.decoded(picture, frame, keyframe)
+        }
+
+        /// Decode `frame`, which the encoder made of `picture`, and hold it
+        /// to the encoder's reconstruction.
+        fn decoded(&mut self, picture: &Picture, frame: Vec<u8>, keyframe: bool) -> (usize, bool, f64) {
             let (w, h) = picture.size();
             let quality = self.encoder.quality();
             let n = self.frames;
             self.frames += 1;
-            let mut frame = Vec::new();
-            let keyframe = self.encoder.encode(picture, keyframe, changed, &mut frame).expect("a frame");
             assert_eq!(crate::frame_header(&frame), Some(crate::FrameHeader { profile: 1, keyframe }));
             let decoded = self.decoder.decode(&frame).unwrap_or_else(|e| panic!("{w}x{h} at quality {quality}, frame {n}: {e}"));
             assert_eq!(decoded.size(), (u32::from(w), u32::from(h)));
@@ -1047,7 +1080,9 @@ mod tests {
         // edge predicts a flat block, which ties DC's residual and is
         // taken before any intra mode is tried; at 72 high every block
         // can reach past the edge, so the hatch is coded that way there
-        // and only the taller picture's inter frame codes a diagonal.
+        // but for an 8×8 of the bottom row, and that frame is held to no
+        // diagonal: the taller picture's inter frame is the one that must
+        // code them.
         for (w, h, threads, speed) in [(203, 141, 1, Speed::Usual), (2048, 72, 4, Speed::Usual), (2048, 72, 4, Speed::Fastest)] {
             let mut stream = Stream::new(w, h, 90, threads);
             stream.encoder.set_speed(speed);
@@ -1062,7 +1097,11 @@ mod tests {
                 }
                 let diagonal: usize = used[3..9].iter().sum();
                 assert!(used[..3].iter().chain(&used[9..]).all(|&n| n > 0), "{w}x{h}, frame {i}: DC, V, H and TM coded {used:?} times");
-                assert_eq!(diagonal > 0, speed == Speed::Usual && (keyframe || h > 128), "{w}x{h}, frame {i} at {speed:?}: the diagonal modes coded {used:?} times");
+                match speed {
+                    Speed::Fastest => assert_eq!(diagonal, 0, "{w}x{h}, frame {i} at {speed:?}: the diagonal modes coded {used:?} times"),
+                    Speed::Usual if keyframe || h > 128 => assert!(diagonal > 0, "{w}x{h}, frame {i} at {speed:?}: the diagonal modes coded {used:?} times"),
+                    Speed::Usual => {}
+                }
             }
         }
     }
@@ -1325,6 +1364,58 @@ mod tests {
         assert_eq!(stream.encoder.coarsest(), 90, "every 8×8 has been coded at 90 since");
         let settled = corner(&stream.encoder.reconstruction());
         assert!(settled < coarse / 2.0, "the corner, coded at 40, was left at error {settled:.2} by the frame at 90, from {coarse:.2}");
+    }
+
+    /// A settle is one frame: whole and at the quality asked whatever the
+    /// frames before it were told, an inter frame unless a keyframe is
+    /// asked, and with the dial back where the link had it for the frame
+    /// after. A walk told what each frame left owes the settle until that
+    /// one has gone. On one tile column and on four.
+    #[test]
+    fn a_settle_sharpens_a_coarse_picture_and_keeps_the_dial() {
+        use crate::walk::{QualityWalk, SETTLE_IDLE};
+        for (w, h, threads) in [(320u16, 240u16, 1), (2048, 72, 4)] {
+            let source = noise(w, h);
+            let planes = source.planes();
+            let error = |recon: &[Vec<u8>; 3]| recon[0].iter().zip(planes[0]).map(|(a, b)| u64::from(a.abs_diff(*b))).sum::<u64>() as f64 / planes[0].len() as f64;
+            let start = std::time::Instant::now();
+            let mut walk = QualityWalk::new(90, std::time::Duration::from_millis(33), true);
+            let mut stream = Stream::new(w, h, 90, threads);
+            stream.encoder.set_quality(QUALITY_MIN);
+            stream.frame(&source, false);
+            walk.sent(stream.encoder.coarsest(), start);
+            assert_eq!((stream.encoder.coarsest(), walk.settle_at()), (QUALITY_MIN, Some(start + SETTLE_IDLE)));
+            let coarse = error(&stream.encoder.reconstruction());
+            // Frames told where leave the rest as coarse as it was.
+            let corner = Rect { x: 0, y: 0, width: 16, height: 16 };
+            stream.told(&source, false, Some(&[corner]));
+
+            walk.settle(start + SETTLE_IDLE);
+            let (_, keyframe, _) = stream.settle(&source, walk.ceiling(), false);
+            assert!(!keyframe, "{w}x{h}: the settle cost a keyframe");
+            walk.sent(stream.encoder.coarsest(), start + SETTLE_IDLE);
+            assert_eq!((stream.encoder.quality(), stream.encoder.coarsest(), walk.settle_at()), (QUALITY_MIN, 90, None), "{w}x{h}: the settle left the dial or the picture where it was not");
+            let settled = error(&stream.encoder.reconstruction());
+            assert!(settled < coarse / 4.0, "{w}x{h}: the settle left the picture at error {settled:.2} of {coarse:.2}");
+
+            // The motion after it is at what the link bears, and where it
+            // is: the rest keeps what the settle gave it.
+            stream.told(&source, false, Some(&[corner]));
+            walk.sent(stream.encoder.coarsest(), start + SETTLE_IDLE);
+            assert_eq!((stream.encoder.coarsest(), walk.settle_at().is_some()), (QUALITY_MIN, true), "{w}x{h}: a coarse frame after the settle owes none");
+            let after = error(&stream.encoder.reconstruction());
+            assert!(after < coarse / 4.0, "{w}x{h}: a frame of one corner left the settled picture at error {after:.2} of {coarse:.2}");
+
+            // A settle that is to be a keyframe is one, at the settle's quality.
+            let (_, keyframe, _) = stream.settle(&source, 90, true);
+            assert!(keyframe);
+            assert_eq!((stream.encoder.quality(), stream.encoder.coarsest()), (QUALITY_MIN, 90));
+
+            // A picture that is not the encoder's moves nothing.
+            let other = Picture::new(w, h + 8, Chroma::Full, 1).expect("a picture");
+            assert!(matches!(stream.encoder.settle(&other, 90, false, &mut Vec::new()), Err(Error::Mismatch(..))));
+            assert_eq!(stream.encoder.quality(), QUALITY_MIN);
+        }
     }
 
     #[test]
@@ -1772,13 +1863,12 @@ mod tests {
                             libvpx.set_quality(to).expect("the dial");
                         } else {
                             rust.encode(&picture, true, None, &mut frames[0]).expect("a keyframe");
-                            rust.set_quality(to);
                         }
                         let started = std::time::Instant::now();
                         if c == 0 {
                             libvpx.encode(&picture, false, None, &mut frames[1]).expect("an encode").expect("a frame");
                         } else {
-                            rust.encode(&picture, false, None, &mut frames[1]).expect("a settle");
+                            rust.settle(&picture, to, false, &mut frames[1]).expect("a settle");
                         }
                         r.1 = r.1.min(started.elapsed().as_secs_f64() * 1000.0);
                         let mut decoder = Decoder::new(1).expect("a decoder");

@@ -100,9 +100,11 @@ Read from `wlshare/crates/wlshare-rfb/src/vp9.rs` and `crates/wlshare/src/sessio
 
 - Both hold a `Stream`, never an `Encoder`: `Stream::new(width, height,
   chroma, quality, threads)`, `encode_bgrx` (wlshare, from its framebuffer)
-  and `encode_rgb` (remotex, from its mirror), `set_quality`, `quality()` and
-  `coarsest()`. `Stream` stays as it is over the Rust encoder, less its 4:2:0
-  half.
+  and `encode_rgb` (remotex, from its mirror), `settle_bgrx` and `settle_rgb`,
+  `set_quality`, `quality()` and `coarsest()`. `Stream` stays as it is over
+  the Rust encoder, less its 4:2:0 half. A frame's rectangles are converted
+  and not the rows across them, on up to four of the encoder's threads
+  (`Picture::read_bgrx_rect`).
 - **Nearly every frame comes with rectangles.** wlshare hands the damage since
   the client's last frame, remotex the rectangles its mirror changed in since
   the round before. A frame is the whole picture only when it is a keyframe,
@@ -112,11 +114,15 @@ Read from `wlshare/crates/wlshare-rfb/src/vp9.rs` and `crates/wlshare/src/sessio
   24%, and a page scrolled in Chromium, a video and a window uncovered name
   all of it, because the compositor reports the whole surface damaged. The
   Rust encoder always produces a frame.
-- **A settle is a whole frame at the dial after the walk has moved it.** Both
-  users walk the dial down on a slow link (`walk::QualityWalk`) and, once the
-  picture has been quiet, encode the whole picture once at the ceiling, owed
-  by `coarsest()`. Its source is unchanged almost everywhere; what it codes
-  is a coarser frame's quantization error.
+- **A settle is a whole frame at the ceiling, the dial left where the walk
+  had it.** Both users walk the dial down on a slow link (`walk::QualityWalk`),
+  tell the walk what each frame left the client holding (`sent`, of
+  `coarsest()`) and, when it says a quiet picture is owed one (`settle_at`,
+  half a second on), code the whole picture once at the ceiling:
+  `Stream::settle_bgrx`, which the Rust encoder's `settle` is. Its source is
+  unchanged almost everywhere; what it codes is a coarser frame's
+  quantization error. The frames of the motion after it are at the walk's
+  dial again, and code only what they are told changed.
 - **Frames are paced.** remotex codes at most one round per 33 ms, doubled up
   on a link that is behind; wlshare codes when its client asks. The cost that
   matters is one frame's latency, not throughput.
