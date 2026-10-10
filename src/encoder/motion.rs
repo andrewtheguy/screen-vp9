@@ -73,11 +73,13 @@ const FRAME_SHARE: usize = 256;
 const ACROSS: u32 = 0x9e37_79b1;
 const DOWN: u32 = 0x85eb_ca77;
 
-/// A hash that is already a hash, kept as it is.
+/// A hash that is already a hash, spread over the 64 bits a table reads:
+/// it takes its slot from the low ones and tells the keys of a slot's
+/// group apart by the top seven, which of a hash kept as it is are zero.
 #[derive(Default)]
-struct Identity(u64);
+struct Spread(u64);
 
-impl Hasher for Identity {
+impl Hasher for Spread {
     fn finish(&self) -> u64 {
         self.0
     }
@@ -85,7 +87,7 @@ impl Hasher for Identity {
         unreachable!("only u32 keys")
     }
     fn write_u32(&mut self, v: u32) {
-        self.0 = u64::from(v);
+        self.0 = u64::from(v).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     }
 }
 
@@ -108,7 +110,7 @@ impl Places {
     }
 }
 
-type Table = HashMap<u32, Places, BuildHasherDefault<Identity>>;
+type Table = HashMap<u32, Places, BuildHasherDefault<Spread>>;
 
 /// Add an anchor of `hash` at `place` to `table`.
 fn insert(table: &mut Table, hash: u32, place: (u16, u16)) {
@@ -138,9 +140,10 @@ fn remove(table: &mut Table, hash: u32, place: (u16, u16)) {
 const REFILL: usize = 4;
 
 /// Which of the tables, one per thread so that each thread fills one, holds
-/// the anchors whose hash is `hash`.
+/// the anchors whose hash is `hash`: its top sixteen bits scaled to the
+/// tables, every thread asking of every anchor.
 fn shard(hash: u32, shards: usize) -> usize {
-    (hash >> 16) as usize % shards
+    ((hash >> 16) as usize * shards) >> 16
 }
 
 /// An 8×8's anchors: each one's hash and where in the 8×8 it starts,
@@ -177,7 +180,8 @@ pub(super) struct Search {
     /// (`shard`).
     tables: Vec<Table>,
     /// Whether the tables have to be filled from every anchor: before any
-    /// frame, and after a keyframe.
+    /// frame, after a keyframe, and after a frame that took the anchors of
+    /// more than one 8×8 in `REFILL` again.
     refill: bool,
     /// Whether the anchors have to be taken of the whole source coded
     /// last: after a keyframe, which takes none.
@@ -248,7 +252,6 @@ impl Search {
     pub(super) fn update(&mut self, pool: &Pool, threads: usize, luma: &[u8], unchanged: &[bool], reference: &Reconstruction) -> Vec<[Mv; VECTORS]> {
         let shape = &self.shape;
         let mi_cols = shape.mi_cols;
-        let changed = |r, c| shape.changed(unchanged, r, c);
         // An 8×8's anchors are taken again when a window starting in it
         // reaches a changed pixel: one in it, or right of it, or below. A
         // row of 8×8s with no change in it or the row below has none.
@@ -260,21 +263,27 @@ impl Search {
         }
         let mut stale = vec![false; shape.mi_rows * mi_cols];
         for (r, stale) in stale.chunks_exact_mut(mi_cols).enumerate() {
-            if row_changed[r] || row_changed.get(r + 1).is_some_and(|&n| n) {
-                for (c, stale) in stale.iter_mut().enumerate() {
-                    *stale = changed(r, c) || changed(r, c + 1) || changed(r + 1, c) || changed(r + 1, c + 1);
-                }
+            let below = row_changed.get(r + 1).is_some_and(|&n| n);
+            if !row_changed[r] && !below {
+                continue;
             }
+            // The row's 8×8s and those under them, or the row again under
+            // the last, which adds nothing.
+            let here = &unchanged[r * mi_cols..][..mi_cols];
+            let under = if below { &unchanged[(r + 1) * mi_cols..][..mi_cols] } else { here };
+            for ((stale, here), under) in stale.iter_mut().zip(here.windows(2)).zip(under.windows(2)) {
+                *stale = !(here[0] & here[1] & under[0] & under[1]);
+            }
+            stale[mi_cols - 1] = !(here[mi_cols - 1] & under[mi_cols - 1]);
         }
         // The tables are brought to the source coded last, which the
         // anchors are of, before any of them is taken again.
-        if self.refill || self.pending.len() * REFILL > self.anchors.len() {
-            self.index(pool);
-        } else {
-            self.bring_up(pool, threads);
-        }
-        self.refill = false;
-        self.pending.clear();
+        self.bring_to_date(pool, threads);
+        // Where so many 8×8s are taken again that filling the tables is
+        // cheaper than bringing them up to date, what they held is not
+        // kept.
+        self.refill = stale.iter().filter(|&&stale| stale).count() * REFILL > self.anchors.len();
+        let keep = !self.refill;
         let shape = &self.shape;
         let tables = &self.tables[..];
         // A row of 8×8s at a time, as each thread is free for one: what
@@ -294,7 +303,9 @@ impl Search {
                 while c < mi_cols && stale[c] {
                     c += 1;
                 }
-                replaced.extend((start..c).map(|i| (r * mi_cols + i, anchors[i], counts[i])));
+                if keep {
+                    replaced.extend((start..c).map(|i| (r * mi_cols + i, anchors[i], counts[i])));
+                }
                 shape.hash_run(luma, r, start..c, scratch, anchors, counts);
                 for i in start..c {
                     for &a in &anchors[i][..usize::from(counts[i])] {
@@ -319,7 +330,8 @@ impl Search {
         let projected = on_workers(pool, 0..shape.sb_rows, &mut self.scratch[..threads], |sb_row, scratch| {
             (0..shape.sb_cols)
                 .map(|sb_col| {
-                    let moved = (0..8).any(|r| (0..8).any(|c| shape.changed(unchanged, sb_row * 8 + r, sb_col * 8 + c)));
+                    let cols = sb_col * 8..(sb_col * 8 + 8).min(mi_cols);
+                    let moved = (sb_row * 8..(sb_row * 8 + 8).min(shape.mi_rows)).any(|r| unchanged[r * mi_cols..][cols.clone()].contains(&false));
                     if moved { shape.project(luma, reference, (sb_row, sb_col), &mut scratch.patch) } else { Mv::ZERO }
                 })
                 .collect::<Vec<_>>()
@@ -343,6 +355,17 @@ impl Search {
             }
         }
         vectors
+    }
+
+    /// Bring the tables to the anchors kept, which are the source coded
+    /// last's: filled again, or brought up to date.
+    fn bring_to_date(&mut self, pool: &Pool, threads: usize) {
+        if self.refill {
+            self.index(pool);
+        } else {
+            self.bring_up(pool, threads);
+        }
+        self.pending.clear();
     }
 
     /// Bring the tables to the anchors kept, which are the source coded
@@ -373,35 +396,20 @@ impl Search {
     fn index(&mut self, pool: &Pool) {
         let Self { shape, anchors, counts, tables, .. } = self;
         let shards = tables.len();
-        // Each thread sorts a band's anchors by table, and then fills a
-        // table from every band's, in order.
-        let band = anchors.len().div_ceil(shards);
-        let sorted = on_threads(pool, shards, anchors.chunks(band).zip(counts.chunks(band)).enumerate(), |(b, (anchors, counts))| {
-            let mut sorted = vec![Vec::new(); shards];
-            for (i, (anchors, &count)) in anchors.iter().zip(counts).enumerate() {
-                for &a in &anchors[..usize::from(count)] {
-                    let (x, y) = shape.place(b * band + i, a);
-                    sorted[shard(a.0, shards)].push((a.0, x as u16, y as u16));
-                }
-            }
-            sorted
-        });
+        // Each thread reads every anchor and takes its table's, in order.
         on_threads(pool, shards, tables.iter_mut().enumerate(), |(s, table)| {
             table.clear();
-            for &(hash, x, y) in sorted.iter().flat_map(|sorted| &sorted[s]) {
-                insert(table, hash, (x, y));
+            for (i, (anchors, &count)) in anchors.iter().zip(counts.iter()).enumerate() {
+                for &a in anchors[..usize::from(count)].iter().filter(|a| shard(a.0, shards) == s) {
+                    let (x, y) = shape.place(i, a);
+                    insert(table, a.0, (x as u16, y as u16));
+                }
             }
         });
     }
 }
 
 impl Shape {
-    /// Whether the source differs from the source coded last in the 8×8 at
-    /// `(r, c)`, one the frame holds, by `unchanged`.
-    fn changed(&self, unchanged: &[bool], r: usize, c: usize) -> bool {
-        r < self.mi_rows && c < self.mi_cols && !unchanged[r * self.mi_cols + c]
-    }
-
     /// The vector of whole pixels, at most `REACH` each way, from the
     /// superblock at `(sb_row, sb_col)` of `luma` to where `reference` best
     /// matches its rows' sums, and then its columns' sums in the rows that
@@ -623,7 +631,7 @@ mod tests {
         let mut refilled = Search::new(&geometry, 3);
         refilled.anchors = search.anchors.clone();
         refilled.counts = search.counts.clone();
-        search.bring_up(&pool, 3);
+        search.bring_to_date(&pool, 3);
         refilled.index(&pool);
         let (kept, fresh) = (usable(&search.tables), usable(&refilled.tables));
         assert!(!kept.is_empty());

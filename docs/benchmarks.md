@@ -76,6 +76,17 @@ the other; a number on the line is left plain.
   1.2–1.6× for +0.3 to +0.6; a flat desktop settled from dial 20 at 4 to
   10× (one or two kilobytes against a few hundred bytes); `walk`'s captures
   at up to 1.09×.
+- **The picture a settle of one dial step is short of is its keyframe's,
+  not the settle's.** Measured at four sizes with the keyframe before it
+  decoded too: at dial 89 this encoder's keyframe is 0.05 to 0.23 dB under
+  libvpx's at 0.98 to 1.01 of its bytes (`walk`'s 0.09 to 0.22 dB over at
+  0.75 to 0.82), and the settle to 90 then adds 0.11 to 0.27 dB where
+  libvpx's adds 0.13 to 0.28, at 0.7 to 1.0 of libvpx's decibels a byte
+  (`drag` at 1920×1080: +0.22 dB for 2222 bytes against +0.14 for 1586;
+  `uncover` at 3840×2160: +0.13 for 11064 against +0.18 for 13461). On
+  `walk` it adds 0.5 to 0.6 dB against 0.2, at 1.6 times the decibels a
+  byte. The bytes over the line are picture the settle bought at about
+  libvpx's price.
 
 ## What changed between releases 0.0.1-alpha.3 and 0.0.1-alpha.4
 
@@ -105,6 +116,15 @@ Against libvpx, alpha.3's cells and alpha.4's over all ten sizes:
 | A first picture's keyframe from 2048 wide, time | 0.87–1.27 | 0.67–1.04 |
 | A keyframe inside a capture, time | 0.46–1.13 | 0.25–0.88 |
 | A settle from 20, time | 0.57–0.92 | 0.46–0.88 |
+
+After release 0.0.1-alpha.4 the search was gone over, with every stream
+as it was: the 8×8s whose anchors are taken again are marked a row at a
+time, what they held is kept only when the tables are brought up to date
+by it, the tables are filled in one phase, a hash is spread over the bits
+its table reads, and a table is picked without a division. The search
+takes 13% less on `video` and `flood` at 1920×1080; a frame of `browser`
+takes 5% less, of `drag` 2 to 4%, of `walk` at 2560×1600 4%, and of
+`video` nothing to 1%. The tables below are from before it.
 
 Looked at and left: the tile phase of a busy keyframe runs four threads at
 75 to 80% of four, with no thread found waiting; a frame of `video` or

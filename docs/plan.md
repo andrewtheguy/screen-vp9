@@ -92,7 +92,8 @@ desktop as drawn:
 - A settle of a busy picture from 65 is 0.82 to 1.21 of libvpx's time, for
   1.2 to 1.5 dB more picture, where libvpx's time is at the higher of the
   two levels it comes out at, and up to 1.37 where it is at the lower.
-- A settle of one dial step takes up to 1.7 of libvpx's bytes.
+- A settle of one dial step takes up to 1.7 of libvpx's bytes, and buys
+  picture with them at 0.7 to 1.0 of libvpx's decibels a byte.
 
 ## Measured again in this replan
 
@@ -115,7 +116,10 @@ On the AVX2 machine, four threads, each run alone.
 
 | The anchors a keyframe left wait for the first frame that changes the picture | a settle straight after a keyframe 3 ms less at 2048×1536 |
 
-The last five rows are release 0.0.1-alpha.4 and change no stream.
+| The search marks the 8×8s whose anchors are taken again a row at a time, keeps what they held only when the tables are brought up to date by it, fills the tables in one phase, spreads a hash over the bits its table reads and picks a table without a division | the search 13% less on `video` and `flood` at 1920×1080; a frame of `browser` 5% less, of `drag` 2 to 4%, of `walk` at 2560×1600 4%, of `video` nothing to 1% |
+
+The five rows before the last are release 0.0.1-alpha.4 and the last is
+after it; none changes a stream.
 Tile rows were out of the subset until now. A tile row splits the bool
 coder and nothing else, libvpx and ffvp9 decode every frame of the captures
 played through them this way, and vp9-wasm reads the header's tile rows;
@@ -152,22 +156,45 @@ vp9-wasm has not been run on these streams.
   smaller**: a settle of one dial step 20 to 35% fewer bytes for 0.07 to
   0.24 dB less, one from 65 2 to 4% fewer for 0.15 to 0.4 dB less, the
   time the same.
+- **A superblock whose anchors give nothing has them taken no more.** On
+  `video` and `walk` the anchors find next to nothing (without them 0.06%
+  and 0.3% more bytes) and the projections everything (without them 17%
+  and 16% more), where on `drag`, `flood` and `browser` it is the anchors
+  (32%, 42% and sixteen times more bytes without). A superblock that
+  changed eight frames running with no vector of its own, or a frame's,
+  from an anchor of it or to one, had its anchors left untaken but for two
+  frames in sixteen: the search 21% less on `video` and 26% on `walk`,
+  which is 2 to 3% of their frames, at bytes within 0.1%. Counting only
+  the superblock a vector arrives in, and not the one it comes from, cost
+  `flood` 3.3% more bytes: what scrolls comes from where the new text
+  appears. Four frames and two in thirty-two saved 3.4 and 4.8% and cost
+  `walk` 0.09 dB. Not taken: what begins to move where the anchors were
+  left is found up to sixteen frames late, for a fiftieth of a frame.
 
 ## What is open
 
 In the order it is taken up:
 
-1. **A settle of one dial step takes 0.8 to 1.7 of libvpx's bytes** at
-   −0.1 to −0.4 dB, a few kilobytes. A settle's time is answered above.
-2. **libvpx's settle time is one of two levels a process**, 1.3 to 1.4
+1. **libvpx's settle time is one of two levels a process**, 1.3 to 1.4
    apart (`uncover` at 2048×1536 from 65: 23.3, 17.3 and 23.4 ms in three
    runs, at 1600×1000 18.7, 19.2 and 14.6). Why is not known, and until it is a
    settle's ratio is good to no better than that.
+2. **A keyframe at the top of the dial** is 0.05 to 0.23 dB under libvpx's
+   at 89 and up to 0.28 under at 90, at the same bytes, where at 65 it is
+   0.02 to 0.20 over (`walk`'s is over at every dial, at three quarters of
+   the bytes). It is what a settle of one dial step is short of:
+   the settle itself buys as much picture as libvpx's (0.11 to 0.27 dB
+   against 0.13 to 0.28) at 0.7 to 1.0 of libvpx's decibels a byte, 1.6 on
+   `walk`, so its 0.8 to 1.7 of libvpx's bytes are answered.
 3. **The frames of `video` and `walk`**, 0.64 to 0.83 of libvpx's time, the
    nearest the line of the whole captures. Profiled: the token estimate,
    the block walk, the intra mode and the transforms 5 to 11% each, and
-   the search 11 to 14% (its index rebuilt and its projections), which is
-   the one part not yet tried.
+   the search 9 to 12%, now gone over: its projections, its hashing and
+   its tables' upkeep 0.3 to 0.45 ms each of an 11 ms frame at 1920×1080,
+   none of them one thing. What is left untried in it: the row hashes of
+   an 8×8 row taken once and not twice, the projections' sums in sixteen
+   bits, a table of its own in place of the standard one; a hundredth of
+   a frame each.
 4. **The 4×4 split threshold**: what makes it safe at 10 is a diagonal mode
    for a 4×4 where the 8×8 would have taken one, and knowing why a churning
    picture costs more at a low dial with it.
