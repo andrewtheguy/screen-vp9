@@ -21,6 +21,12 @@ under 1.00 is fewer bytes or less time; a *PSNR difference* is this encoder's
 luma PSNR less libvpx's at the same dial, so above zero is a better picture.
 `@2` marks a desktop drawn at scale 2.
 
+In every ratio and difference column, green is this encoder's side of the
+line (a ratio under 1.00, a picture above libvpx's) and red the other; a
+number on the line is left plain. An encode time of this encoder's is
+coloured the same way against the time beside it: green where it is the
+shorter, red where the longer.
+
 ## Against libvpx, every capture at every size
 
 The `frame-captures` set of 2026-10-09, after phase 8. Phases 9 and 11
@@ -33,13 +39,13 @@ Under 1.00 is fewer bytes than libvpx.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | 0.86 | 0.80 | 0.83 | 0.83 | 0.75 | 0.77 | 0.79 | 0.87 | 0.86 | 0.84 |
-| `uncover` | 0.97 | 0.99 | 0.94 | 1.03 | 1.01 | 1.01 | 1.05 | 1.04 | 0.97 | 1.04 |
-| `flood` | 0.84 | 0.80 | 0.74 | 0.76 | 0.96 | 0.97 | 0.97 | 0.97 | 0.97 | 0.97 |
-| `browser` | 0.21 | 0.18 | 0.29 | 0.29 | 0.24 | 0.15 | 0.18 | 0.20 | 0.22 | 0.25 |
-| `drag` | 0.15 | 0.15 | 0.17 | 0.12 | 0.24 | 0.35 | 0.38 | 0.32 | 0.32 | 0.12 |
-| `video` | 1.02 | 1.02 | 1.01 | 1.00 | 0.99 | 0.97 | 0.99 | 1.01 | 1.04 | 0.93 |
-| `walk` | 1.11 | 1.12 | 1.12 | 1.09 | 1.06 | 1.01 | 1.01 | 0.98 | 1.09 | 1.06 |
+| `terminal` | $\color{green}{0.86}$ | $\color{green}{0.80}$ | $\color{green}{0.83}$ | $\color{green}{0.83}$ | $\color{green}{0.75}$ | $\color{green}{0.77}$ | $\color{green}{0.79}$ | $\color{green}{0.87}$ | $\color{green}{0.86}$ | $\color{green}{0.84}$ |
+| `uncover` | $\color{green}{0.97}$ | $\color{green}{0.99}$ | $\color{green}{0.94}$ | $\color{red}{1.03}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{green}{0.97}$ | $\color{red}{1.04}$ |
+| `flood` | $\color{green}{0.84}$ | $\color{green}{0.80}$ | $\color{green}{0.74}$ | $\color{green}{0.76}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ |
+| `browser` | $\color{green}{0.21}$ | $\color{green}{0.18}$ | $\color{green}{0.29}$ | $\color{green}{0.29}$ | $\color{green}{0.24}$ | $\color{green}{0.15}$ | $\color{green}{0.18}$ | $\color{green}{0.20}$ | $\color{green}{0.22}$ | $\color{green}{0.25}$ |
+| `drag` | $\color{green}{0.15}$ | $\color{green}{0.15}$ | $\color{green}{0.17}$ | $\color{green}{0.12}$ | $\color{green}{0.24}$ | $\color{green}{0.35}$ | $\color{green}{0.38}$ | $\color{green}{0.32}$ | $\color{green}{0.32}$ | $\color{green}{0.12}$ |
+| `video` | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.97}$ | $\color{green}{0.99}$ | $\color{red}{1.01}$ | $\color{red}{1.04}$ | $\color{green}{0.93}$ |
+| `walk` | $\color{red}{1.11}$ | $\color{red}{1.12}$ | $\color{red}{1.12}$ | $\color{red}{1.09}$ | $\color{red}{1.06}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{green}{0.98}$ | $\color{red}{1.09}$ | $\color{red}{1.06}$ |
 
 ### Encode time, the median of the per-frame ratios, this encoder over libvpx
 
@@ -47,13 +53,13 @@ Under 1.00 is faster than libvpx.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | 0.52 | 0.47 | 0.42 | 0.38 | 0.36 | 0.30 | 0.29 | 0.30 | 0.25 | 0.28 |
-| `uncover` | 0.29 | 0.35 | 0.34 | 0.35 | 0.35 | 0.36 | 0.41 | 0.37 | 0.37 | 0.40 |
-| `flood` | 0.57 | 0.57 | 0.53 | 0.54 | 0.61 | 0.60 | 0.60 | 0.60 | 0.60 | 0.59 |
-| `browser` | 0.58 | 0.65 | 0.66 | 0.67 | 0.65 | 0.59 | 0.63 | 0.61 | 0.59 | 0.64 |
-| `drag` | 0.63 | 0.67 | 0.67 | 0.66 | 0.86 | 0.84 | 0.86 | 0.76 | 0.74 | 0.77 |
-| `video` | 0.72 | 0.74 | 0.77 | 0.89 | 0.87 | 0.81 | 0.85 | 0.79 | 0.78 | 0.83 |
-| `walk` | 0.75 | 0.78 | 0.76 | 0.87 | 0.89 | 0.83 | 0.87 | 0.83 | 0.81 | 0.79 |
+| `terminal` | $\color{green}{0.52}$ | $\color{green}{0.47}$ | $\color{green}{0.42}$ | $\color{green}{0.38}$ | $\color{green}{0.36}$ | $\color{green}{0.30}$ | $\color{green}{0.29}$ | $\color{green}{0.30}$ | $\color{green}{0.25}$ | $\color{green}{0.28}$ |
+| `uncover` | $\color{green}{0.29}$ | $\color{green}{0.35}$ | $\color{green}{0.34}$ | $\color{green}{0.35}$ | $\color{green}{0.35}$ | $\color{green}{0.36}$ | $\color{green}{0.41}$ | $\color{green}{0.37}$ | $\color{green}{0.37}$ | $\color{green}{0.40}$ |
+| `flood` | $\color{green}{0.57}$ | $\color{green}{0.57}$ | $\color{green}{0.53}$ | $\color{green}{0.54}$ | $\color{green}{0.61}$ | $\color{green}{0.60}$ | $\color{green}{0.60}$ | $\color{green}{0.60}$ | $\color{green}{0.60}$ | $\color{green}{0.59}$ |
+| `browser` | $\color{green}{0.58}$ | $\color{green}{0.65}$ | $\color{green}{0.66}$ | $\color{green}{0.67}$ | $\color{green}{0.65}$ | $\color{green}{0.59}$ | $\color{green}{0.63}$ | $\color{green}{0.61}$ | $\color{green}{0.59}$ | $\color{green}{0.64}$ |
+| `drag` | $\color{green}{0.63}$ | $\color{green}{0.67}$ | $\color{green}{0.67}$ | $\color{green}{0.66}$ | $\color{green}{0.86}$ | $\color{green}{0.84}$ | $\color{green}{0.86}$ | $\color{green}{0.76}$ | $\color{green}{0.74}$ | $\color{green}{0.77}$ |
+| `video` | $\color{green}{0.72}$ | $\color{green}{0.74}$ | $\color{green}{0.77}$ | $\color{green}{0.89}$ | $\color{green}{0.87}$ | $\color{green}{0.81}$ | $\color{green}{0.85}$ | $\color{green}{0.79}$ | $\color{green}{0.78}$ | $\color{green}{0.83}$ |
+| `walk` | $\color{green}{0.75}$ | $\color{green}{0.78}$ | $\color{green}{0.76}$ | $\color{green}{0.87}$ | $\color{green}{0.89}$ | $\color{green}{0.83}$ | $\color{green}{0.87}$ | $\color{green}{0.83}$ | $\color{green}{0.81}$ | $\color{green}{0.79}$ |
 
 ### Luma PSNR, this encoder less libvpx, in dB
 
@@ -61,13 +67,13 @@ Above zero is a better picture than libvpx at the same dial.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | 0.0 | 0.0 | 0.0 | −0.1 | +0.3 | +0.3 | +0.2 | +0.3 | +0.2 | +0.2 |
-| `uncover` | +0.1 | +0.1 | 0.0 | −0.3 | +0.2 | +0.1 | +0.1 | +0.2 | +0.1 | 0.0 |
-| `flood` | +0.2 | +0.3 | +0.3 | +0.2 | +0.4 | +0.4 | +0.4 | +0.4 | +0.4 | +0.4 |
-| `browser` | +1.0 | +1.1 | +0.8 | +0.8 | +1.4 | +1.4 | +1.2 | +0.9 | +1.0 | +1.2 |
-| `drag` | +1.3 | +1.3 | +0.9 | +1.1 | +0.1 | +0.1 | +0.1 | −0.3 | +0.4 | +1.2 |
-| `video` | +0.4 | +0.3 | +0.4 | +0.4 | +0.5 | +0.5 | +0.6 | +0.5 | +0.6 | +0.6 |
-| `walk` | +0.1 | +0.2 | +0.4 | +0.3 | +0.6 | +0.8 | +0.8 | +0.9 | +0.8 | +1.0 |
+| `terminal` | 0.0 | 0.0 | 0.0 | $\color{red}{-0.1}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ |
+| `uncover` | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | 0.0 | $\color{red}{-0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | 0.0 |
+| `flood` | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
+| `browser` | $\color{green}{+1.0}$ | $\color{green}{+1.1}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.2}$ | $\color{green}{+0.9}$ | $\color{green}{+1.0}$ | $\color{green}{+1.2}$ |
+| `drag` | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+0.9}$ | $\color{green}{+1.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{red}{-0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+1.2}$ |
+| `video` | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ |
+| `walk` | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.6}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.9}$ | $\color{green}{+0.8}$ | $\color{green}{+1.0}$ |
 
 
 ## Against libvpx, the frames apart
@@ -79,46 +85,46 @@ the time ratio is of those two medians; the bytes are the mean per frame.
 
 | Size | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 0.54 | 0.29 | 0.54 | 120 B | 127 B | 1.06 | 0.0 |
-| 1440×900 | 0.70 | 0.34 | 0.49 | 120 B | 149 B | 1.24 | 0.0 |
-| 1600×1000 | 0.86 | 0.36 | 0.42 | 122 B | 126 B | 1.03 | 0.0 |
-| 1920×1080 | 1.09 | 0.42 | 0.39 | 135 B | 134 B | 0.99 | −0.1 |
-| 2048×1536@2 | 1.52 | 0.55 | 0.36 | 204 B | 187 B | 0.92 | +0.3 |
-| 2560×1600@2 | 2.16 | 0.65 | 0.30 | 196 B | 190 B | 0.97 | +0.3 |
-| 2880×1800@2 | 2.55 | 0.73 | 0.29 | 191 B | 229 B | 1.20 | +0.2 |
-| 3200×2000@2 | 3.25 | 0.97 | 0.30 | 213 B | 219 B | 1.03 | +0.3 |
-| 3456×2168@2 | 3.74 | 0.92 | 0.25 | 216 B | 212 B | 0.98 | +0.2 |
-| 3840×2160@2 | 4.05 | 1.12 | 0.28 | 222 B | 222 B | 1.00 | +0.2 |
+| 1280×800 | 0.54 | $\color{green}{0.29}$ | $\color{green}{0.54}$ | 120 B | 127 B | $\color{red}{1.06}$ | 0.0 |
+| 1440×900 | 0.70 | $\color{green}{0.34}$ | $\color{green}{0.49}$ | 120 B | 149 B | $\color{red}{1.24}$ | 0.0 |
+| 1600×1000 | 0.86 | $\color{green}{0.36}$ | $\color{green}{0.42}$ | 122 B | 126 B | $\color{red}{1.03}$ | 0.0 |
+| 1920×1080 | 1.09 | $\color{green}{0.42}$ | $\color{green}{0.39}$ | 135 B | 134 B | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 2048×1536@2 | 1.52 | $\color{green}{0.55}$ | $\color{green}{0.36}$ | 204 B | 187 B | $\color{green}{0.92}$ | $\color{green}{+0.3}$ |
+| 2560×1600@2 | 2.16 | $\color{green}{0.65}$ | $\color{green}{0.30}$ | 196 B | 190 B | $\color{green}{0.97}$ | $\color{green}{+0.3}$ |
+| 2880×1800@2 | 2.55 | $\color{green}{0.73}$ | $\color{green}{0.29}$ | 191 B | 229 B | $\color{red}{1.20}$ | $\color{green}{+0.2}$ |
+| 3200×2000@2 | 3.25 | $\color{green}{0.97}$ | $\color{green}{0.30}$ | 213 B | 219 B | $\color{red}{1.03}$ | $\color{green}{+0.3}$ |
+| 3456×2168@2 | 3.74 | $\color{green}{0.92}$ | $\color{green}{0.25}$ | 216 B | 212 B | $\color{green}{0.98}$ | $\color{green}{+0.2}$ |
+| 3840×2160@2 | 4.05 | $\color{green}{1.12}$ | $\color{green}{0.28}$ | 222 B | 222 B | 1.00 | $\color{green}{+0.2}$ |
 
 ### `terminal`, a scroll (7 or 8)
 
 | Size | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 4.97 | 4.11 | 0.83 | 40 kB | 34 kB | 0.85 | +0.1 |
-| 1440×900 | 5.90 | 4.21 | 0.71 | 48 kB | 36 kB | 0.75 | 0.0 |
-| 1600×1000 | 5.60 | 4.20 | 0.75 | 62 kB | 51 kB | 0.82 | −0.2 |
-| 1920×1080 | 5.89 | 4.32 | 0.73 | 68 kB | 56 kB | 0.82 | −0.1 |
-| 2048×1536@2 | 11.1 | 8.4 | 0.76 | 103 kB | 76 kB | 0.74 | +0.3 |
-| 2560×1600@2 | 26.5 | 11.2 | 0.42 | 117 kB | 88 kB | 0.75 | +0.5 |
-| 2880×1800@2 | 17.2 | 9.3 | 0.54 | 122 kB | 94 kB | 0.77 | +0.2 |
-| 3200×2000@2 | 14.4 | 7.7 | 0.53 | 122 kB | 105 kB | 0.86 | +0.2 |
-| 3456×2168@2 | 15.9 | 10.5 | 0.66 | 169 kB | 145 kB | 0.86 | +0.2 |
-| 3840×2160@2 | 22.7 | 17.7 | 0.78 | 201 kB | 169 kB | 0.84 | +0.2 |
+| 1280×800 | 4.97 | $\color{green}{4.11}$ | $\color{green}{0.83}$ | 40 kB | 34 kB | $\color{green}{0.85}$ | $\color{green}{+0.1}$ |
+| 1440×900 | 5.90 | $\color{green}{4.21}$ | $\color{green}{0.71}$ | 48 kB | 36 kB | $\color{green}{0.75}$ | 0.0 |
+| 1600×1000 | 5.60 | $\color{green}{4.20}$ | $\color{green}{0.75}$ | 62 kB | 51 kB | $\color{green}{0.82}$ | $\color{red}{-0.2}$ |
+| 1920×1080 | 5.89 | $\color{green}{4.32}$ | $\color{green}{0.73}$ | 68 kB | 56 kB | $\color{green}{0.82}$ | $\color{red}{-0.1}$ |
+| 2048×1536@2 | 11.1 | $\color{green}{8.4}$ | $\color{green}{0.76}$ | 103 kB | 76 kB | $\color{green}{0.74}$ | $\color{green}{+0.3}$ |
+| 2560×1600@2 | 26.5 | $\color{green}{11.2}$ | $\color{green}{0.42}$ | 117 kB | 88 kB | $\color{green}{0.75}$ | $\color{green}{+0.5}$ |
+| 2880×1800@2 | 17.2 | $\color{green}{9.3}$ | $\color{green}{0.54}$ | 122 kB | 94 kB | $\color{green}{0.77}$ | $\color{green}{+0.2}$ |
+| 3200×2000@2 | 14.4 | $\color{green}{7.7}$ | $\color{green}{0.53}$ | 122 kB | 105 kB | $\color{green}{0.86}$ | $\color{green}{+0.2}$ |
+| 3456×2168@2 | 15.9 | $\color{green}{10.5}$ | $\color{green}{0.66}$ | 169 kB | 145 kB | $\color{green}{0.86}$ | $\color{green}{+0.2}$ |
+| 3840×2160@2 | 22.7 | $\color{green}{17.7}$ | $\color{green}{0.78}$ | 201 kB | 169 kB | $\color{green}{0.84}$ | $\color{green}{+0.2}$ |
 
 ### `drag`, a quarter of the picture (≈ 390)
 
 | Size | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 4.08 | 2.59 | 0.63 | 5750 B | 615 B | 0.11 | +1.3 |
-| 1440×900 | 3.85 | 2.54 | 0.66 | 6438 B | 690 B | 0.11 | +1.3 |
-| 1600×1000 | 3.98 | 2.66 | 0.67 | 6212 B | 712 B | 0.11 | +0.9 |
-| 1920×1080 | 4.19 | 2.76 | 0.66 | 8533 B | 759 B | 0.09 | +1.2 |
-| 2048×1536@2 | 8.54 | 7.33 | 0.86 | 9368 B | 1831 B | 0.20 | +0.1 |
-| 2560×1600@2 | 9.11 | 7.68 | 0.84 | 7145 B | 2071 B | 0.29 | +0.1 |
-| 2880×1800@2 | 9.57 | 8.22 | 0.86 | 7149 B | 2337 B | 0.33 | +0.1 |
-| 3200×2000@2 | 10.7 | 8.2 | 0.77 | 12 kB | 3 kB | 0.25 | −0.3 |
-| 3456×2168@2 | 11.0 | 8.2 | 0.75 | 11 kB | 3 kB | 0.27 | +0.4 |
-| 3840×2160@2 | 11.0 | 8.4 | 0.76 | 31 kB | 3 kB | 0.10 | +1.3 |
+| 1280×800 | 4.08 | $\color{green}{2.59}$ | $\color{green}{0.63}$ | 5750 B | 615 B | $\color{green}{0.11}$ | $\color{green}{+1.3}$ |
+| 1440×900 | 3.85 | $\color{green}{2.54}$ | $\color{green}{0.66}$ | 6438 B | 690 B | $\color{green}{0.11}$ | $\color{green}{+1.3}$ |
+| 1600×1000 | 3.98 | $\color{green}{2.66}$ | $\color{green}{0.67}$ | 6212 B | 712 B | $\color{green}{0.11}$ | $\color{green}{+0.9}$ |
+| 1920×1080 | 4.19 | $\color{green}{2.76}$ | $\color{green}{0.66}$ | 8533 B | 759 B | $\color{green}{0.09}$ | $\color{green}{+1.2}$ |
+| 2048×1536@2 | 8.54 | $\color{green}{7.33}$ | $\color{green}{0.86}$ | 9368 B | 1831 B | $\color{green}{0.20}$ | $\color{green}{+0.1}$ |
+| 2560×1600@2 | 9.11 | $\color{green}{7.68}$ | $\color{green}{0.84}$ | 7145 B | 2071 B | $\color{green}{0.29}$ | $\color{green}{+0.1}$ |
+| 2880×1800@2 | 9.57 | $\color{green}{8.22}$ | $\color{green}{0.86}$ | 7149 B | 2337 B | $\color{green}{0.33}$ | $\color{green}{+0.1}$ |
+| 3200×2000@2 | 10.7 | $\color{green}{8.2}$ | $\color{green}{0.77}$ | 12 kB | 3 kB | $\color{green}{0.25}$ | $\color{red}{-0.3}$ |
+| 3456×2168@2 | 11.0 | $\color{green}{8.2}$ | $\color{green}{0.75}$ | 11 kB | 3 kB | $\color{green}{0.27}$ | $\color{green}{+0.4}$ |
+| 3840×2160@2 | 11.0 | $\color{green}{8.4}$ | $\color{green}{0.76}$ | 31 kB | 3 kB | $\color{green}{0.10}$ | $\color{green}{+1.3}$ |
 
 
 ## Against libvpx, the keyframes inside the captures
@@ -131,61 +137,61 @@ together.
 
 | Size | libvpx, ms | This encoder, ms | Time ratio | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|
-| 1280×800 | 24 | 19 | 0.79 | 1.01 | −0.2 |
-| 1440×900 | 19 | 16 | 0.84 | 1.01 | −0.2 |
-| 1600×1000 | 25 | 20 | 0.80 | 1.01 | −0.2 |
-| 1920×1080 | 34 | 24 | 0.71 | 1.01 | −0.2 |
-| 2048×1536@2 | 36 | 26 | 0.72 | 1.01 | −0.1 |
-| 2560×1600@2 | 45 | 33 | 0.73 | 1.02 | −0.1 |
-| 2880×1800@2 | 52 | 39 | 0.75 | 1.01 | −0.1 |
-| 3200×2000@2 | 56 | 43 | 0.77 | 1.02 | −0.1 |
-| 3456×2168@2 | 74 | 55 | 0.74 | 1.01 | −0.1 |
-| 3840×2160@2 | 77 | 57 | 0.74 | 1.01 | −0.1 |
+| 1280×800 | 24 | $\color{green}{19}$ | $\color{green}{0.79}$ | $\color{red}{1.01}$ | $\color{red}{-0.2}$ |
+| 1440×900 | 19 | $\color{green}{16}$ | $\color{green}{0.84}$ | $\color{red}{1.01}$ | $\color{red}{-0.2}$ |
+| 1600×1000 | 25 | $\color{green}{20}$ | $\color{green}{0.80}$ | $\color{red}{1.01}$ | $\color{red}{-0.2}$ |
+| 1920×1080 | 34 | $\color{green}{24}$ | $\color{green}{0.71}$ | $\color{red}{1.01}$ | $\color{red}{-0.2}$ |
+| 2048×1536@2 | 36 | $\color{green}{26}$ | $\color{green}{0.72}$ | $\color{red}{1.01}$ | $\color{red}{-0.1}$ |
+| 2560×1600@2 | 45 | $\color{green}{33}$ | $\color{green}{0.73}$ | $\color{red}{1.02}$ | $\color{red}{-0.1}$ |
+| 2880×1800@2 | 52 | $\color{green}{39}$ | $\color{green}{0.75}$ | $\color{red}{1.01}$ | $\color{red}{-0.1}$ |
+| 3200×2000@2 | 56 | $\color{green}{43}$ | $\color{green}{0.77}$ | $\color{red}{1.02}$ | $\color{red}{-0.1}$ |
+| 3456×2168@2 | 74 | $\color{green}{55}$ | $\color{green}{0.74}$ | $\color{red}{1.01}$ | $\color{red}{-0.1}$ |
+| 3840×2160@2 | 77 | $\color{green}{57}$ | $\color{green}{0.74}$ | $\color{red}{1.01}$ | $\color{red}{-0.1}$ |
 
 ### Keyframes of `drag`, a terminal of text
 
 | Size | libvpx, ms | This encoder, ms | Time ratio | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|
-| 1280×800 | 15 | 12 | 0.80 | 1.00 | −0.2 |
-| 1440×900 | 14 | 11 | 0.79 | 0.99 | −0.2 |
-| 1600×1000 | 17 | 14 | 0.82 | 0.99 | −0.1 |
-| 1920×1080 | 19 | 13 | 0.68 | 0.98 | −0.1 |
-| 2048×1536@2 | 23 | 15 | 0.65 | 0.99 | −0.1 |
-| 2560×1600@2 | 30 | 20 | 0.67 | 0.99 | −0.1 |
-| 2880×1800@2 | 33 | 22 | 0.67 | 0.98 | −0.1 |
-| 3200×2000@2 | 45 | 32 | 0.71 | 1.00 | −0.1 |
-| 3456×2168@2 | 51 | 31 | 0.61 | 0.98 | −0.1 |
-| 3840×2160@2 | 64 | 35 | 0.55 | 0.99 | −0.1 |
+| 1280×800 | 15 | $\color{green}{12}$ | $\color{green}{0.80}$ | 1.00 | $\color{red}{-0.2}$ |
+| 1440×900 | 14 | $\color{green}{11}$ | $\color{green}{0.79}$ | $\color{green}{0.99}$ | $\color{red}{-0.2}$ |
+| 1600×1000 | 17 | $\color{green}{14}$ | $\color{green}{0.82}$ | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 1920×1080 | 19 | $\color{green}{13}$ | $\color{green}{0.68}$ | $\color{green}{0.98}$ | $\color{red}{-0.1}$ |
+| 2048×1536@2 | 23 | $\color{green}{15}$ | $\color{green}{0.65}$ | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 2560×1600@2 | 30 | $\color{green}{20}$ | $\color{green}{0.67}$ | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 2880×1800@2 | 33 | $\color{green}{22}$ | $\color{green}{0.67}$ | $\color{green}{0.98}$ | $\color{red}{-0.1}$ |
+| 3200×2000@2 | 45 | $\color{green}{32}$ | $\color{green}{0.71}$ | 1.00 | $\color{red}{-0.1}$ |
+| 3456×2168@2 | 51 | $\color{green}{31}$ | $\color{green}{0.61}$ | $\color{green}{0.98}$ | $\color{red}{-0.1}$ |
+| 3840×2160@2 | 64 | $\color{green}{35}$ | $\color{green}{0.55}$ | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
 
 ### Keyframes of `flood`
 
 | Size | libvpx, ms | This encoder, ms | Time ratio | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|
-| 1280×800 | 14 | 11 | 0.79 | 0.99 | −0.1 |
-| 1440×900 | 12 | 10 | 0.83 | 0.99 | −0.1 |
-| 1600×1000 | 15 | 15 | 1.00 | 0.99 | −0.1 |
-| 1920×1080 | 19 | 15 | 0.79 | 0.99 | −0.1 |
-| 2048×1536@2 | 24 | 17 | 0.71 | 1.01 | −0.1 |
-| 2560×1600@2 | 30 | 20 | 0.67 | 0.99 | −0.1 |
-| 2880×1800@2 | 62 | 23 | 0.37 | 0.99 | −0.1 |
-| 3200×2000@2 | 50 | 31 | 0.62 | 1.00 | −0.1 |
-| 3456×2168@2 | 86 | 35 | 0.41 | 1.00 | −0.1 |
-| 3840×2160@2 | 95 | 36 | 0.38 | 1.00 | −0.1 |
+| 1280×800 | 14 | $\color{green}{11}$ | $\color{green}{0.79}$ | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 1440×900 | 12 | $\color{green}{10}$ | $\color{green}{0.83}$ | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 1600×1000 | 15 | 15 | 1.00 | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 1920×1080 | 19 | $\color{green}{15}$ | $\color{green}{0.79}$ | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 2048×1536@2 | 24 | $\color{green}{17}$ | $\color{green}{0.71}$ | $\color{red}{1.01}$ | $\color{red}{-0.1}$ |
+| 2560×1600@2 | 30 | $\color{green}{20}$ | $\color{green}{0.67}$ | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 2880×1800@2 | 62 | $\color{green}{23}$ | $\color{green}{0.37}$ | $\color{green}{0.99}$ | $\color{red}{-0.1}$ |
+| 3200×2000@2 | 50 | $\color{green}{31}$ | $\color{green}{0.62}$ | 1.00 | $\color{red}{-0.1}$ |
+| 3456×2168@2 | 86 | $\color{green}{35}$ | $\color{green}{0.41}$ | 1.00 | $\color{red}{-0.1}$ |
+| 3840×2160@2 | 95 | $\color{green}{36}$ | $\color{green}{0.38}$ | 1.00 | $\color{red}{-0.1}$ |
 
 ### Keyframes of `video`
 
 | Size | libvpx, ms | This encoder, ms | Time ratio | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|
-| 1280×800 | 8 | 8 | 1.00 | 0.92 | −0.0 |
-| 1440×900 | 8 | 7 | 0.88 | 0.91 | −0.1 |
-| 1600×1000 | 8 | 8 | 1.00 | 0.91 | −0.1 |
-| 1920×1080 | 8 | 9 | 1.12 | 0.91 | −0.0 |
-| 2048×1536@2 | 11 | 12 | 1.09 | 0.94 | −0.1 |
-| 2560×1600@2 | 14 | 15 | 1.07 | 0.91 | −0.1 |
-| 2880×1800@2 | 17 | 18 | 1.06 | 0.91 | +0.0 |
-| 3200×2000@2 | 19 | 21 | 1.11 | 0.91 | −0.1 |
-| 3456×2168@2 | 21 | 23 | 1.10 | 0.89 | +0.0 |
-| 3840×2160@2 | 19 | 21 | 1.11 | 0.90 | −0.0 |
+| 1280×800 | 8 | 8 | 1.00 | $\color{green}{0.92}$ | −0.0 |
+| 1440×900 | 8 | $\color{green}{7}$ | $\color{green}{0.88}$ | $\color{green}{0.91}$ | $\color{red}{-0.1}$ |
+| 1600×1000 | 8 | 8 | 1.00 | $\color{green}{0.91}$ | $\color{red}{-0.1}$ |
+| 1920×1080 | 8 | $\color{red}{9}$ | $\color{red}{1.12}$ | $\color{green}{0.91}$ | −0.0 |
+| 2048×1536@2 | 11 | $\color{red}{12}$ | $\color{red}{1.09}$ | $\color{green}{0.94}$ | $\color{red}{-0.1}$ |
+| 2560×1600@2 | 14 | $\color{red}{15}$ | $\color{red}{1.07}$ | $\color{green}{0.91}$ | $\color{red}{-0.1}$ |
+| 2880×1800@2 | 17 | $\color{red}{18}$ | $\color{red}{1.06}$ | $\color{green}{0.91}$ | +0.0 |
+| 3200×2000@2 | 19 | $\color{red}{21}$ | $\color{red}{1.11}$ | $\color{green}{0.91}$ | $\color{red}{-0.1}$ |
+| 3456×2168@2 | 21 | $\color{red}{23}$ | $\color{red}{1.10}$ | $\color{green}{0.89}$ | +0.0 |
+| 3840×2160@2 | 19 | $\color{red}{21}$ | $\color{red}{1.11}$ | $\color{green}{0.90}$ | −0.0 |
 
 
 ## What the tables say
@@ -235,49 +241,49 @@ and after to a hundredth of a decibel.
 
 | First picture of | Bytes before | Bytes after | Bytes ratio | Time before, ms | Time after, ms | Time ratio |
 |---|---:|---:|---:|---:|---:|---:|
-| `browser` | 1594 | 1594 | 1.00 | 24.6 | 18.5 | 0.75 |
-| `drag` | 133002 | 132982 | 1.00 | 37.0 | 32.8 | 0.89 |
+| `browser` | 1594 | 1594 | 1.00 | 24.6 | $\color{green}{18.5}$ | $\color{green}{0.75}$ |
+| `drag` | 133002 | 132982 | 1.00 | 37.0 | $\color{green}{32.8}$ | $\color{green}{0.89}$ |
 | `flood` | 169607 | 169613 | 1.00 | 37.6 | 37.6 | 1.00 |
-| `terminal` | 1311 | 1311 | 1.00 | 13.6 | 14.0 | 1.03 |
-| `uncover` | 299594 | 299605 | 1.00 | 60.4 | 57.8 | 0.96 |
-| `video` | 85857 | 85857 | 1.00 | 35.1 | 27.8 | 0.79 |
-| `walk` | 67160 | 67160 | 1.00 | 26.3 | 25.3 | 0.96 |
+| `terminal` | 1311 | 1311 | 1.00 | 13.6 | $\color{red}{14.0}$ | $\color{red}{1.03}$ |
+| `uncover` | 299594 | 299605 | 1.00 | 60.4 | $\color{green}{57.8}$ | $\color{green}{0.96}$ |
+| `video` | 85857 | 85857 | 1.00 | 35.1 | $\color{green}{27.8}$ | $\color{green}{0.79}$ |
+| `walk` | 67160 | 67160 | 1.00 | 26.3 | $\color{green}{25.3}$ | $\color{green}{0.96}$ |
 
 ### A settle from dial 65 to 90
 
 | First picture of | Bytes before | Bytes after | Bytes ratio | Time before, ms | Time after, ms | Time ratio |
 |---|---:|---:|---:|---:|---:|---:|
-| `browser` | 418 | 61 | 0.15 | 22.6 | 4.7 | 0.21 |
-| `drag` | 41155 | 41031 | 1.00 | 30.8 | 20.0 | 0.65 |
-| `flood` | 53971 | 53905 | 1.00 | 36.9 | 32.5 | 0.88 |
-| `terminal` | 373 | 57 | 0.15 | 11.7 | 4.0 | 0.34 |
-| `uncover` | 91070 | 91049 | 1.00 | 39.4 | 39.1 | 0.99 |
-| `video` | 26583 | 26293 | 0.99 | 26.2 | 16.9 | 0.64 |
-| `walk` | 29777 | 29575 | 0.99 | 23.3 | 15.7 | 0.67 |
+| `browser` | 418 | 61 | $\color{green}{0.15}$ | 22.6 | $\color{green}{4.7}$ | $\color{green}{0.21}$ |
+| `drag` | 41155 | 41031 | 1.00 | 30.8 | $\color{green}{20.0}$ | $\color{green}{0.65}$ |
+| `flood` | 53971 | 53905 | 1.00 | 36.9 | $\color{green}{32.5}$ | $\color{green}{0.88}$ |
+| `terminal` | 373 | 57 | $\color{green}{0.15}$ | 11.7 | $\color{green}{4.0}$ | $\color{green}{0.34}$ |
+| `uncover` | 91070 | 91049 | 1.00 | 39.4 | $\color{green}{39.1}$ | $\color{green}{0.99}$ |
+| `video` | 26583 | 26293 | $\color{green}{0.99}$ | 26.2 | $\color{green}{16.9}$ | $\color{green}{0.64}$ |
+| `walk` | 29777 | 29575 | $\color{green}{0.99}$ | 23.3 | $\color{green}{15.7}$ | $\color{green}{0.67}$ |
 
 ### A settle from dial 80 to 90
 
 | First picture of | Bytes before | Bytes after | Bytes ratio | Time before, ms | Time after, ms | Time ratio |
 |---|---:|---:|---:|---:|---:|---:|
-| `browser` | 400 | 45 | 0.11 | 17.2 | 4.6 | 0.27 |
-| `drag` | 15285 | 15119 | 0.99 | 26.5 | 22.4 | 0.85 |
-| `flood` | 18476 | 18342 | 0.99 | 29.8 | 32.2 | 1.08 |
-| `terminal` | 356 | 40 | 0.11 | 12.2 | 4.1 | 0.34 |
-| `uncover` | 33612 | 33552 | 1.00 | 36.9 | 29.2 | 0.79 |
-| `video` | 8740 | 8450 | 0.97 | 20.1 | 12.2 | 0.61 |
-| `walk` | 15309 | 15111 | 0.99 | 23.0 | 14.6 | 0.64 |
+| `browser` | 400 | 45 | $\color{green}{0.11}$ | 17.2 | $\color{green}{4.6}$ | $\color{green}{0.27}$ |
+| `drag` | 15285 | 15119 | $\color{green}{0.99}$ | 26.5 | $\color{green}{22.4}$ | $\color{green}{0.85}$ |
+| `flood` | 18476 | 18342 | $\color{green}{0.99}$ | 29.8 | $\color{red}{32.2}$ | $\color{red}{1.08}$ |
+| `terminal` | 356 | 40 | $\color{green}{0.11}$ | 12.2 | $\color{green}{4.1}$ | $\color{green}{0.34}$ |
+| `uncover` | 33612 | 33552 | 1.00 | 36.9 | $\color{green}{29.2}$ | $\color{green}{0.79}$ |
+| `video` | 8740 | 8450 | $\color{green}{0.97}$ | 20.1 | $\color{green}{12.2}$ | $\color{green}{0.61}$ |
+| `walk` | 15309 | 15111 | $\color{green}{0.99}$ | 23.0 | $\color{green}{14.6}$ | $\color{green}{0.64}$ |
 
 ### A settle from dial 89 to 90
 
 | First picture of | Bytes before | Bytes after | Bytes ratio | Time before, ms | Time after, ms | Time ratio |
 |---|---:|---:|---:|---:|---:|---:|
-| `browser` | 400 | 45 | 0.11 | 19.0 | 4.8 | 0.25 |
-| `drag` | 2869 | 2716 | 0.95 | 17.5 | 12.8 | 0.73 |
-| `flood` | 2821 | 2706 | 0.96 | 19.6 | 20.1 | 1.02 |
-| `terminal` | 356 | 40 | 0.11 | 12.3 | 3.6 | 0.29 |
-| `uncover` | 6753 | 6707 | 0.99 | 26.3 | 19.1 | 0.73 |
-| `video` | 1661 | 1371 | 0.83 | 16.4 | 9.0 | 0.55 |
-| `walk` | 5546 | 5348 | 0.96 | 18.9 | 11.9 | 0.63 |
+| `browser` | 400 | 45 | $\color{green}{0.11}$ | 19.0 | $\color{green}{4.8}$ | $\color{green}{0.25}$ |
+| `drag` | 2869 | 2716 | $\color{green}{0.95}$ | 17.5 | $\color{green}{12.8}$ | $\color{green}{0.73}$ |
+| `flood` | 2821 | 2706 | $\color{green}{0.96}$ | 19.6 | $\color{red}{20.1}$ | $\color{red}{1.02}$ |
+| `terminal` | 356 | 40 | $\color{green}{0.11}$ | 12.3 | $\color{green}{3.6}$ | $\color{green}{0.29}$ |
+| `uncover` | 6753 | 6707 | $\color{green}{0.99}$ | 26.3 | $\color{green}{19.1}$ | $\color{green}{0.73}$ |
+| `video` | 1661 | 1371 | $\color{green}{0.83}$ | 16.4 | $\color{green}{9.0}$ | $\color{green}{0.55}$ |
+| `walk` | 5546 | 5348 | $\color{green}{0.96}$ | 18.9 | $\color{green}{11.9}$ | $\color{green}{0.63}$ |
 
 Over the 1920×1080 captures played whole, the same change moved nothing but
 `walk`'s one quiet settle, from 387 bytes to 122 (libvpx's was 167), and
