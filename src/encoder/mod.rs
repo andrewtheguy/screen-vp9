@@ -37,6 +37,7 @@ mod tokens;
 mod transform;
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, loop_filtered, quality_to_q, tile_columns_log2};
 use pool::Pool;
@@ -51,10 +52,17 @@ const MIN_TILE_WIDTH_B64: usize = 4;
 /// keyframe's bools at 1920×1080 are coded in 8 ms of 18 in four rows, for
 /// 0.02% more bytes, and a line of text stays in one.
 const TILE_ROW_RECORDS: usize = 1 << 14;
+/// The 8×8s a frame may code at most to be coded on one thread: a key
+/// typed or a line of text, which the threads would not have woken for
+/// before it is done. A line of text at 1920×1080 takes 0.57 ms on one
+/// thread and 1.02 on four; from 4096 on, a scroll takes half as long
+/// again on one.
+const LIGHT_FRAME: usize = 1024;
 
 /// Run `work` on each of `jobs` on up to `threads` of `pool`'s threads,
-/// this one among them, as many jobs to a thread as it takes to leave none
-/// over, and give back what each gives, in order.
+/// this one among them, as many jobs to a turn as leave none over if every
+/// thread takes one turn, each thread taking the next turn as it finishes
+/// one; and give back what each gives, in order.
 fn on_threads<J: Send, R: Send>(pool: &Pool, threads: usize, jobs: impl ExactSizeIterator<Item = J>, work: impl Fn(J) -> R + Sync) -> Vec<R> {
     let per = jobs.len().div_ceil(threads.max(1)).max(1);
     let mut chunks: Vec<Mutex<Vec<J>>> = Vec::new();
@@ -65,9 +73,12 @@ fn on_threads<J: Send, R: Send>(pool: &Pool, threads: usize, jobs: impl ExactSiz
         chunks.last_mut().expect("pushed above").get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).push(job);
     }
     let done: Vec<Mutex<Vec<R>>> = chunks.iter().map(|_| Mutex::new(Vec::new())).collect();
-    pool.run(chunks.len(), |i| {
-        let chunk = std::mem::take(&mut *chunks[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        *done[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner) = chunk.into_iter().map(&work).collect();
+    let next = AtomicUsize::new(0);
+    pool.run(chunks.len(), |_| {
+        while let Some((chunk, done)) = Some(next.fetch_add(1, Ordering::Relaxed)).and_then(|i| chunks.get(i).zip(done.get(i))) {
+            let chunk = std::mem::take(&mut *chunk.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+            *done.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = chunk.into_iter().map(&work).collect();
+        }
     });
     done.into_iter().flat_map(|d| d.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)).collect()
 }
@@ -106,6 +117,22 @@ enum Finish<'a> {
     Tapes(&'a [tape::Tape]),
     /// A plane to loop filter, in its tile columns.
     Plane(Vec<Strip<'a>>),
+}
+
+/// Make `previous`, a band of the previous source at `width`, the rows
+/// `rows` of the picture `source` reads, in the 8×8s of them the frame may
+/// code by `named`.
+fn take_row<'s>(previous: &mut [&mut [u8]; 3], source: impl Fn(usize, usize) -> &'s [u8], named: &[bool], rows: std::ops::Range<usize>, width: usize) {
+    let mut c = 0;
+    while let Some(start) = named[c..].iter().position(|&n| n).map(|i| c + i) {
+        c = named[start..].iter().position(|&n| !n).map_or(named.len(), |i| start + i);
+        let span = start * 8..(c * 8).min(width);
+        for (plane, previous) in previous.iter_mut().enumerate() {
+            for y in rows.clone() {
+                previous[y * width..][span.clone()].copy_from_slice(&source(plane, y)[span.clone()]);
+            }
+        }
+    }
 }
 
 /// Loop filter one plane, in the tile columns `columns`, over the
@@ -286,6 +313,9 @@ pub struct Encoder {
     threads: usize,
     /// The threads, this one among them, for the encoder's life.
     pool: Pool,
+    /// How many of them the frame being coded is coded on: one, where it
+    /// may code so little that waking the rest costs more than they do.
+    at_once: usize,
     quality: u8,
     speed: Speed,
     /// Per tile column, what a decoder keeps while it reads it.
@@ -354,6 +384,7 @@ impl Encoder {
             filtered: loop_filtered(tile_cols_log2),
             threads,
             pool: Pool::new(threads),
+            at_once: threads,
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
             speed: Speed::default(),
             contexts: (0..1 << tile_cols_log2).map(|i| tile::Contexts::new(&geometry, geometry.tile_cols(i, tile_cols_log2))).collect(),
@@ -455,8 +486,21 @@ impl Encoder {
         }
         let keyframe = keyframe || !self.started;
         self.name(changed.filter(|_| !keyframe));
-        self.compare(picture, keyframe);
-        let vectors = self.search.update(&self.pool, &self.previous[0], (!keyframe).then_some(&self.still[..]), (!keyframe).then_some(&self.reference));
+        self.at_once = if self.named.iter().filter(|&&named| named).count() > LIGHT_FRAME { self.threads } else { 1 };
+        // The search's anchors are of the source coded last, which the
+        // comparison writes over where the picture changed. Those a
+        // keyframe left untaken wait for the first frame that changes
+        // anything: a picture settled after a keyframe searches nothing.
+        if keyframe {
+            self.search.forget();
+        }
+        let waiting = !keyframe && self.search.waiting();
+        self.compare(picture, keyframe, !waiting);
+        if waiting && self.still.contains(&false) {
+            self.search.catch_up(&self.pool, &self.previous[0]);
+            self.keep(picture);
+        }
+        let vectors = if keyframe { Vec::new() } else { self.search.update(&self.pool, self.at_once, &self.previous[0], &self.still, &self.reference) };
         for contexts in &mut self.contexts {
             contexts.start(self.last_inter);
         }
@@ -470,13 +514,9 @@ impl Encoder {
         let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
         let costs = tokens::Costs::new(&probs);
         let frame = tile::Frame { geometry: g, source: &source, previous, quantizer: &quantizer, costs: &costs, fast: self.speed == Speed::Fastest };
-        tile::code(&self.pool, self.threads, &frame, &mut self.contexts, &mut self.recon.columns);
         // The header updates the probabilities from what the frame's bools
         // count, and then the bools are coded.
-        let mut counts = probs::Counts::new();
-        for tape in self.contexts.iter().flat_map(|contexts| &contexts.tapes) {
-            counts.add(&tape.counts);
-        }
+        let counts = tile::code(&self.pool, self.at_once, &frame, &mut self.contexts, &mut self.recon.columns);
         let compressed = header::compressed(keyframe, &mut probs, &counts);
         // An inter frame's blocks are in segments, the inactive segment's
         // features written once after each keyframe.
@@ -567,10 +607,21 @@ impl Encoder {
         }
     }
 
-    /// Write the superblocks the frame touched from its reconstruction, coded
-    /// and filtered, into the reference, a superblock row to a thread.
+    /// Make the reference the frame coded: the superblocks the frame
+    /// touched written from its reconstruction, coded and filtered, into
+    /// the reference; or, where it touched most of them, the reconstruction
+    /// kept as the reference and the superblocks it did not touch written
+    /// into that from the one before, whichever is fewer to copy. A
+    /// superblock row to a thread.
     fn merge(&mut self) {
-        let Self { geometry: g, pool, threads, recon, reference, touched, .. } = self;
+        let Self { geometry: g, pool, at_once: threads, recon, reference, touched, .. } = self;
+        let most = touched.iter().filter(|&&t| t).count() * 2 > touched.len();
+        if most {
+            std::mem::swap(recon, reference);
+        }
+        // From here on `recon` is what is copied from: the superblocks
+        // that are touched, or with `most` the ones that are not.
+        let copied = !most;
         // Per superblock row, per tile column and plane: the row's pixels in
         // the reconstruction and in the reference, the column's first pixel
         // column of the frame and its stride.
@@ -585,14 +636,17 @@ impl Encoder {
             }
         }
         on_threads(pool, *threads, rows.into_iter().enumerate(), |(sb_row, planes)| {
+            let touched = &touched[sb_row * g.sb_cols..][..g.sb_cols];
             for (from, to, x, stride) in planes {
-                for sb_col in x / 64..((x + stride) / 64).min(g.sb_cols) {
-                    if !touched[sb_row * g.sb_cols + sb_col] {
-                        continue;
-                    }
-                    let at = sb_col * 64 - x;
-                    for r in 0..64 {
-                        to[r * stride + at..][..64].copy_from_slice(&from[r * stride + at..][..64]);
+                // A run of superblocks at a time, a row of pixels of the
+                // whole run in one copy.
+                let (first, end) = (x / 64, ((x + stride) / 64).min(g.sb_cols));
+                let mut sb_col = first;
+                while let Some(start) = touched[sb_col..end].iter().position(|&t| t == copied).map(|i| sb_col + i) {
+                    sb_col = touched[start..end].iter().position(|&t| t != copied).map_or(end, |i| start + i);
+                    let run = start * 64 - x..sb_col * 64 - x;
+                    for (from, to) in from.chunks_exact(stride).zip(to.chunks_exact_mut(stride)) {
+                        to[run.clone()].copy_from_slice(&from[run.clone()]);
                     }
                 }
             }
@@ -607,7 +661,7 @@ impl Encoder {
     /// finishes one. A superblock with no active block has no edge to
     /// filter and is passed over. Gives back each tile column's bytes.
     fn finish(&mut self, table: &[u8], segmentation: Option<&header::Segmentation>, level: u8, tile_rows_log2: u32) -> Vec<Vec<u8>> {
-        let Self { geometry: g, pool, threads, recon, contexts, tile_cols_log2: log2, .. } = self;
+        let Self { geometry: g, pool, at_once: threads, recon, contexts, tile_cols_log2: log2, .. } = self;
         let tiles: Vec<_> = (0..1 << *log2).map(|i| g.tile_cols(i, *log2).start).zip(&*contexts).collect();
         let masks: Vec<Option<loopfilter::Masks>> = (0..if level > 0 { g.sb_rows * g.sb_cols } else { 0 })
             .map(|i| {
@@ -648,9 +702,9 @@ impl Encoder {
     /// source over the part of it the picture holds, or where the frame may
     /// not code it, and unchanged where it is still and was last coded at
     /// the dial's quantizer; and make the previous source `picture` where
-    /// the frame may code it, in a band of 8×8 rows on each thread. With
-    /// `everything`, every 8×8 is changed.
-    fn compare(&mut self, picture: &Picture, everything: bool) {
+    /// the frame may code it and `keep` is set, in a band of 8×8 rows on
+    /// each thread. With `everything`, every 8×8 is changed.
+    fn compare(&mut self, picture: &Picture, everything: bool, keep: bool) {
         let g = &self.geometry;
         let width = usize::from(g.width);
         let (planes, stride) = (picture.planes(), picture.strides()[0]);
@@ -659,7 +713,7 @@ impl Encoder {
         let [p0, p1, p2] = &mut self.previous;
         let marks = self.still.chunks_mut(band * g.mi_cols).zip(self.unchanged.chunks_mut(band * g.mi_cols)).zip(self.named.chunks(band * g.mi_cols)).zip(self.coded_at.chunks(band * g.mi_cols));
         let bands = marks.zip(p0.chunks_mut(band * 8 * width)).zip(p1.chunks_mut(band * 8 * width)).zip(p2.chunks_mut(band * 8 * width));
-        on_threads(&self.pool, self.threads, bands.enumerate(), |(b, ((((((still, unchanged), named), coded_at), p0), p1), p2))| {
+        on_threads(&self.pool, self.at_once, bands.enumerate(), |(b, ((((((still, unchanged), named), coded_at), p0), p1), p2))| {
             let mut previous = [p0, p1, p2];
             let y0 = b * band * 8;
             let rows = previous[0].len() / width;
@@ -703,18 +757,32 @@ impl Encoder {
                 // already, so a row with a change is taken whole where the
                 // frame may code it: elsewhere the previous source is what
                 // was coded.
-                if !still.contains(&false) {
-                    continue;
+                if keep && still.contains(&false) {
+                    take_row(&mut previous, source, named, rows, width);
                 }
-                let mut c = 0;
-                while let Some(start) = named[c..].iter().position(|&n| n).map(|i| c + i) {
-                    c = named[start..].iter().position(|&n| !n).map_or(g.mi_cols, |i| start + i);
-                    let span = start * 8..(c * 8).min(width);
-                    for (plane, previous) in previous.iter_mut().enumerate() {
-                        for y in rows.clone() {
-                            previous[y * width..][span.clone()].copy_from_slice(&source(plane, y)[span.clone()]);
-                        }
-                    }
+            }
+        });
+    }
+
+    /// Make the previous source `picture` in the rows of 8×8s `compare`
+    /// found a change in, where the frame may code them: what it does
+    /// itself unless told to leave the previous source as it is.
+    fn keep(&mut self, picture: &Picture) {
+        let g = &self.geometry;
+        let width = usize::from(g.width);
+        let (planes, stride) = (picture.planes(), picture.strides()[0]);
+        let band = g.mi_rows.div_ceil(self.threads);
+        let [p0, p1, p2] = &mut self.previous;
+        let marks = self.still.chunks(band * g.mi_cols).zip(self.named.chunks(band * g.mi_cols));
+        let bands = marks.zip(p0.chunks_mut(band * 8 * width)).zip(p1.chunks_mut(band * 8 * width)).zip(p2.chunks_mut(band * 8 * width));
+        on_threads(&self.pool, self.at_once, bands.enumerate(), |(b, ((((still, named), p0), p1), p2))| {
+            let mut previous = [p0, p1, p2];
+            let y0 = b * band * 8;
+            let rows = previous[0].len() / width;
+            let source = |plane: usize, y: usize| &planes[plane][(y0 + y) * stride..][..width];
+            for (r, (still, named)) in still.chunks_exact(g.mi_cols).zip(named.chunks_exact(g.mi_cols)).enumerate() {
+                if still.contains(&false) {
+                    take_row(&mut previous, source, named, r * 8..(r * 8 + 8).min(rows), width);
                 }
             }
         });

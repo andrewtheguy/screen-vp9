@@ -44,17 +44,19 @@ block's mode from its line sums alone and codes no 4×4 blocks.
 ## A frame, step by step
 
 `Encoder::encode` in `src/encoder/mod.rs`. Each step that is spread over
-threads is one wake of the pool.
+threads is a queue of work the pool's threads take from, this one among
+them. A frame that may code 1024 8×8s or fewer (`LIGHT_FRAME`) is coded on
+this thread alone.
 
 | Step | Where | What it does |
 |---|---|---|
 | Name | `Encoder::name` | Marks the 8×8s the rectangles touch as the ones the frame may code, and the superblocks they lie in, with the ring around them, as touched |
 | Compare | `Encoder::compare` | Per 8×8: *still* where the source is the previous source, *unchanged* where it is still and was last coded at this dial. Copies the new source over the previous where the frame may code it |
-| Search | `motion::Search::update` | Brings the hash index of the frame before up to date where 8×8s went stale, and gives each superblock the vectors it offers its blocks |
+| Search | `motion::Search::update` | Brings the hash index of the frame before up to date where 8×8s went stale, and gives each superblock the vectors it offers its blocks. A keyframe reads nothing of it and takes no anchors: the first frame after it that changes the picture does (`catch_up`), before it makes the changed rows the previous source (`keep`); a picture settled after a keyframe takes none and searches nothing |
 | Tiles | `tile::code` | Decides every block and reconstructs it, a superblock row at a time; the bools go onto a tape per row, counted but not coded |
 | Headers | `header`, `probs` | Chooses the probability updates from what the tapes count, the segmentation's coding, and the loop filter's level from the quantizer |
 | Tapes and filter | `Encoder::finish` | Codes each tile column's tapes at the updated probabilities (`tape::code`), and runs the loop filter over the reconstruction, as a decoder does before it keeps the frame, over superblocks with an active block only. Neither waits on the other: a tile column and a plane are each a job of the one wake |
-| Keep | `Encoder::merge` | Writes the touched superblocks back into the reference; a frame that touched every superblock swaps the two instead |
+| Keep | `Encoder::merge` | Writes the touched superblocks back into the reference; a frame that touched most of them keeps its reconstruction as the reference and writes the rest into that, and one that touched every superblock swaps the two |
 
 Afterwards every named 8×8 is marked as coded at the frame's dial.
 
@@ -156,12 +158,19 @@ The rules the encoder keeps to, in the order the users' frames come:
 
 - **A frame of rectangles costs the rectangles.** The comparison, the index,
   the reconstruction, the loop filter and the tapes are each bounded by the
-  8×8s named. A superblock outside every rectangle is one partition symbol
-  and its segment's bools, with no measure, no copy and no filter.
+  8×8s named. A superblock outside every rectangle and the ring around
+  them is one partition symbol and its segment's bools, recorded without
+  its 8×8s being looked at (`Tile::quiet`): no measure, no copy, no
+  filter, and its mode info not written again once both of the frames
+  kept hold it.
 - **One reference, kept whole.** A frame writes only the superblocks it
   touches into its reconstruction, and writes those back once filtered.
-- **One pool of threads for the encoder's life**, parked between a frame's
-  phases and woken once for each. A frame spawns nothing.
+- **One pool of threads for the encoder's life**, and nothing waits on a
+  thread that has not woken. A phase's work is a queue: the caller takes
+  from it too and is done when it is empty, a worker that wakes later has
+  missed the phase, and a worker spins a tenth of a millisecond after a
+  phase before it parks, so it is there for the next. A frame that may
+  code little wakes none. A frame spawns nothing.
 - **A settle costs what it sharpens.** What a decoder holds exactly is left
   alone, a superblock of it for the price of comparing its pixels; the rest
   is the zero vector and a residual, with no search.
