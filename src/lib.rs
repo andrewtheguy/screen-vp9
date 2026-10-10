@@ -17,13 +17,15 @@
 //! decoder's threads wait on there; 4:2:0, which a browser decodes itself,
 //! always keeps it. The measurements are at `TILE_WIDTHS` and `loop_filtered`.
 //!
-//! A frame need not cost the whole picture. [`Picture::read_bgrx_rows`] converts
-//! the rows that changed, and [`Encoder::encode`] told where the picture changed
+//! A frame need not cost the whole picture. [`Picture::read_bgrx_rect`] converts
+//! the rectangle that changed, and [`Encoder::encode`] told where the picture changed
 //! skips every block outside it, which a caller that knows its damage says and
 //! one that does not leaves unsaid. [`Stream`] is the two together, and what a
 //! user holds: it is handed a packed picture and its damage, and keeps the
 //! rules a frame of damage needs — when a frame is the whole picture anyway,
-//! and how coarse the blocks no frame has touched since still are.
+//! and how coarse the blocks no frame has touched since still are — and the
+//! frame that settles them, the whole picture once at the ceiling with the
+//! dial left where the link had it ([`Stream::settle_bgrx`]).
 //!
 //! Frame metadata is handled here too: [`frame_header`] reads the profile and
 //! keyframe bit of a frame this process did not encode, and [`codec_string`]
@@ -295,24 +297,42 @@ pub struct Rect {
 pub struct Picture {
     size: (u16, u16),
     chroma: Chroma,
+    /// Each plane with a row of nothing after its last: the conversion writes a
+    /// row as a whole stride from where it starts, and a rectangle's rows start
+    /// at its left edge, so its last row's stride ends up to a row past the
+    /// plane.
     y: Vec<u8>,
     u: Vec<u8>,
     v: Vec<u8>,
-    /// A tight copy of a `B, G, R, X` picture whose buffer ends with its last
-    /// row, made only for one: the conversion reads rows as whole strides.
+    /// A tight copy of the rows of a packed picture that are not followed by a
+    /// whole stride, made only for those: the conversion reads a row as a whole
+    /// stride too.
     tight: Vec<u8>,
+    /// How many threads a conversion is split across.
+    threads: usize,
 }
 
+/// The fewest pixels a conversion gives a thread of its own, and the most
+/// threads it is split across. A conversion waits on memory more than on a
+/// core: a 4K picture's 33 MB of `B, G, R, X` took 5.5 ms on one thread, 3.3 on
+/// two, 2.9 on three and on four and 3.0 on six, and a 1080p one 1.5, 1.0, 0.8,
+/// 0.9 and 1.0. A thread also costs some 50 µs to start, which is what half a
+/// megapixel's share of the gain pays for and less does not.
+const THREAD_PIXELS: usize = 1 << 19;
+const CONVERT_THREADS: usize = 4;
+
 impl Picture {
-    /// A buffer for a `width`×`height` picture at `chroma`. An odd side is
-    /// carried as it is: the 4:2:0 chroma planes round up.
-    pub fn new(width: u16, height: u16, chroma: Chroma) -> Result<Self, Error> {
+    /// A buffer for a `width`×`height` picture at `chroma`, converted on up to
+    /// `threads` threads, which are the encoder's: it is idle while its
+    /// picture is read. An odd side is carried as it is: the 4:2:0 chroma
+    /// planes round up.
+    pub fn new(width: u16, height: u16, chroma: Chroma, threads: usize) -> Result<Self, Error> {
         if width == 0 || height == 0 {
             return Err(Error::Empty(width, height));
         }
         let (w, h) = (usize::from(width), usize::from(height));
         let (cw, ch) = chroma.plane_size(w, h);
-        Ok(Self { size: (width, height), chroma, y: vec![0; w * h], u: vec![0; cw * ch], v: vec![0; cw * ch], tight: Vec::new() })
+        Ok(Self { size: (width, height), chroma, y: vec![0; w * (h + 1)], u: vec![0; cw * (ch + 1)], v: vec![0; cw * (ch + 1)], tight: Vec::new(), threads })
     }
 
     /// The picture's size.
@@ -327,7 +347,9 @@ impl Picture {
 
     /// Y, U and V, each tight at its own stride.
     pub fn planes(&self) -> [&[u8]; 3] {
-        [&self.y, &self.u, &self.v]
+        let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
+        let (cw, ch) = self.chroma.plane_size(w, h);
+        [&self.y[..w * h], &self.u[..cw * ch], &self.v[..cw * ch]]
     }
 
     /// The width of a row of each plane.
@@ -337,103 +359,169 @@ impl Picture {
         [w, cw, cw]
     }
 
+    /// The whole picture as a rectangle.
+    fn whole(&self) -> Rect {
+        Rect { x: 0, y: 0, width: self.size.0, height: self.size.1 }
+    }
+
     /// Convert `rgb` — packed RGB888, tight, for exactly this picture — in place.
     ///
     /// The length is checked rather than trusted, because everything after the
     /// check indexes by the picture size.
     pub fn read_rgb(&mut self, rgb: &[u8]) -> Result<(), Error> {
-        self.read_rgb_rows(rgb, 0..self.size.1)
+        self.read_rgb_rect(rgb, self.whole())
     }
 
-    /// Convert `rows` of `rgb`, which holds the whole picture as
-    /// [`Self::read_rgb`] takes it, and leave every other row as the last
-    /// conversion made it, as [`Self::read_bgrx_rows`] does.
-    pub fn read_rgb_rows(&mut self, rgb: &[u8], rows: std::ops::Range<u16>) -> Result<(), Error> {
+    /// Convert `rect` of `rgb`, which holds the whole picture as
+    /// [`Self::read_rgb`] takes it, and leave every other pixel as the last
+    /// conversion made it, as [`Self::read_bgrx_rect`] does.
+    pub fn read_rgb_rect(&mut self, rgb: &[u8], rect: Rect) -> Result<(), Error> {
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         if rgb.len() != w * h * 3 {
             return Err(Error::Crop(rgb.len(), w, h));
         }
-        self.convert(rgb, w * 3, rows, Packed::Rgb);
+        self.convert(rgb, w * 3, rect, Packed::Rgb);
         Ok(())
     }
 
     /// Convert `pixels` — `B, G, R, X`, this picture's size, rows `stride` bytes
     /// apart — in place. The X byte is ignored.
     pub fn read_bgrx(&mut self, pixels: &[u8], stride: usize) -> Result<(), Error> {
-        self.read_bgrx_rows(pixels, stride, 0..self.size.1)
+        self.read_bgrx_rect(pixels, stride, self.whole())
     }
 
-    /// Convert `rows` of `pixels`, which hold the whole picture as
-    /// [`Self::read_bgrx`] takes it, and leave every other row as the last
-    /// conversion made it: what a picture that changed in a few places costs is
-    /// those rows and not the screen. Rows past the picture's last are not
-    /// part of it.
+    /// Convert `rect` of `pixels`, which hold the whole picture as
+    /// [`Self::read_bgrx`] takes it, and leave every other pixel as the last
+    /// conversion made it: what a picture that changed in one place costs is
+    /// that place and not the screen, nor the rows across it. What of `rect`
+    /// lies past the picture's edge is not part of it.
     ///
-    /// A 4:2:0 chroma row is two rows' average, an even row's and the odd one
-    /// under it, so `rows` is read out to whole pairs: the row that shares a
-    /// pair with a row of `rows` must hold the picture too, though it is not
-    /// named. No other row is read.
-    pub fn read_bgrx_rows(&mut self, pixels: &[u8], stride: usize, rows: std::ops::Range<u16>) -> Result<(), Error> {
+    /// A 4:2:0 chroma sample is a 2×2 group's average, an even row and column
+    /// with the odd ones after them, so `rect` is read out to whole groups:
+    /// the pixels that share a group with a pixel of `rect` must hold the
+    /// picture too, though they are not named. No other pixel is read.
+    pub fn read_bgrx_rect(&mut self, pixels: &[u8], stride: usize, rect: Rect) -> Result<(), Error> {
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         if !fits(w, h, stride, pixels.len()) {
             return Err(Error::Buffer { width: w, height: h, stride, bytes: pixels.len() });
         }
-        self.convert(pixels, stride, rows, Packed::Bgrx);
+        self.convert(pixels, stride, rect, Packed::Bgrx);
         Ok(())
     }
 
-    /// Convert `rows` of `pixels`, a whole picture in `packed` order that its
+    /// Convert `rect` of `pixels`, a whole picture in `packed` order that its
     /// caller has checked fits, rows `stride` bytes apart.
-    fn convert(&mut self, pixels: &[u8], stride: usize, rows: std::ops::Range<u16>, packed: Packed) {
-        use yuv::{YuvConversionMode, YuvRange, YuvStandardMatrix};
+    fn convert(&mut self, pixels: &[u8], stride: usize, rect: Rect, packed: Packed) {
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
-        let chroma = self.chroma;
-        let (from, to) = (usize::from(rows.start), usize::from(rows.end).min(h));
-        let (from, to) = match chroma {
-            Chroma::Full => (from, to),
-            Chroma::Subsampled => (from & !1, to.next_multiple_of(2).min(h)),
+        let (left, right) = (usize::from(rect.x), (usize::from(rect.x) + usize::from(rect.width)).min(w));
+        let (top, bottom) = (usize::from(rect.y), (usize::from(rect.y) + usize::from(rect.height)).min(h));
+        let (left, right, top, bottom) = match self.chroma {
+            Chroma::Full => (left, right, top, bottom),
+            Chroma::Subsampled => (left & !1, right.next_multiple_of(2).min(w), top & !1, bottom.next_multiple_of(2).min(h)),
         };
-        if from >= to {
+        if left >= right || top >= bottom {
             return;
         }
-        // The crate reads rows as whole strides, so a last row with nothing
-        // after it — which is a picture that fits — is copied tight first.
-        let (pixels, stride) = if pixels.len() >= to * stride {
-            (&pixels[from * stride..to * stride], stride)
+        // The crate reads a row as a whole stride from its first pixel, which
+        // here is the rectangle's left edge. The picture's last row has only
+        // what is left of its own after that, and in a buffer that ends with
+        // the picture not always that much, so the rows that end the
+        // rectangle — one, or at 4:2:0 the pair a chroma row is made of — are
+        // copied tight first where the buffer does not go on a stride past
+        // them. The rows above have those under them to read into.
+        let bytes = packed.bytes();
+        let at = |row: usize| row * stride + left * bytes;
+        let borrowed = if at(bottom) <= pixels.len() {
+            bottom
         } else {
-            let row = w * packed.bytes();
-            self.tight.clear();
-            self.tight.extend(pixels.chunks(stride).take(to).skip(from).flat_map(|r| &r[..row]));
-            (self.tight.as_slice(), row)
+            match self.chroma {
+                Chroma::Full => bottom - 1,
+                Chroma::Subsampled => top + ((bottom - top - 1) & !1),
+            }
         };
-        // Borrowed apart from `self.tight`, which the conversion reads. A 4:2:0
-        // chroma row is two picture rows, and `from` is even.
-        let (cw, _) = chroma.plane_size(w, h);
-        let (chroma_from, chroma_to) = match chroma {
-            Chroma::Full => (from, to),
-            Chroma::Subsampled => (from / 2, to.div_ceil(2)),
-        };
-        let mut image = yuv::YuvPlanarImageMut {
-            y_plane: yuv::BufferStoreMut::Borrowed(&mut self.y[from * w..to * w]),
-            y_stride: w as u32,
-            u_plane: yuv::BufferStoreMut::Borrowed(&mut self.u[chroma_from * cw..chroma_to * cw]),
-            u_stride: cw as u32,
-            v_plane: yuv::BufferStoreMut::Borrowed(&mut self.v[chroma_from * cw..chroma_to * cw]),
-            v_stride: cw as u32,
-            width: w as u32,
-            height: (to - from) as u32,
-        };
-        let (range, matrix, mode) = (YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Balanced);
-        // The 4:2:0 chroma sample is the 2×2 group's rounded average, as the
-        // crate takes it; `the_conversion_is_bt601_studio_swing` holds it to that.
-        match (packed, chroma) {
-            (Packed::Rgb, Chroma::Full) => yuv::rgb_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
-            (Packed::Rgb, Chroma::Subsampled) => yuv::rgb_to_yuv420(&mut image, pixels, stride as u32, range, matrix, mode),
-            (Packed::Bgrx, Chroma::Full) => yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
-            (Packed::Bgrx, Chroma::Subsampled) => yuv::bgra_to_yuv420(&mut image, pixels, stride as u32, range, matrix, mode),
+        self.convert_rows(&pixels[at(top)..at(borrowed)], stride, left..right, top..borrowed, packed);
+        if borrowed < bottom {
+            let row = (right - left) * bytes;
+            let mut tight = std::mem::take(&mut self.tight);
+            tight.clear();
+            tight.extend((borrowed..bottom).flat_map(|r| &pixels[at(r)..][..row]));
+            self.convert_rows(&tight, row, left..right, borrowed..bottom, packed);
+            self.tight = tight;
         }
-        .expect("the picture fits its buffer, which was checked");
     }
+
+    /// Convert `cols` of `rows` from `pixels`, which begin at the first of
+    /// them and give every row a whole `stride`, on as many threads as the
+    /// pixels are worth. At 4:2:0 `cols` and `rows` begin on an even one.
+    fn convert_rows(&mut self, pixels: &[u8], stride: usize, cols: std::ops::Range<usize>, rows: std::ops::Range<usize>, packed: Packed) {
+        if rows.is_empty() {
+            return;
+        }
+        let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
+        let chroma = self.chroma;
+        let (cw, _) = chroma.plane_size(w, h);
+        // A chroma row is one picture row or two, and a band of rows a thread
+        // takes is whole chroma rows.
+        let per = match chroma {
+            Chroma::Full => 1,
+            Chroma::Subsampled => 2,
+        };
+        let width = cols.len();
+        let threads = self.threads.min(CONVERT_THREADS).min(width * rows.len() / THREAD_PIXELS).max(1);
+        let band = rows.len().div_ceil(threads).next_multiple_of(per);
+        let mut y = &mut self.y[rows.start * w + cols.start..rows.end * w + cols.start];
+        let chroma_rows = rows.start / per..rows.end.div_ceil(per);
+        let mut u = &mut self.u[chroma_rows.start * cw + cols.start / per..chroma_rows.end * cw + cols.start / per];
+        let mut v = &mut self.v[chroma_rows.start * cw + cols.start / per..chroma_rows.end * cw + cols.start / per];
+        let mut pixels = pixels;
+        std::thread::scope(|scope| {
+            let mut left = rows.len();
+            while left > 0 {
+                let height = band.min(left);
+                left -= height;
+                let (band_y, band_u, band_v, band_pixels);
+                (band_y, y) = y.split_at_mut(height * w);
+                (band_u, u) = u.split_at_mut(height.div_ceil(per) * cw);
+                (band_v, v) = v.split_at_mut(height.div_ceil(per) * cw);
+                (band_pixels, pixels) = pixels.split_at(height * stride);
+                let planes = [band_y, band_u, band_v];
+                // The last band is this thread's own.
+                if left > 0 {
+                    scope.spawn(move || convert_band(band_pixels, stride, packed, chroma, planes, [w, cw], (width, height)));
+                } else {
+                    convert_band(band_pixels, stride, packed, chroma, planes, [w, cw], (width, height));
+                }
+            }
+        });
+    }
+}
+
+/// Convert `size` pixels from `pixels`, rows `stride` bytes apart, into the
+/// `planes` Y, U and V, whose rows are `strides` apart, luma's and chroma's.
+/// Every row of the pixels and of the planes is a whole stride.
+fn convert_band(pixels: &[u8], stride: usize, packed: Packed, chroma: Chroma, planes: [&mut [u8]; 3], strides: [usize; 2], size: (usize, usize)) {
+    use yuv::{YuvConversionMode, YuvRange, YuvStandardMatrix};
+    let [y, u, v] = planes;
+    let mut image = yuv::YuvPlanarImageMut {
+        y_plane: yuv::BufferStoreMut::Borrowed(y),
+        y_stride: strides[0] as u32,
+        u_plane: yuv::BufferStoreMut::Borrowed(u),
+        u_stride: strides[1] as u32,
+        v_plane: yuv::BufferStoreMut::Borrowed(v),
+        v_stride: strides[1] as u32,
+        width: size.0 as u32,
+        height: size.1 as u32,
+    };
+    let (range, matrix, mode) = (YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Balanced);
+    // The 4:2:0 chroma sample is the 2×2 group's rounded average, as the
+    // crate takes it; `the_conversion_is_bt601_studio_swing` holds it to that.
+    match (packed, chroma) {
+        (Packed::Rgb, Chroma::Full) => yuv::rgb_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
+        (Packed::Rgb, Chroma::Subsampled) => yuv::rgb_to_yuv420(&mut image, pixels, stride as u32, range, matrix, mode),
+        (Packed::Bgrx, Chroma::Full) => yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
+        (Packed::Bgrx, Chroma::Subsampled) => yuv::bgra_to_yuv420(&mut image, pixels, stride as u32, range, matrix, mode),
+    }
+    .expect("the picture fits its buffer, which was checked");
 }
 
 /// The byte order of a packed picture a [`Picture`] is read from.
@@ -932,7 +1020,7 @@ impl Drop for Encoder {
 
 /// A desktop's stream from the pixels it is shown as: an [`Encoder`] and the
 /// [`Picture`] in front of it, fed a packed picture and where it changed. What
-/// both users of this crate would otherwise each keep: the rows that changed
+/// both users of this crate would otherwise each keep: the rectangles that changed
 /// converted and the blocks they touch coded, and the whole picture read and
 /// coded where there is nothing for it to be a change to.
 pub struct Stream {
@@ -943,12 +1031,15 @@ pub struct Stream {
     /// one the encoder produced nothing for: its rows were read and reached
     /// no decoder, so the next frame is the whole picture's.
     carried: bool,
+    /// A frame was coded that no decoder was handed, so the frames after it
+    /// are coded against a picture none holds: the next is a keyframe.
+    lost: bool,
 }
 
 impl Stream {
     /// A stream of `width`×`height` pictures, as [`Encoder::new`] takes them.
     pub fn new(width: u16, height: u16, chroma: Chroma, quality: u8, threads: usize) -> Result<Self, Error> {
-        Ok(Self { encoder: Encoder::new(width, height, chroma, quality, threads)?, picture: Picture::new(width, height, chroma)?, carried: false })
+        Ok(Self { encoder: Encoder::new(width, height, chroma, quality, threads)?, picture: Picture::new(width, height, chroma, threads)?, carried: false, lost: false })
     }
 
     /// The picture size this stream codes.
@@ -983,12 +1074,12 @@ impl Stream {
     ///
     /// `changed` is where the picture differs from the one the last frame
     /// carried, or `None` for one that may differ anywhere. With it only the
-    /// rows the rectangles span are read, and only the blocks the rectangles
-    /// touch are coded. At 4:4:4 the other rows of `pixels` may be whatever
-    /// they are. At 4:2:0 the rows are read out to whole pairs, an even row
-    /// and the odd one under it ([`Picture::read_bgrx_rows`]), so the row
-    /// sharing a pair with a changed one must hold the picture as well: it is
-    /// in a block this frame codes, and what it holds reaches the decoder.
+    /// rectangles are read, and only the blocks the rectangles touch are
+    /// coded. At 4:4:4 the rest of `pixels` may be whatever it is. At 4:2:0
+    /// a rectangle is read out to whole 2×2 groups, an even row and column
+    /// with the odd ones after them ([`Picture::read_bgrx_rect`]), so a pixel
+    /// sharing a group with a changed one must hold the picture as well: it
+    /// is in a block this frame codes, and what it holds reaches the decoder.
     /// A keyframe, the stream's first frame and the frame after one the
     /// encoder produced nothing for are the whole picture whatever `changed`
     /// says, and read all of `pixels`.
@@ -997,7 +1088,7 @@ impl Stream {
         match changed {
             Some(rects) => {
                 for rect in rects {
-                    self.picture.read_bgrx_rows(pixels, stride, rect.y..rect.y.saturating_add(rect.height))?;
+                    self.picture.read_bgrx_rect(pixels, stride, *rect)?;
                 }
             }
             None => self.picture.read_bgrx(pixels, stride)?,
@@ -1012,7 +1103,7 @@ impl Stream {
         match changed {
             Some(rects) => {
                 for rect in rects {
-                    self.picture.read_rgb_rows(rgb, rect.y..rect.y.saturating_add(rect.height))?;
+                    self.picture.read_rgb_rect(rgb, *rect)?;
                 }
             }
             None => self.picture.read_rgb(rgb)?,
@@ -1020,12 +1111,65 @@ impl Stream {
         self.encode(changed, keyframe, out)
     }
 
+    /// Settle the picture at `quality`: encode `pixels`, as
+    /// [`Self::encode_bgrx`] takes them, whole and at that dial, and leave
+    /// the dial where it was. What a desktop that went quiet while the link
+    /// had it coarse is owed ([`walk::QualityWalk::settle_at`]): as an inter
+    /// frame the unchanged picture costs no keyframe and sharpens every block,
+    /// so [`Self::coarsest`] is `quality` after it, and the frames of the
+    /// motion that follows are at what the link bears again. `keyframe` makes
+    /// it one a decoder can start from, at `quality` all the same.
+    ///
+    /// Returns what [`Encoder::encode`] does. A dial the encoder would not
+    /// move to `quality` is an error before anything is coded. One it would
+    /// not move back is an error too, and the frame it had coded by then is
+    /// not appended: the stream stays at the [`Self::quality`] it reports,
+    /// the settle's and no longer the walk's, and its next frame is a
+    /// keyframe, since no decoder was handed the picture it would otherwise
+    /// be coded against. The walk is told where the encoder stayed
+    /// ([`walk::QualityWalk::stays_at`]) so that its next verdict starts from
+    /// the quality in force.
+    pub fn settle_bgrx(&mut self, pixels: &[u8], stride: usize, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        self.picture.read_bgrx(pixels, stride)?;
+        self.settle(quality, keyframe, out)
+    }
+
+    /// Settle the picture at `quality` from `rgb` — packed RGB888, tight, for
+    /// exactly this stream's picture — as [`Self::settle_bgrx`] does from
+    /// `B, G, R, X`.
+    pub fn settle_rgb(&mut self, rgb: &[u8], quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        self.picture.read_rgb(rgb)?;
+        self.settle(quality, keyframe, out)
+    }
+
+    /// Encode the planes as they stand, whole, at `quality`, and put the dial
+    /// back.
+    fn settle(&mut self, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        // The planes are the whole picture now, which no decoder has yet.
+        self.carried = false;
+        let walked = self.encoder.quality();
+        self.encoder.set_quality(quality)?;
+        let from = out.len();
+        let encoded = self.encode(None, keyframe, out);
+        // Back whatever the encode came to: the dial is the walk's again.
+        if let Err(stuck) = self.encoder.set_quality(walked) {
+            if out.len() > from {
+                out.truncate(from);
+                self.carried = false;
+                self.lost = true;
+            }
+            return encoded.and(Err(stuck));
+        }
+        encoded
+    }
+
     /// Encode the planes as they stand.
     fn encode(&mut self, changed: Option<&[Rect]>, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
         // Until a frame comes out the planes are ahead of every decoder.
         self.carried = false;
-        let encoded = self.encoder.encode(&self.picture, keyframe, changed, out)?;
+        let encoded = self.encoder.encode(&self.picture, keyframe || self.lost, changed, out)?;
         self.carried = encoded.is_some();
+        self.lost &= encoded.is_none();
         Ok(encoded)
     }
 }
@@ -1272,7 +1416,7 @@ mod tests {
 
     /// A picture read from `rgb`.
     fn picture(w: u16, h: u16, chroma: Chroma, rgb: &[u8]) -> Picture {
-        let mut picture = Picture::new(w, h, chroma).expect("a picture");
+        let mut picture = Picture::new(w, h, chroma, 1).expect("a picture");
         picture.read_rgb(rgb).expect("its own picture");
         picture
     }
@@ -1451,59 +1595,58 @@ mod tests {
         assert_eq!(encoder.coarsest(), 90, "every block has been coded at 90 since");
     }
 
-    /// Converting some rows leaves the planes as converting the whole picture
-    /// would, wherever the rows fall: on an odd row of a 4:2:0 picture, whose
-    /// chroma is two rows' average, on the last row of an odd height, in a
-    /// buffer that ends with its last row, and past the picture's end.
+    /// A rectangle converts to what the whole picture's conversion holds
+    /// there and leaves the rest alone: on an odd row or column, where a
+    /// 4:2:0 chroma sample is a group's average, at the last row and column
+    /// of odd sides, in a buffer that ends with its last row, past the
+    /// picture's edge, and on any number of threads, whose bands a picture
+    /// this small is given by a rectangle the size of a desktop below.
     #[test]
-    fn rows_convert_as_the_whole_picture_does() {
-        let (width, height, stride) = (37usize, 21usize, 37 * 4 + 12);
-        let pixels = |salt: u32| {
+    fn a_rectangle_converts_as_the_whole_picture_does() {
+        let rect = |x, y, width, height| Rect { x, y, width, height };
+        let noise = |len: usize, salt: u32| {
             let mut seed = salt;
-            let mut pixels = vec![0u8; (height - 1) * stride + width * 4];
-            for byte in &mut pixels {
-                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                *byte = (seed >> 16) as u8;
-            }
-            pixels
+            (0..len).map(|_| { seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345); (seed >> 16) as u8 }).collect::<Vec<u8>>()
         };
-        let (before, after) = (pixels(1), pixels(2));
-        for chroma in [Chroma::Full, Chroma::Subsampled] {
-            let mut whole = Picture::new(width as u16, height as u16, chroma).expect("a picture");
-            for rows in [0..1u16, 3..4, 5..12, 20..21, 19..40, 0..21, 7..7, 30..40] {
-                // What changed is these rows and no others.
-                let mut changed = before.clone();
-                for row in usize::from(rows.start)..usize::from(rows.end).min(height) {
-                    changed[row * stride..][..width * 4].copy_from_slice(&after[row * stride..][..width * 4]);
-                }
-                whole.read_bgrx(&changed, stride).expect("a picture that fits");
-                let mut partial = Picture::new(width as u16, height as u16, chroma).expect("a picture");
-                partial.read_bgrx(&before, stride).expect("a picture that fits");
-                partial.read_bgrx_rows(&changed, stride, rows.clone()).expect("a picture that fits");
-                assert!(partial.planes() == whole.planes(), "{chroma:?} rows {rows:?}: the planes are not the whole conversion's");
-            }
-            assert!(matches!(whole.read_bgrx_rows(&before[1..], stride, 0..1), Err(Error::Buffer { .. })), "a buffer too short for the picture was read");
-
-            // And packed RGB, which is tight.
+        for (width, height, rects) in [
+            (37usize, 21usize, vec![rect(0, 0, 37, 1), rect(5, 3, 1, 1), rect(11, 5, 9, 7), rect(36, 20, 1, 1), rect(30, 19, 40, 40), rect(0, 0, 37, 21), rect(7, 7, 0, 3), rect(40, 30, 5, 5), rect(1, 20, 35, 1), rect(3, 0, 31, 21)]),
+            (1203, 1001, vec![rect(0, 0, 1203, 1001), rect(1, 1, 1202, 1000), rect(101, 3, 1100, 997), rect(0, 500, 1203, 501)]),
+        ] {
+            let stride = width * 4 + 12;
+            let (before, after) = (noise((height - 1) * stride + width * 4, 1), noise((height - 1) * stride + width * 4, 2));
+            // Packed RGB, which is tight.
             let tight = |pixels: &[u8]| -> Vec<u8> { pixels.chunks(stride).flat_map(|row| row[..width * 4].chunks(4).flat_map(|px| [px[2], px[1], px[0]])).collect() };
-            let (before, after) = (tight(&before), tight(&after));
-            for rows in [0..1u16, 3..4, 5..12, 20..21, 19..40, 0..21, 7..7, 30..40] {
-                let mut changed = before.clone();
-                for row in usize::from(rows.start)..usize::from(rows.end).min(height) {
-                    changed[row * width * 3..][..width * 3].copy_from_slice(&after[row * width * 3..][..width * 3]);
+            let (before_rgb, after_rgb) = (tight(&before), tight(&after));
+            for (chroma, threads) in [(Chroma::Full, 1), (Chroma::Full, 4), (Chroma::Subsampled, 1), (Chroma::Subsampled, 3)] {
+                let mut whole = Picture::new(width as u16, height as u16, chroma, 1).expect("a picture");
+                for named in &rects {
+                    // What changed is this rectangle and nothing else.
+                    let (mut changed, mut changed_rgb) = (before.clone(), before_rgb.clone());
+                    for row in usize::from(named.y)..(usize::from(named.y) + usize::from(named.height)).min(height) {
+                        let cols = usize::from(named.x).min(width)..(usize::from(named.x) + usize::from(named.width)).min(width);
+                        changed[row * stride..][cols.start * 4..cols.end * 4].copy_from_slice(&after[row * stride..][cols.start * 4..cols.end * 4]);
+                        changed_rgb[row * width * 3..][cols.start * 3..cols.end * 3].copy_from_slice(&after_rgb[row * width * 3..][cols.start * 3..cols.end * 3]);
+                    }
+                    whole.read_bgrx(&changed, stride).expect("a picture that fits");
+                    let mut partial = Picture::new(width as u16, height as u16, chroma, threads).expect("a picture");
+                    partial.read_bgrx(&before, stride).expect("a picture that fits");
+                    partial.read_bgrx_rect(&changed, stride, *named).expect("a picture that fits");
+                    assert!(partial.planes() == whole.planes(), "{chroma:?} {named:?} on {threads}: the planes are not the whole conversion's");
+
+                    whole.read_rgb(&changed_rgb).expect("its own picture");
+                    let mut partial = Picture::new(width as u16, height as u16, chroma, threads).expect("a picture");
+                    partial.read_rgb(&before_rgb).expect("its own picture");
+                    partial.read_rgb_rect(&changed_rgb, *named).expect("its own picture");
+                    assert!(partial.planes() == whole.planes(), "{chroma:?} RGB {named:?} on {threads}: the planes are not the whole conversion's");
                 }
-                whole.read_rgb(&changed).expect("its own picture");
-                let mut partial = Picture::new(width as u16, height as u16, chroma).expect("a picture");
-                partial.read_rgb(&before).expect("its own picture");
-                partial.read_rgb_rows(&changed, rows.clone()).expect("its own picture");
-                assert!(partial.planes() == whole.planes(), "{chroma:?} RGB rows {rows:?}: the planes are not the whole conversion's");
+                assert!(matches!(whole.read_bgrx_rect(&before[1..], stride, rect(0, 0, 1, 1)), Err(Error::Buffer { .. })), "a buffer too short for the picture was read");
+                assert!(matches!(whole.read_rgb_rect(&before_rgb[3..], rect(0, 0, 1, 1)), Err(Error::Crop(..))), "a buffer that is not the picture was read");
             }
-            assert!(matches!(whole.read_rgb_rows(&before[3..], 0..1), Err(Error::Crop(..))), "a buffer that is not the picture was read");
         }
     }
 
-    /// A stream reads the rows a frame's changes span and nothing else of the
-    /// buffer, and leaves the rest of the decoder's picture as it was. Its
+    /// A stream reads the rectangles a frame's changes are and nothing else of
+    /// the buffer, and leaves the rest of the decoder's picture as it was. Its
     /// first frame and a keyframe have no picture to be changes to, and are
     /// read whole whatever they are told.
     #[test]
@@ -1513,8 +1656,9 @@ mod tests {
         const BACK: [u8; 3] = [20, 40, 80];
         const LIT: [u8; 3] = [240, 240, 240];
         const JUNK: [u8; 3] = [170, 85, 170];
-        // On an odd row, so that at 4:2:0 the row above shares its chroma.
-        let named = Rect { x: 32, y: 17, width: 32, height: 15 };
+        // On an odd row and column, so that at 4:2:0 the row above and the
+        // column before share its chroma.
+        let named = Rect { x: 33, y: 17, width: 31, height: 15 };
         // `rgb` in the byte order a stream is fed: packed RGB, or `B, G, R, X`.
         let packed = |rgb: &[u8], bgrx: bool| -> Vec<u8> { if bgrx { rgb.chunks(3).flat_map(|px| [px[2], px[1], px[0], 0]).collect() } else { rgb.to_vec() } };
         let paint = |rgb: &mut [u8], rect: Rect, colour: [u8; 3]| {
@@ -1542,16 +1686,17 @@ mod tests {
             let (key, back) = step(&mut stream, &whole, Some(&[named]), false);
             assert!(key && near(rgb_at(&back, wu, 4, 70), BACK) && near(rgb_at(&back, wu, 48, 24), BACK), "{chroma:?}: the first frame was not the whole picture");
 
-            // A change, in a buffer whose other rows are not the picture: all
-            // but the changed rows at 4:4:4, and at 4:2:0 all but those and the
-            // row that shares the first one's chroma, which is read with it.
+            // A change, in a buffer the rest of which is not the picture: all
+            // but the rectangle at 4:4:4, and at 4:2:0 all but that and the
+            // row and column that share its first ones' chroma, which are
+            // read with it.
             let mut rows = flat(w, h, JUNK);
-            let held = if chroma == Chroma::Subsampled { named.y - 1 } else { named.y };
-            paint(&mut rows, Rect { x: 0, y: held, width: w, height: named.y + named.height - held }, BACK);
+            let held = if chroma == Chroma::Subsampled { Rect { x: named.x - 1, y: named.y - 1, width: named.width + 1, height: named.height + 1 } } else { named };
+            paint(&mut rows, held, BACK);
             paint(&mut rows, named, LIT);
             let (key, back) = step(&mut stream, &rows, Some(&[named]), false);
             assert!(!key && near(rgb_at(&back, wu, 48, 24), LIT), "{chroma:?}: the change came back {:?}", rgb_at(&back, wu, 48, 24));
-            for (x, y) in [(4, 4), (4, 24), (90, 24), (48, 4), (48, 15), (48, 16), (48, 32), (48, 70)] {
+            for (x, y) in [(4, 4), (4, 24), (90, 24), (32, 24), (48, 4), (48, 15), (48, 16), (48, 32), (48, 70)] {
                 assert!(near(rgb_at(&back, wu, x, y), BACK), "{chroma:?}: ({x}, {y}), outside the change, came back {:?}", rgb_at(&back, wu, x, y));
             }
 
@@ -1665,7 +1810,7 @@ mod tests {
 
     #[test]
     fn a_picture_refuses_a_crop_that_is_not_its_picture() {
-        let mut i420 = Picture::new(64, 32, Chroma::Subsampled).expect("a picture");
+        let mut i420 = Picture::new(64, 32, Chroma::Subsampled, 1).expect("a picture");
         i420.read_rgb(&flat(64, 32, [10, 20, 30])).expect("its own picture");
         assert!(i420.read_rgb(&flat(64, 31, [10, 20, 30])).is_err(), "a mis-sized crop would have indexed out of the planes");
         // I420: full-size luma, quarter-size chroma, both tight.
@@ -1673,17 +1818,17 @@ mod tests {
         assert_eq!((y.len(), u.len(), v.len()), (64 * 32, 32 * 16, 32 * 16));
         assert_eq!(i420.strides(), [64, 32, 32]);
         // I444: three full-size planes.
-        let mut i444 = Picture::new(64, 32, Chroma::Full).expect("a picture");
+        let mut i444 = Picture::new(64, 32, Chroma::Full, 1).expect("a picture");
         i444.read_rgb(&flat(64, 32, [10, 20, 30])).expect("its own picture");
         assert!(i444.read_rgb(&flat(64, 31, [10, 20, 30])).is_err());
         let [y, u, v] = i444.planes();
         assert_eq!((y.len(), u.len(), v.len()), (64 * 32, 64 * 32, 64 * 32));
         assert_eq!(i444.strides(), [64, 64, 64]);
         // An odd side rounds its 4:2:0 chroma up rather than dropping a column.
-        let odd = Picture::new(33, 17, Chroma::Subsampled).expect("a picture");
+        let odd = Picture::new(33, 17, Chroma::Subsampled, 1).expect("a picture");
         assert_eq!(odd.strides(), [33, 17, 17]);
         assert_eq!(odd.planes()[1].len(), 17 * 9);
-        assert!(matches!(Picture::new(0, 16, Chroma::Full), Err(Error::Empty(0, 16))));
+        assert!(matches!(Picture::new(0, 16, Chroma::Full, 1), Err(Error::Empty(0, 16))));
     }
 
     /// The conversion's arithmetic, at the points BT.601 studio swing pins
@@ -1693,8 +1838,8 @@ mod tests {
     /// coefficients are allowed.
     #[test]
     fn the_conversion_is_bt601_studio_swing() {
-        let mut i420 = Picture::new(2, 2, Chroma::Subsampled).expect("a picture");
-        let mut i444 = Picture::new(2, 2, Chroma::Full).expect("a picture");
+        let mut i420 = Picture::new(2, 2, Chroma::Subsampled, 1).expect("a picture");
+        let mut i444 = Picture::new(2, 2, Chroma::Full, 1).expect("a picture");
         let close = |got: u8, want: u8, what: &str| {
             assert!(got.abs_diff(want) <= 1, "{what}: got {got}, wanted {want}");
         };
@@ -1749,7 +1894,7 @@ mod tests {
             .collect();
         let width = colours.len();
         let pixels: Vec<u8> = colours.iter().flatten().copied().collect();
-        let mut picture = Picture::new(width as u16, 1, Chroma::Full).expect("a picture");
+        let mut picture = Picture::new(width as u16, 1, Chroma::Full, 1).expect("a picture");
         picture.read_bgrx(&pixels, width * 4).expect("a row");
         assert!(picture.planes()[0].iter().all(|&y| (16..=235).contains(&y)), "luma stays in studio range");
 
@@ -1779,7 +1924,7 @@ mod tests {
             }
         }
         for chroma in [Chroma::Full, Chroma::Subsampled] {
-            let mut picture = Picture::new(width as u16, height as u16, chroma).expect("a picture");
+            let mut picture = Picture::new(width as u16, height as u16, chroma, 1).expect("a picture");
             picture.read_bgrx(&pixels, stride).expect("a picture that fits");
             let mut encoder = Encoder::new(width as u16, height as u16, chroma, QUALITY_MAX, 1).expect("an encoder");
             let (frame, _) = encode(&mut encoder, &picture, false);
@@ -1810,7 +1955,7 @@ mod tests {
         assert!(!fits(4, 2, 16, 31));
         assert!(fits(0, 0, 0, 0));
         assert!(!fits(4, 1, usize::MAX, 16), "a stride the conversion cannot carry, however the bytes add up");
-        let mut picture = Picture::new(4, 2, Chroma::Full).expect("a picture");
+        let mut picture = Picture::new(4, 2, Chroma::Full, 1).expect("a picture");
         assert!(matches!(picture.read_bgrx(&[0; 12], 16), Err(Error::Buffer { .. })));
     }
 
@@ -1908,6 +2053,68 @@ mod tests {
             settled < coarse / 4.0 && settled < fine * 2.0,
             "one frame at quality 90 left the unchanged picture at error {settled:.2} (coarse {coarse:.2}, a quality-90 keyframe {fine:.2}): the encoder skipped blocks that did not move"
         );
+    }
+
+    /// A stream settles its picture with one frame: whole and at the quality
+    /// asked whatever damage the frames before it were told, an inter frame
+    /// unless a keyframe is asked, and with the dial back where the link had it
+    /// for the frame after. A walk told what each frame left owes the settle
+    /// until that one has gone.
+    #[test]
+    fn a_stream_settles_a_coarse_picture_and_keeps_its_dial() {
+        let (w, h) = (320u16, 240u16);
+        let (wu, hu) = (usize::from(w), usize::from(h));
+        // Speckle, so a coarse quantizer has detail to lose.
+        let mut rgb = flat(w, h, [240, 240, 240]);
+        let mut seed = 12_345u32;
+        for px in rgb.chunks_mut(3) {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            if (seed >> 16).is_multiple_of(5) {
+                px.copy_from_slice(&[20, 20, 20]);
+            }
+        }
+        let bgrx: Vec<u8> = rgb.chunks(3).flat_map(|px| [px[2], px[1], px[0], 0]).collect();
+        let error = |back: &[u8]| {
+            let sum: u64 = (0..hu).flat_map(|y| (0..wu).map(move |x| (x, y))).map(|(x, y)| u64::from(rgb_at(back, wu, x, y)[1].abs_diff(rgb[(y * wu + x) * 3 + 1]))).sum();
+            sum as f64 / (wu * hu) as f64
+        };
+        let start = std::time::Instant::now();
+        for packed_rgb in [false, true] {
+            let mut walk = walk::QualityWalk::new(90, std::time::Duration::from_millis(33), true);
+            let mut stream = Stream::new(w, h, Chroma::Full, 90, 2).expect("a stream");
+            stream.set_quality(QUALITY_MIN).expect("a live encoder takes a new quality");
+            let mut frames = vec![Vec::new()];
+            stream.encode_rgb(&rgb, None, false, &mut frames[0]).expect("an encode").expect("a frame");
+            walk.sent(stream.coarsest(), start);
+            assert_eq!((stream.coarsest(), walk.settle_at()), (QUALITY_MIN, Some(start + walk::SETTLE_IDLE)));
+            let coarse = error(&decode_chain(&frames, wu, hu));
+
+            walk.settle(start + walk::SETTLE_IDLE);
+            let mut settle = Vec::new();
+            let key = if packed_rgb { stream.settle_rgb(&rgb, walk.ceiling(), false, &mut settle) } else { stream.settle_bgrx(&bgrx, wu * 4, walk.ceiling(), false, &mut settle) };
+            assert_eq!(key.expect("a settle"), Some(false), "the settle cost a keyframe");
+            frames.push(settle);
+            walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
+            assert_eq!((stream.quality(), stream.coarsest(), walk.settle_at()), (QUALITY_MIN, 90, None), "the settle left the dial or the picture where it was not");
+            let settled = error(&decode_chain(&frames, wu, hu));
+            assert!(settled < coarse / 4.0, "the settle left the picture at error {settled:.2} of {coarse:.2}");
+
+            // The motion after it is at what the link bears, and where it is.
+            let mut moved = Vec::new();
+            stream.encode_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }]), false, &mut moved).expect("an encode").expect("a frame");
+            walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
+            assert_eq!((stream.coarsest(), walk.settle_at().is_some()), (QUALITY_MIN, true), "a coarse frame after the settle owes none");
+
+            // A settle that is to be a keyframe is one, at the settle's quality.
+            let mut key = Vec::new();
+            assert_eq!(stream.settle_rgb(&rgb, 90, true, &mut key).expect("a settle"), Some(true));
+            assert_eq!((stream.quality(), stream.coarsest(), frame_header(&key).map(|header| header.keyframe)), (QUALITY_MIN, 90, Some(true)));
+
+            // A picture that is not the stream's moves nothing.
+            assert!(matches!(stream.settle_rgb(&[0; 9], 90, false, &mut Vec::new()), Err(Error::Crop(..))));
+            assert!(matches!(stream.settle_bgrx(&[0; 9], 4, 90, false, &mut Vec::new()), Err(Error::Buffer { .. })));
+            assert_eq!(stream.quality(), QUALITY_MIN);
+        }
     }
 
     /// The mechanism a quality walk rests on: quality can be given up

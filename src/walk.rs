@@ -28,9 +28,14 @@
 //! with the encoder.
 //!
 //! What the walk holds is what a *moving* picture is coded at. A desktop that
-//! went quiet below the ceiling is sharpened there once — [`QualityWalk::settle`]
-//! — and the walk keeps its place through it: the link did not get any wider
-//! because the screen stopped.
+//! went quiet below the ceiling is sharpened there once, and the walk keeps
+//! its place through it: the link did not get any wider because the screen
+//! stopped. The walk is told what each frame left the client holding
+//! ([`QualityWalk::sent`]) and says when that is owed a settle
+//! ([`QualityWalk::settle_at`]), [`SETTLE_IDLE`] of quiet on; the frame is
+//! [`crate::Stream::settle_bgrx`]'s, and [`QualityWalk::settle`] is told as it
+//! goes. What quiet is stays the caller's: that nothing has changed since,
+//! that no frame is still on its way, and whatever else it waits for.
 //!
 //! A walk that is not lag-aware — a client that asked for its dial held — hears
 //! nothing in a fence or a paint window, however late, and moves on a blocked
@@ -70,6 +75,12 @@ const LAG_SEVERE: Duration = Duration::from_millis(400);
 /// `LAG_BEHIND` is hysteresis: a link hovering there earns neither a coarser
 /// picture nor its quality back.
 pub const LAG_CLEAR: Duration = Duration::from_millis(30);
+
+/// How long a picture left below the ceiling stays quiet, with the client
+/// holding it, before it is settled at the ceiling. Long enough that a brief
+/// pause in motion is not chased with a redundant frame of the whole picture,
+/// short enough that a settled screen sharpens while the eye is still on it.
+pub const SETTLE_IDLE: Duration = Duration::from_millis(500);
 
 /// Behind frames among the last [`VERDICT_WINDOW`] before quality is given up,
 /// the latest among them. Two rather than one, so a single unlucky frame is not
@@ -218,6 +229,9 @@ pub struct QualityWalk {
     changed_at: Option<Instant>,
     /// Until when the verdicts wait, after a keyframe ([`KEYFRAME_HOLD`]).
     held_until: Option<Instant>,
+    /// Since when the client has held a picture some of which is below the
+    /// ceiling, while it does: what a settle is owed for, [`SETTLE_IDLE`] on.
+    coarse_since: Option<Instant>,
     /// What the next step up reclaims: [`STEP_UP`], doubling with every step
     /// up the link takes, to [`STEP_UP_MAX`].
     reclaim: u8,
@@ -273,6 +287,7 @@ impl QualityWalk {
             clear: None,
             changed_at: None,
             held_until: None,
+            coarse_since: None,
             reclaim: STEP_UP,
             reclaimed: None,
             refused: None,
@@ -334,10 +349,30 @@ impl QualityWalk {
         Pace { quality: self.quality, interval: self.interval() }
     }
 
-    /// Whether `quality` is below the ceiling: a frame encoded there is one a
-    /// quiet desktop owes a settle for.
-    pub fn coarse(&self, quality: u8) -> bool {
-        quality < self.ceiling
+    /// A frame went out and left the coarsest of the client's picture at
+    /// `coarsest` ([`crate::Stream::coarsest`]): below the ceiling, a desktop
+    /// that goes quiet now owes a settle, counted from here; at it, none is
+    /// owed. Every frame says, the settle's own too, which is what pays it.
+    pub fn sent(&mut self, coarsest: u8, now: Instant) {
+        self.coarse_since = (coarsest < self.ceiling).then_some(now);
+    }
+
+    /// The client has the last frame: the quiet a settle waits out is counted
+    /// from here and not from when the frame was written, for a caller that
+    /// hears of it.
+    pub fn delivered(&mut self, now: Instant) {
+        if self.coarse_since.is_some() {
+            self.coarse_since = Some(now);
+        }
+    }
+
+    /// When the picture the client holds is owed a settle, if nothing changes
+    /// before then: [`SETTLE_IDLE`] after the frame that left it below the
+    /// ceiling. `None` while it is all at the ceiling. A desktop that changed
+    /// since, or a frame still on its way, is the caller's to know and wait
+    /// for.
+    pub fn settle_at(&self) -> Option<Instant> {
+        self.coarse_since.map(|since| since + SETTLE_IDLE)
     }
 
     /// A frame's fence came back `delivery` after the frame was written.
@@ -448,7 +483,11 @@ impl QualityWalk {
     /// that spanned it would take quality back on the first frame of every
     /// burst. And a step up before the settle is no longer the last move: lag
     /// behind the settle's frame is that frame's, not a refusal of the step.
+    /// No settle is owed from here: the frame says what it left
+    /// ([`Self::sent`]), and one that never goes out is asked for by the next
+    /// frame that does.
     pub fn settle(&mut self, now: Instant) {
+        self.coarse_since = None;
         self.verdicts = 0;
         self.clear = None;
         self.changed_at = Some(now);
@@ -936,13 +975,42 @@ mod tests {
         let mut walk = walk(60, start);
         walk.fenced(140 * MS, true, start);
         assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(50));
-        assert!(walk.coarse(walk.quality()));
         walk.settle(start + 1200 * MS);
         assert_eq!(walk.quality(), 50, "the settle moved the walk");
         walk.fenced(140 * MS, true, start + 1300 * MS);
         assert_eq!(walk.fenced(140 * MS, true, start + 1300 * MS), None, "the settle was a move");
         // Counted all the same: the cooldown over, the verdict is already in.
         assert_eq!(walk.fenced(140 * MS, true, start + 2300 * MS).map(|pace| pace.quality), Some(40));
+    }
+
+    /// A settle is owed [`SETTLE_IDLE`] after a frame left any of the picture
+    /// below the ceiling, counted from when the client had it where that is
+    /// heard of, and no longer once a frame has left it all at the ceiling or
+    /// the settle is on its way.
+    #[test]
+    fn a_settle_is_owed_for_a_picture_left_below_the_ceiling() {
+        let start = Instant::now();
+        let mut walk = walk(60, start);
+        assert_eq!(walk.settle_at(), None, "a walk that has sent nothing owes a settle");
+        walk.sent(60, start);
+        walk.delivered(start + 40 * MS);
+        assert_eq!(walk.settle_at(), None, "a picture at the ceiling owes a settle");
+        walk.sent(50, start + 100 * MS);
+        assert_eq!(walk.settle_at(), Some(start + 100 * MS + SETTLE_IDLE));
+        walk.delivered(start + 180 * MS);
+        assert_eq!(walk.settle_at(), Some(start + 180 * MS + SETTLE_IDLE), "the quiet was not counted from the delivery");
+        // A frame at the ceiling over part of the picture leaves the rest coarse.
+        walk.sent(50, start + 300 * MS);
+        assert_eq!(walk.settle_at(), Some(start + 300 * MS + SETTLE_IDLE));
+        walk.settle(start + 800 * MS);
+        assert_eq!((walk.settle_at(), walk.quality()), (None, 60), "a settle on its way is owed again");
+        // The settle's frame left the picture at the ceiling, and one that
+        // could not would be owed again.
+        walk.sent(60, start + 810 * MS);
+        assert_eq!(walk.settle_at(), None);
+        walk.sent(50, start + 900 * MS);
+        walk.sent(60, start + 950 * MS);
+        assert_eq!(walk.settle_at(), None, "a frame that sharpened the last of the picture left a settle owed");
     }
 
     /// The clear frames before a desktop went quiet do not span the quiet: a
@@ -1029,7 +1097,6 @@ mod tests {
         assert_eq!(walk.observe(Duration::ZERO, LAG_HEAVY, start).map(|pace| pace.quality), Some(40));
         walk.stays_at(60);
         assert_eq!(walk.quality(), 60);
-        assert!(!walk.coarse(walk.quality()));
         let at = start + ADJUST_COOLDOWN;
         assert_eq!(walk.observe(Duration::ZERO, LAG_BEHIND, at), None);
         assert_eq!(walk.observe(Duration::ZERO, LAG_BEHIND, at).map(|pace| pace.quality), Some(50));
