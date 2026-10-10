@@ -380,11 +380,27 @@ impl Picture {
     /// [`Self::read_rgb`] takes it, and leave every other pixel as the last
     /// conversion made it, as [`Self::read_bgrx_rect`] does.
     pub fn read_rgb_rect(&mut self, rgb: &[u8], rect: Rect) -> Result<(), Error> {
+        self.holds_rgb(rgb)?;
+        self.convert(rgb, usize::from(self.size.0) * 3, rect, Packed::Rgb);
+        Ok(())
+    }
+
+    /// Whether `rgb` is this picture, packed and tight.
+    fn holds_rgb(&self, rgb: &[u8]) -> Result<(), Error> {
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         if rgb.len() != w * h * 3 {
             return Err(Error::Crop(rgb.len(), w, h));
         }
-        self.convert(rgb, w * 3, rect, Packed::Rgb);
+        Ok(())
+    }
+
+    /// Whether `pixels` hold this picture as `B, G, R, X`, rows `stride`
+    /// bytes apart.
+    fn holds_bgrx(&self, pixels: &[u8], stride: usize) -> Result<(), Error> {
+        let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
+        if !fits(w, h, stride, pixels.len()) {
+            return Err(Error::Buffer { width: w, height: h, stride, bytes: pixels.len() });
+        }
         Ok(())
     }
 
@@ -405,10 +421,7 @@ impl Picture {
     /// the pixels that share a group with a pixel of `rect` must hold the
     /// picture too, though they are not named. No other pixel is read.
     pub fn read_bgrx_rect(&mut self, pixels: &[u8], stride: usize, rect: Rect) -> Result<(), Error> {
-        let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
-        if !fits(w, h, stride, pixels.len()) {
-            return Err(Error::Buffer { width: w, height: h, stride, bytes: pixels.len() });
-        }
+        self.holds_bgrx(pixels, stride)?;
         self.convert(pixels, stride, rect, Packed::Bgrx);
         Ok(())
     }
@@ -1121,6 +1134,8 @@ impl Stream {
     pub fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), Error> {
         match changed.filter(|_| self.filled) {
             Some(rects) => {
+                // Refused whole or not at all, a read of no rectangle too.
+                self.picture.holds_bgrx(pixels, stride)?;
                 for rect in rects {
                     self.picture.read_bgrx_rect(pixels, stride, *rect)?;
                 }
@@ -1139,6 +1154,7 @@ impl Stream {
     pub fn read_rgb(&mut self, rgb: &[u8], changed: Option<&[Rect]>) -> Result<(), Error> {
         match changed.filter(|_| self.filled) {
             Some(rects) => {
+                self.picture.holds_rgb(rgb)?;
                 for rect in rects {
                     self.picture.read_rgb_rect(rgb, *rect)?;
                 }
@@ -1799,6 +1815,19 @@ mod tests {
             frames.push(out);
             assert_eq!(decode_chain(&frames, wu, hu), back, "{chroma:?}: a frame of nothing read changed the picture");
 
+            // A settle carries what was read and no frame has: the rectangle
+            // lit again, with the rest as the planes hold it.
+            let mut rows = flat(w, h, JUNK);
+            paint(&mut rows, held, BACK);
+            paint(&mut rows, named, LIT);
+            let pixels = packed(&rows, bgrx);
+            if bgrx { stream.read_bgrx(&pixels, wu * 4, Some(&[named])) } else { stream.read_rgb(&pixels, Some(&[named])) }.expect("a read");
+            let mut out = Vec::new();
+            assert_eq!(stream.settle(90, false, &mut out).expect("a settle"), Some(false));
+            frames.push(out);
+            let back = decode_chain(&frames, wu, hu);
+            assert!(near(rgb_at(&back, wu, 48, 24), LIT) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "{chroma:?}: a settle did not carry what was read for it");
+
             // A keyframe is the whole picture, of which it was read one
             // rectangle: the planes hold the rest.
             let mut rows = flat(w, h, JUNK);
@@ -1810,8 +1839,12 @@ mod tests {
             let back = decode_chain(&[out], wu, hu);
             assert!(near(rgb_at(&back, wu, 48, 24), LIT) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "{chroma:?}: the keyframe was not the whole picture");
 
-            assert!(matches!(stream.read_rgb(&[0; 9], None), Err(Error::Crop(..))));
-            assert!(matches!(stream.read_bgrx(&[0; 9], 4, None), Err(Error::Buffer { .. })));
+            // A buffer that is not the picture is refused whatever is to be
+            // read of it, nothing included.
+            for changed in [None, Some(&[named][..]), Some(&[][..])] {
+                assert!(matches!(stream.read_rgb(&[0; 9], changed), Err(Error::Crop(..))));
+                assert!(matches!(stream.read_bgrx(&[0; 9], 4, changed), Err(Error::Buffer { .. })));
+            }
         }
     }
 
@@ -2210,6 +2243,19 @@ mod tests {
             stream.encode(false, &mut moved).expect("an encode").expect("a frame");
             walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
             assert_eq!((stream.coarsest(), walk.settle_at().is_some()), (QUALITY_MIN, true), "a coarse frame after the settle owes none");
+
+            // That frame coded its corner and left the rest as the settle
+            // had it, and a frame codes what was read for it and not what
+            // was read for the one before: a finer frame elsewhere leaves
+            // the corner coarse, and a finer one of the corner leaves nothing.
+            stream.set_quality(90).expect("a live encoder takes a new quality");
+            stream.read_rgb(&rgb, Some(&[Rect { x: 64, y: 64, width: 16, height: 16 }])).expect("a read");
+            stream.encode(false, &mut Vec::new()).expect("an encode").expect("a frame");
+            assert_eq!(stream.coarsest(), QUALITY_MIN, "a frame coded what was read for the one before it");
+            stream.read_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }])).expect("a read");
+            stream.encode(false, &mut Vec::new()).expect("an encode").expect("a frame");
+            assert_eq!(stream.coarsest(), 90, "a frame of one corner coded more than it");
+            stream.set_quality(QUALITY_MIN).expect("a live encoder takes a new quality");
 
             // A settle that is to be a keyframe is one, at the settle's quality.
             let mut key = Vec::new();
