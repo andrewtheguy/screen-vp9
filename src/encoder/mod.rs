@@ -586,10 +586,21 @@ impl Encoder {
         }
     }
 
-    /// Write the superblocks the frame touched from its reconstruction, coded
-    /// and filtered, into the reference, a superblock row to a thread.
+    /// Make the reference the frame coded: the superblocks the frame
+    /// touched written from its reconstruction, coded and filtered, into
+    /// the reference; or, where it touched most of them, the reconstruction
+    /// kept as the reference and the superblocks it did not touch written
+    /// into that from the one before, whichever is fewer to copy. A
+    /// superblock row to a thread.
     fn merge(&mut self) {
         let Self { geometry: g, pool, at_once: threads, recon, reference, touched, .. } = self;
+        let most = touched.iter().filter(|&&t| t).count() * 2 > touched.len();
+        if most {
+            std::mem::swap(recon, reference);
+        }
+        // From here on `recon` is what is copied from: the superblocks
+        // that are touched, or with `most` the ones that are not.
+        let copied = !most;
         // Per superblock row, per tile column and plane: the row's pixels in
         // the reconstruction and in the reference, the column's first pixel
         // column of the frame and its stride.
@@ -604,14 +615,17 @@ impl Encoder {
             }
         }
         on_threads(pool, *threads, rows.into_iter().enumerate(), |(sb_row, planes)| {
+            let touched = &touched[sb_row * g.sb_cols..][..g.sb_cols];
             for (from, to, x, stride) in planes {
-                for sb_col in x / 64..((x + stride) / 64).min(g.sb_cols) {
-                    if !touched[sb_row * g.sb_cols + sb_col] {
-                        continue;
-                    }
-                    let at = sb_col * 64 - x;
-                    for r in 0..64 {
-                        to[r * stride + at..][..64].copy_from_slice(&from[r * stride + at..][..64]);
+                // A run of superblocks at a time, a row of pixels of the
+                // whole run in one copy.
+                let (first, end) = (x / 64, ((x + stride) / 64).min(g.sb_cols));
+                let mut sb_col = first;
+                while let Some(start) = touched[sb_col..end].iter().position(|&t| t == copied).map(|i| sb_col + i) {
+                    sb_col = touched[start..end].iter().position(|&t| t != copied).map_or(end, |i| start + i);
+                    let run = start * 64 - x..sb_col * 64 - x;
+                    for (from, to) in from.chunks_exact(stride).zip(to.chunks_exact_mut(stride)) {
+                        to[run.clone()].copy_from_slice(&from[run.clone()]);
                     }
                 }
             }
