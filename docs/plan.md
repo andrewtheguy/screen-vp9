@@ -85,13 +85,13 @@ desktop as drawn:
 [benchmarks.md](benchmarks.md), one run of 2026-10-10 over every size:
 
 - Over a whole capture, every one at every size takes less time than libvpx
-  (0.13 to 0.82, frame for frame) at a picture level or better in 68 cells
-  of 70 and at 0.12 to 1.09 of the bytes. A line of text is 0.13 to 0.18.
-- A first picture coded alone as a keyframe is 0.52 to 0.95 of libvpx's
-  time up to 1920 wide and 0.70 to 1.02 from 2048 wide.
-- A settle of a busy picture from 65 is 0.93 to 1.25 of libvpx's time, for
+  (0.13 to 0.83, frame for frame) at a picture level or better in 68 cells
+  of 70 and at 0.12 to 1.09 of the bytes. A line of text is 0.13 to 0.19.
+- A first picture coded alone as a keyframe is 0.55 to 0.93 of libvpx's
+  time up to 1920 wide and 0.67 to 1.04 from 2048 wide.
+- A settle of a busy picture from 65 is 0.82 to 1.21 of libvpx's time, for
   1.2 to 1.5 dB more picture, where libvpx's time is at the higher of the
-  two levels it comes out at, and up to 1.8 where it is at the lower.
+  two levels it comes out at, and up to 1.37 where it is at the lower.
 - A settle of one dial step takes up to 1.7 of libvpx's bytes.
 
 ## Measured again in this replan
@@ -113,7 +113,9 @@ On the AVX2 machine, four threads, each run alone.
 | A keyframe leaves the search's anchors to the frame after it | a first picture's keyframe 5 to 25% less; the frame after pays the 4 to 9 ms |
 | The reference is made by whichever is fewer to copy | `video` 26.4 → 23.4 ms at 2560×1600, `walk` 23.3 → 19.9 |
 
-The last four rows are after release 0.0.1-alpha.3 and change no stream.
+| The anchors a keyframe left wait for the first frame that changes the picture | a settle straight after a keyframe 3 ms less at 2048×1536 |
+
+The last five rows are after release 0.0.1-alpha.3 and change no stream.
 Tile rows were out of the subset until now. A tile row splits the bool
 coder and nothing else, libvpx and ffvp9 decode every frame of the captures
 played through them this way, and vp9-wasm reads the header's tile rows;
@@ -141,20 +143,27 @@ vp9-wasm has not been run on these streams.
   the quality walk does not bring a churning picture under its link. Open,
   below.
 
+- **A settle's inter blocks in the largest transform alone**: 25 to 30%
+  less time and 1.9 to 2.4 dB less, which is libvpx's picture (`uncover`
+  at 1920×1080 from 65: 16.3 ms and 43.80 dB against 22 to 26 and 45.70).
+  The settle's time is its picture; a settle is there to reach the ceiling
+  in one frame, so it stays.
+- **An inter block whose largest transform codes nothing tries no
+  smaller**: a settle of one dial step 20 to 35% fewer bytes for 0.07 to
+  0.24 dB less, one from 65 2 to 4% fewer for 0.15 to 0.4 dB less, the
+  time the same.
+
 ## What is open
 
 In the order it is taken up:
 
-1. **A settle of a busy picture**, 0.93 to 1.25 of libvpx's time from 65
-   or 1.2 to 1.8, by which of two levels libvpx's own time comes out at,
-   and its bytes from one dial step under: 0.8 to 1.7 of libvpx's at −0.1
-   to −0.4 dB. Profiled: no one hot spot, and the time buys 1.2 to 1.5 dB.
-   What would make it cheaper without the picture is not found.
+1. **A settle of one dial step takes 0.8 to 1.7 of libvpx's bytes** at
+   −0.1 to −0.4 dB, a few kilobytes. A settle's time is answered above.
 2. **libvpx's settle time is one of two levels a process**, 1.3 to 1.4
-   apart (`uncover` at 2048×1536 from 65: 23.3, 17.3 and 25.9 ms in three
-   runs, this encoder 31 in each). Why is not known, and until it is a
+   apart (`uncover` at 2048×1536 from 65: 23.3, 17.3 and 23.4 ms in three
+   runs, at 1600×1000 18.7, 19.2 and 14.6). Why is not known, and until it is a
    settle's ratio is good to no better than that.
-3. **The frames of `video` and `walk`**, 0.63 to 0.82 of libvpx's time, the
+3. **The frames of `video` and `walk`**, 0.64 to 0.83 of libvpx's time, the
    nearest the line of the whole captures. Profiled: the token estimate,
    the block walk, the intra mode and the transforms 5 to 11% each, and
    the search 11 to 14% (its index rebuilt and its projections), which is
