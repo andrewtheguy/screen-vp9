@@ -77,10 +77,10 @@ the other; a number on the line is left plain.
   10× (one or two kilobytes against a few hundred bytes); `walk`'s captures
   at up to 1.09×.
 
-## What changed since release 0.0.1-alpha.3
+## What changed between releases 0.0.1-alpha.3 and 0.0.1-alpha.4
 
 Measured on the same machine before and after, each alone. Every stream is
-the release's, byte for byte.
+alpha.3's, byte for byte.
 
 | Change | What it bought |
 |---|---|
@@ -91,9 +91,9 @@ the release's, byte for byte.
 | The reference is made by whichever is fewer to copy: the superblocks a frame touched into it, or the ones it did not into the reconstruction | `video` 26.4 → 23.4 ms at 2560×1600, `walk` 23.3 → 19.9, `drag` 18.3 → 16.4 |
 | The anchors a keyframe left wait for the first frame that changes the picture | a settle straight after a keyframe 3 ms less at 2048×1536: `drag` from 65 20 → 17.7 ms, `video` from 89 11.5 → 8.5 |
 
-Against libvpx, the release's cells and this commit's over all ten sizes:
+Against libvpx, alpha.3's cells and alpha.4's over all ten sizes:
 
-| | 0.0.1-alpha.3 | Now |
+| | 0.0.1-alpha.3 | 0.0.1-alpha.4 |
 |---|---:|---:|
 | A line of text, time frame for frame | 0.30–0.79 | 0.13–0.19 |
 | `uncover`, time frame for frame | 0.39–0.53 | 0.25–0.31 |

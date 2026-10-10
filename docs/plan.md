@@ -115,7 +115,7 @@ On the AVX2 machine, four threads, each run alone.
 
 | The anchors a keyframe left wait for the first frame that changes the picture | a settle straight after a keyframe 3 ms less at 2048×1536 |
 
-The last five rows are after release 0.0.1-alpha.3 and change no stream.
+The last five rows are release 0.0.1-alpha.4 and change no stream.
 Tile rows were out of the subset until now. A tile row splits the bool
 coder and nothing else, libvpx and ffvp9 decode every frame of the captures
 played through them this way, and vp9-wasm reads the header's tile rows;
