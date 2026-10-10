@@ -240,7 +240,7 @@ impl Search {
     /// superblock in raster order the vectors it offers for a frame coded
     /// against `reference`, the zero vector where it has fewer than
     /// `VECTORS`.
-    pub(super) fn update(&mut self, pool: &Pool, luma: &[u8], unchanged: &[bool], reference: &Reconstruction) -> Vec<[Mv; VECTORS]> {
+    pub(super) fn update(&mut self, pool: &Pool, threads: usize, luma: &[u8], unchanged: &[bool], reference: &Reconstruction) -> Vec<[Mv; VECTORS]> {
         let shape = &self.shape;
         let mi_cols = shape.mi_cols;
         let changed = |r, c| shape.changed(unchanged, r, c);
@@ -261,7 +261,7 @@ impl Search {
         if self.refill || self.pending.len() * REFILL > self.anchors.len() {
             self.index(pool);
         } else {
-            self.bring_up(pool);
+            self.bring_up(pool, threads);
         }
         self.refill = false;
         self.pending.clear();
@@ -270,7 +270,7 @@ impl Search {
         // A row of 8×8s at a time, as each thread is free for one: what
         // changed lies in some rows and not others.
         let rows = self.anchors.chunks_mut(mi_cols).zip(self.counts.chunks_mut(mi_cols)).zip(stale.chunks(mi_cols)).enumerate();
-        let found = on_workers(pool, rows, &mut self.scratch, |(r, ((anchors, counts), stale)), scratch| {
+        let found = on_workers(pool, rows, &mut self.scratch[..threads], |(r, ((anchors, counts), stale)), scratch| {
             let mut found = Vec::new();
             let mut replaced = Vec::new();
             let mut looked_up = 0;
@@ -306,7 +306,7 @@ impl Search {
         self.pending = found.iter().flat_map(|f| f.2.iter().copied()).collect();
         // Per superblock, its projections' vector where it changed, a row
         // of superblocks at a time.
-        let projected = on_workers(pool, 0..shape.sb_rows, &mut self.scratch, |sb_row, scratch| {
+        let projected = on_workers(pool, 0..shape.sb_rows, &mut self.scratch[..threads], |sb_row, scratch| {
             (0..shape.sb_cols)
                 .map(|sb_col| {
                     let moved = (0..8).any(|r| (0..8).any(|c| shape.changed(unchanged, sb_row * 8 + r, sb_col * 8 + c)));
@@ -339,10 +339,10 @@ impl Search {
     /// last's, from the 8×8s whose anchors were taken again last: each
     /// thread takes the anchors those had out of its table and puts in the
     /// ones they have.
-    fn bring_up(&mut self, pool: &Pool) {
+    fn bring_up(&mut self, pool: &Pool, threads: usize) {
         let Self { shape, anchors, counts, tables, pending, .. } = self;
         let shards = tables.len();
-        on_threads(pool, shards, tables.iter_mut().enumerate(), |(s, table)| {
+        on_threads(pool, threads, tables.iter_mut().enumerate(), |(s, table)| {
             for &(i, old, n) in pending.iter() {
                 for &a in old[..usize::from(n)].iter().filter(|a| shard(a.0, shards) == s) {
                     let (x, y) = shape.place(i, a);
@@ -581,7 +581,7 @@ mod tests {
                 let (r, c) = (i / geometry.mi_cols, i % geometry.mi_cols);
                 *u = (0..8).all(|y| luma[(r * 8 + y) * w + c * 8..][..8] == next[(r * 8 + y) * w + c * 8..][..8]);
             }
-            search.update(&pool, &next, &unchanged, &recon);
+            search.update(&pool, 3, &next, &unchanged, &recon);
             luma = next;
         }
         // The tables are now of the frame before `luma`; refill from the
@@ -589,7 +589,7 @@ mod tests {
         let mut refilled = Search::new(&geometry, 3);
         refilled.anchors = search.anchors.clone();
         refilled.counts = search.counts.clone();
-        search.bring_up(&pool);
+        search.bring_up(&pool, 3);
         refilled.index(&pool);
         let (kept, fresh) = (usable(&search.tables), usable(&refilled.tables));
         assert!(!kept.is_empty());

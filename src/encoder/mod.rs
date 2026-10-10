@@ -52,6 +52,12 @@ const MIN_TILE_WIDTH_B64: usize = 4;
 /// keyframe's bools at 1920×1080 are coded in 8 ms of 18 in four rows, for
 /// 0.02% more bytes, and a line of text stays in one.
 const TILE_ROW_RECORDS: usize = 1 << 14;
+/// The 8×8s a frame may code at most to be coded on one thread: a key
+/// typed or a line of text, which the threads would not have woken for
+/// before it is done. A line of text at 1920×1080 takes 0.57 ms on one
+/// thread and 1.02 on four; from 4096 on, a scroll takes half as long
+/// again on one.
+const LIGHT_FRAME: usize = 1024;
 
 /// Run `work` on each of `jobs` on up to `threads` of `pool`'s threads,
 /// this one among them, as many jobs to a turn as leave none over if every
@@ -291,6 +297,9 @@ pub struct Encoder {
     threads: usize,
     /// The threads, this one among them, for the encoder's life.
     pool: Pool,
+    /// How many of them the frame being coded is coded on: one, where it
+    /// may code so little that waking the rest costs more than they do.
+    at_once: usize,
     quality: u8,
     speed: Speed,
     /// Per tile column, what a decoder keeps while it reads it.
@@ -359,6 +368,7 @@ impl Encoder {
             filtered: loop_filtered(tile_cols_log2),
             threads,
             pool: Pool::new(threads),
+            at_once: threads,
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
             speed: Speed::default(),
             contexts: (0..1 << tile_cols_log2).map(|i| tile::Contexts::new(&geometry, geometry.tile_cols(i, tile_cols_log2))).collect(),
@@ -460,6 +470,7 @@ impl Encoder {
         }
         let keyframe = keyframe || !self.started;
         self.name(changed.filter(|_| !keyframe));
+        self.at_once = if self.named.iter().filter(|&&named| named).count() > LIGHT_FRAME { self.threads } else { 1 };
         // The search's anchors are of the source coded last, which the
         // comparison is about to write over.
         if keyframe {
@@ -468,7 +479,7 @@ impl Encoder {
             self.search.catch_up(&self.pool, &self.previous[0]);
         }
         self.compare(picture, keyframe);
-        let vectors = if keyframe { Vec::new() } else { self.search.update(&self.pool, &self.previous[0], &self.still, &self.reference) };
+        let vectors = if keyframe { Vec::new() } else { self.search.update(&self.pool, self.at_once, &self.previous[0], &self.still, &self.reference) };
         for contexts in &mut self.contexts {
             contexts.start(self.last_inter);
         }
@@ -484,7 +495,7 @@ impl Encoder {
         let frame = tile::Frame { geometry: g, source: &source, previous, quantizer: &quantizer, costs: &costs, fast: self.speed == Speed::Fastest };
         // The header updates the probabilities from what the frame's bools
         // count, and then the bools are coded.
-        let counts = tile::code(&self.pool, self.threads, &frame, &mut self.contexts, &mut self.recon.columns);
+        let counts = tile::code(&self.pool, self.at_once, &frame, &mut self.contexts, &mut self.recon.columns);
         let compressed = header::compressed(keyframe, &mut probs, &counts);
         // An inter frame's blocks are in segments, the inactive segment's
         // features written once after each keyframe.
@@ -578,7 +589,7 @@ impl Encoder {
     /// Write the superblocks the frame touched from its reconstruction, coded
     /// and filtered, into the reference, a superblock row to a thread.
     fn merge(&mut self) {
-        let Self { geometry: g, pool, threads, recon, reference, touched, .. } = self;
+        let Self { geometry: g, pool, at_once: threads, recon, reference, touched, .. } = self;
         // Per superblock row, per tile column and plane: the row's pixels in
         // the reconstruction and in the reference, the column's first pixel
         // column of the frame and its stride.
@@ -615,7 +626,7 @@ impl Encoder {
     /// finishes one. A superblock with no active block has no edge to
     /// filter and is passed over. Gives back each tile column's bytes.
     fn finish(&mut self, table: &[u8], segmentation: Option<&header::Segmentation>, level: u8, tile_rows_log2: u32) -> Vec<Vec<u8>> {
-        let Self { geometry: g, pool, threads, recon, contexts, tile_cols_log2: log2, .. } = self;
+        let Self { geometry: g, pool, at_once: threads, recon, contexts, tile_cols_log2: log2, .. } = self;
         let tiles: Vec<_> = (0..1 << *log2).map(|i| g.tile_cols(i, *log2).start).zip(&*contexts).collect();
         let masks: Vec<Option<loopfilter::Masks>> = (0..if level > 0 { g.sb_rows * g.sb_cols } else { 0 })
             .map(|i| {
@@ -667,7 +678,7 @@ impl Encoder {
         let [p0, p1, p2] = &mut self.previous;
         let marks = self.still.chunks_mut(band * g.mi_cols).zip(self.unchanged.chunks_mut(band * g.mi_cols)).zip(self.named.chunks(band * g.mi_cols)).zip(self.coded_at.chunks(band * g.mi_cols));
         let bands = marks.zip(p0.chunks_mut(band * 8 * width)).zip(p1.chunks_mut(band * 8 * width)).zip(p2.chunks_mut(band * 8 * width));
-        on_threads(&self.pool, self.threads, bands.enumerate(), |(b, ((((((still, unchanged), named), coded_at), p0), p1), p2))| {
+        on_threads(&self.pool, self.at_once, bands.enumerate(), |(b, ((((((still, unchanged), named), coded_at), p0), p1), p2))| {
             let mut previous = [p0, p1, p2];
             let y0 = b * band * 8;
             let rows = previous[0].len() / width;
