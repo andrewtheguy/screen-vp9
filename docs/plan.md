@@ -71,6 +71,15 @@ In the order it is taken up:
    encoder here it cannot be the gate of [Decisions](#decisions) as
    written; what this repository can assert is this encoder's own bytes
    and PSNR per capture, which are the same on every run. Not decided.
+5. **The conversion is not the same on arm64 and amd64.** The `yuv`
+   crate's NEON path makes a luma of 217 of an RGB grey of 235 where its
+   AVX2 path makes 218 (0.8.19, `YuvConversionMode::Balanced`, BT.601 at
+   studio swing; the exact value is 217.8), so one desktop is a level of
+   luma apart on the two before the encoder has read it. Found when
+   `a_settle_leaves_what_a_decoder_holds_exactly` failed on arm64 alone,
+   and seen at that one grey: which values and which planes differ is not
+   measured, nor whether another conversion mode agrees across the two.
+   The test now looks for its grey. Not looked into.
 
 ## Decisions
 
