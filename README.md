@@ -54,5 +54,5 @@ Use it by release tag, each of which the `Release` workflow publishes as a
 prerelease once the tests pass on every target:
 
 ```toml
-screen-vp9-native = { git = "https://github.com/andrewtheguy/screen-vp9-native", tag = "v0.0.1-alpha.1" }
+screen-vp9-native = { git = "https://github.com/andrewtheguy/screen-vp9-native", tag = "v0.0.1-alpha.2" }
 ```

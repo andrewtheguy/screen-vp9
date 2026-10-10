@@ -690,7 +690,7 @@ The replan, from here. Each phase is measured on the captures of
     `-C target-feature=+avx2` set for its amd64 builds (a
     `.cargo/config.toml` or `RUSTFLAGS` in each container build), and
     wlshare's `scripts/vp9-samples.sh` run once so that vp9-wasm's benchmark
-    decodes what this encoder writes. Released as `v0.0.1-alpha.1`, a prerelease
+    decodes what this encoder writes. First released as `v0.0.1-alpha.1`, a prerelease
     as every release of this repository is, by its `Release` workflow.
 11. **A settle costs what it sharpens.** What phase 9 left over the line: a
     settle's time, and `walk`'s one quiet settle at 2.3× libvpx's bytes.
