@@ -709,7 +709,7 @@ mod tests {
     }
 
     fn picture(w: u16, h: u16, rgb: &[u8]) -> Picture {
-        let mut picture = Picture::new(w, h, Chroma::Full).expect("a picture");
+        let mut picture = Picture::new(w, h, Chroma::Full, 1).expect("a picture");
         picture.read_rgb(rgb).expect("its own picture");
         picture
     }
@@ -824,7 +824,7 @@ mod tests {
     #[test]
     fn a_flat_picture_is_coded_in_whole_superblocks() {
         let (w, h) = (640, 384);
-        let mut flat = Picture::new(w, h, Chroma::Full).expect("a picture");
+        let mut flat = Picture::new(w, h, Chroma::Full, 1).expect("a picture");
         flat.read_rgb(&[40, 90, 200].repeat(usize::from(w) * usize::from(h))).expect("its own picture");
         let (bytes, mse) = round_trip(&flat, 100, 1);
         // Sixty superblocks of a partition symbol, a skip flag and two modes
@@ -1532,7 +1532,7 @@ mod tests {
             let fresh = size != (w, h);
             if fresh {
                 size = (w, h);
-                picture = Some(Picture::new(w, h, Chroma::Full).expect("a picture"));
+                picture = Some(Picture::new(w, h, Chroma::Full, threads).expect("a picture"));
                 encoders = Some((
                     crate::Encoder::new(w, h, Chroma::Full, frame.quality, threads).expect("a libvpx encoder"),
                     Encoder::new(w, h, frame.quality, threads).expect("an encoder"),
@@ -1545,7 +1545,7 @@ mod tests {
             match frame.changed {
                 Some(rects) => {
                     for r in rects {
-                        picture.read_bgrx_rows(frame.pixels, stride, r.y.min(h)..r.y.saturating_add(r.height).min(h)).expect("rows of the picture");
+                        picture.read_bgrx_rect(frame.pixels, stride, *r).expect("a rectangle of the picture");
                     }
                 }
                 None => picture.read_bgrx(frame.pixels, stride).expect("the picture"),
@@ -1663,7 +1663,7 @@ mod tests {
         let mut picture = None;
         each_captured(path, |frame| {
             let (w, h) = frame.size;
-            let mut p = Picture::new(w, h, Chroma::Full).expect("a picture");
+            let mut p = Picture::new(w, h, Chroma::Full, 1).expect("a picture");
             p.read_bgrx(frame.pixels, usize::from(w) * 4).expect("the picture");
             picture = Some(p);
             false
@@ -1895,7 +1895,7 @@ mod tests {
     fn a_picture_that_is_not_the_encoders_is_refused() {
         let mut encoder = Encoder::new(64, 64, 90, 1).expect("an encoder");
         let mut out = Vec::new();
-        let subsampled = Picture::new(64, 64, Chroma::Subsampled).expect("a picture");
+        let subsampled = Picture::new(64, 64, Chroma::Subsampled, 1).expect("a picture");
         assert!(matches!(encoder.encode(&subsampled, true, None, &mut out), Err(Error::Mismatch(..))));
         assert!(matches!(encoder.encode(&noise(64, 32), false, None, &mut out), Err(Error::Mismatch(..))));
         assert!(out.is_empty());

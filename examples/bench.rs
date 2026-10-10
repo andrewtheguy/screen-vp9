@@ -167,7 +167,7 @@ fn main() {
             let (picture, bgrx, encoders) = run.get_or_insert_with(|| {
                 let coded = (u16::try_from(size.0).expect("a VP9 width"), u16::try_from(size.1).expect("a VP9 height"));
                 let encoders = [0, 1].map(|c| candidate(&args.names[c], coded, chroma, args.quality, args.threads));
-                (Picture::new(coded.0, coded.1, chroma).expect("a picture"), vec![0u8; size.0 as usize * size.1 as usize * 4], encoders)
+                (Picture::new(coded.0, coded.1, chroma, args.threads).expect("a picture"), vec![0u8; size.0 as usize * size.1 as usize * 4], encoders)
             });
             let stride = size.0 as usize * 4;
             decoded.write_bgrx(bgrx, stride).expect("a buffer of the frame's size");
