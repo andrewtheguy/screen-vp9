@@ -28,7 +28,7 @@ use super::motion;
 use super::mv::{self, Mv};
 use super::pool::Pool;
 use super::predict::{self, Edges, IntraMode};
-use super::probs::{skip_slot, tx_slot};
+use super::probs::{Counts, skip_slot, tx_slot};
 use super::quantize::{self, Quantizer};
 use super::tape::Tape;
 use super::transform::TxType;
@@ -442,7 +442,9 @@ struct Job<'a> {
 /// across the frame, and codes a superblock once the row above it in its
 /// column has coded the one above it. A row reads of the rows above only
 /// what they leave it, so the frame is the same on any number of threads.
-pub(super) fn code(pool: &Pool, threads: usize, frame: &Frame, contexts: &mut [Contexts], columns: &mut [Column]) {
+/// Gives back what the frame's tapes count, which each thread keeps for
+/// the rows it codes: a tape's own counts are left empty.
+pub(super) fn code(pool: &Pool, threads: usize, frame: &Frame, contexts: &mut [Contexts], columns: &mut [Column]) -> Counts {
     let mut columns: Vec<_> = contexts.iter_mut().zip(columns).map(|(contexts, column)| contexts.jobs(column)).collect();
     let mut queue = Vec::new();
     for _ in 0..frame.geometry.sb_rows {
@@ -450,6 +452,7 @@ pub(super) fn code(pool: &Pool, threads: usize, frame: &Frame, contexts: &mut [C
     }
     drop(columns);
     let (next, failed) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let counts = Mutex::new(Counts::new());
     let work = || {
         let _failed = Failed(&failed);
         let mut scratch = Scratch::new();
@@ -457,8 +460,10 @@ pub(super) fn code(pool: &Pool, threads: usize, frame: &Frame, contexts: &mut [C
             let job = job.lock().expect("a job taken whole").take().expect("a row for every job");
             scratch = Tile::new(frame, job, scratch, &failed).code();
         }
+        counts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).add(&scratch.counts);
     };
     pool.run(threads.min(queue.len()), |_| work());
+    counts.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Raises the flag it holds if its thread unwinds, so that the rows waiting
@@ -552,6 +557,9 @@ struct Scratch {
     residual: Box<[i32; 1024]>,
     coeffs: Box<[i32; 1024]>,
     energy: Box<[u8; 1024]>,
+    /// What the rows coded on the thread count, which each row's tape
+    /// holds while the row is coded.
+    counts: Counts,
 }
 
 impl Scratch {
@@ -566,6 +574,7 @@ impl Scratch {
             residual: Box::new([0; 1024]),
             coeffs: Box::new([0; 1024]),
             energy: Box::new([0; 1024]),
+            counts: Counts::new(),
         }
     }
 }
@@ -630,13 +639,16 @@ struct Tile<'a> {
     residual: Box<[i32; 1024]>,
     coeffs: Box<[i32; 1024]>,
     energy: Box<[u8; 1024]>,
+    /// The tape's own counts, empty, while the tape holds the thread's.
+    spare: Counts,
 }
 
 impl<'a> Tile<'a> {
     /// The coder of the superblock row `job`, working in `scratch`.
     fn new(frame: &Frame<'a>, job: Job<'a>, scratch: Scratch, failed: &'a AtomicBool) -> Self {
-        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy } = scratch;
+        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy, counts: mut spare } = scratch;
         moved.clear();
+        std::mem::swap(&mut job.tape.counts, &mut spare);
         let mi_col_start = job.x / 8;
         Self {
             geometry: frame.geometry,
@@ -670,6 +682,7 @@ impl<'a> Tile<'a> {
             residual,
             coeffs,
             energy,
+            spare,
         }
     }
 
@@ -691,8 +704,9 @@ impl<'a> Tile<'a> {
                 self.leave_edge(sb_col);
             }
         }
-        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy, .. } = self;
-        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy }
+        std::mem::swap(&mut self.contexts.tape.counts, &mut self.spare);
+        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy, spare: counts, .. } = self;
+        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy, counts }
     }
 
     /// Wait for the row above to code the superblock above superblock

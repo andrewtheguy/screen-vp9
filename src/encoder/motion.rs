@@ -177,8 +177,11 @@ pub(super) struct Search {
     /// (`shard`).
     tables: Vec<Table>,
     /// Whether the tables have to be filled from every anchor: before any
-    /// frame, and after a frame that did not read them.
+    /// frame, and after a keyframe.
     refill: bool,
+    /// Whether the anchors have to be taken of the whole source coded
+    /// last: after a keyframe, which takes none.
+    unhashed: bool,
     /// The 8×8s whose anchors were taken again last, with the anchors they
     /// had, which the tables still hold.
     pending: Vec<(usize, Anchors, u8)>,
@@ -203,45 +206,67 @@ impl Search {
             counts: vec![0; mis],
             tables: (0..threads).map(|_| HashMap::default()).collect(),
             refill: true,
+            unhashed: true,
             pending: Vec::new(),
             scratch: (0..threads).map(|_| Scratch::default()).collect(),
         }
     }
 
+    /// A keyframe was coded: it reads nothing of the search, and its
+    /// anchors are taken by the inter frame after it, if one follows, so
+    /// that the longest frame of a stream does not wait on them.
+    pub(super) fn forget(&mut self) {
+        self.unhashed = true;
+        self.refill = true;
+        self.pending.clear();
+    }
+
+    /// Before an inter frame, with `luma` still the source coded last at
+    /// the picture's width: take every anchor of it, if that frame was a
+    /// keyframe.
+    pub(super) fn catch_up(&mut self, pool: &Pool, luma: &[u8]) {
+        if !std::mem::take(&mut self.unhashed) {
+            return;
+        }
+        let shape = &self.shape;
+        let mi_cols = shape.mi_cols;
+        let rows = self.anchors.chunks_mut(mi_cols).zip(self.counts.chunks_mut(mi_cols)).enumerate();
+        on_workers(pool, rows, &mut self.scratch, |(r, (anchors, counts)), scratch| shape.hash_run(luma, r, 0..mi_cols, scratch, anchors, counts));
+    }
+
     /// Take the anchors of `luma`, the source being coded at the picture's
-    /// width, where it differs from the source coded last: in every 8×8 not
-    /// marked in `unchanged`, or all of them when it is `None`. In an inter
-    /// frame, coded against `reference`, give back per superblock in raster
-    /// order the vectors it offers, the zero vector where it has fewer than
+    /// width, where it differs from the source coded last, whose anchors
+    /// are kept: in every 8×8 not marked in `unchanged`. Give back per
+    /// superblock in raster order the vectors it offers for a frame coded
+    /// against `reference`, the zero vector where it has fewer than
     /// `VECTORS`.
-    pub(super) fn update(&mut self, pool: &Pool, luma: &[u8], unchanged: Option<&[bool]>, reference: Option<&Reconstruction>) -> Vec<[Mv; VECTORS]> {
-        let inter = reference.is_some();
+    pub(super) fn update(&mut self, pool: &Pool, luma: &[u8], unchanged: &[bool], reference: &Reconstruction) -> Vec<[Mv; VECTORS]> {
         let shape = &self.shape;
         let mi_cols = shape.mi_cols;
         let changed = |r, c| shape.changed(unchanged, r, c);
         // An 8×8's anchors are taken again when a window starting in it
         // reaches a changed pixel: one in it, or right of it, or below. A
         // row of 8×8s with no change in it or the row below has none.
-        let row_changed: Vec<bool> = (0..shape.mi_rows).map(|r| unchanged.is_none_or(|u| u[r * mi_cols..][..mi_cols].contains(&false))).collect();
-        let stale: Vec<bool> = (0..shape.mi_rows * mi_cols)
-            .map(|i| {
-                let (r, c) = (i / mi_cols, i % mi_cols);
-                (row_changed[r] || row_changed.get(r + 1).is_some_and(|&n| n)) && (changed(r, c) || changed(r, c + 1) || changed(r + 1, c) || changed(r + 1, c + 1))
-            })
-            .collect();
-        // The tables are brought to the source coded last, which the
-        // anchors are of, before any of them is taken again.
-        if inter {
-            if self.refill || self.pending.len() * REFILL > self.anchors.len() {
-                self.index(pool);
-            } else {
-                self.bring_up(pool);
+        let row_changed: Vec<bool> = (0..shape.mi_rows).map(|r| unchanged[r * mi_cols..][..mi_cols].contains(&false)).collect();
+        let mut stale = vec![false; shape.mi_rows * mi_cols];
+        for (r, stale) in stale.chunks_exact_mut(mi_cols).enumerate() {
+            if row_changed[r] || row_changed.get(r + 1).is_some_and(|&n| n) {
+                for (c, stale) in stale.iter_mut().enumerate() {
+                    *stale = changed(r, c) || changed(r, c + 1) || changed(r + 1, c) || changed(r + 1, c + 1);
+                }
             }
         }
-        self.refill = !inter;
+        // The tables are brought to the source coded last, which the
+        // anchors are of, before any of them is taken again.
+        if self.refill || self.pending.len() * REFILL > self.anchors.len() {
+            self.index(pool);
+        } else {
+            self.bring_up(pool);
+        }
+        self.refill = false;
         self.pending.clear();
         let shape = &self.shape;
-        let tables = inter.then_some(&self.tables[..]);
+        let tables = &self.tables[..];
         // A row of 8×8s at a time, as each thread is free for one: what
         // changed lies in some rows and not others.
         let rows = self.anchors.chunks_mut(mi_cols).zip(self.counts.chunks_mut(mi_cols)).zip(stale.chunks(mi_cols)).enumerate();
@@ -259,11 +284,8 @@ impl Search {
                 while c < mi_cols && stale[c] {
                     c += 1;
                 }
-                if inter {
-                    replaced.extend((start..c).map(|i| (r * mi_cols + i, anchors[i], counts[i])));
-                }
+                replaced.extend((start..c).map(|i| (r * mi_cols + i, anchors[i], counts[i])));
                 shape.hash_run(luma, r, start..c, scratch, anchors, counts);
-                let Some(tables) = tables else { continue };
                 for i in start..c {
                     for &a in &anchors[i][..usize::from(counts[i])] {
                         let (x, y) = shape.place(r * mi_cols + i, a);
@@ -282,9 +304,6 @@ impl Search {
             (found, looked_up, replaced)
         });
         self.pending = found.iter().flat_map(|f| f.2.iter().copied()).collect();
-        let Some(reference) = reference else {
-            return Vec::new();
-        };
         // Per superblock, its projections' vector where it changed, a row
         // of superblocks at a time.
         let projected = on_workers(pool, 0..shape.sb_rows, &mut self.scratch, |sb_row, scratch| {
@@ -368,10 +387,9 @@ impl Search {
 
 impl Shape {
     /// Whether the source differs from the source coded last in the 8×8 at
-    /// `(r, c)`, one the frame holds, by `unchanged` (all of them when it is
-    /// `None`).
-    fn changed(&self, unchanged: Option<&[bool]>, r: usize, c: usize) -> bool {
-        r < self.mi_rows && c < self.mi_cols && !unchanged.is_some_and(|u| u[r * self.mi_cols + c])
+    /// `(r, c)`, one the frame holds, by `unchanged`.
+    fn changed(&self, unchanged: &[bool], r: usize, c: usize) -> bool {
+        r < self.mi_rows && c < self.mi_cols && !unchanged[r * self.mi_cols + c]
     }
 
     /// The vector of whole pixels, at most `REACH` each way, from the
@@ -543,7 +561,7 @@ mod tests {
         let recon = Reconstruction::new(&geometry, 0);
         let mut luma = noise(w, h, 1);
         let all_changed = vec![false; geometry.mi_rows * geometry.mi_cols];
-        search.update(&pool, &luma, None, None);
+        search.catch_up(&pool, &luma);
         let mut unchanged = all_changed.clone();
         for frame in 1..12usize {
             // A patch of new noise, or a scroll, or everything new.
@@ -563,7 +581,7 @@ mod tests {
                 let (r, c) = (i / geometry.mi_cols, i % geometry.mi_cols);
                 *u = (0..8).all(|y| luma[(r * 8 + y) * w + c * 8..][..8] == next[(r * 8 + y) * w + c * 8..][..8]);
             }
-            search.update(&pool, &next, Some(&unchanged), Some(&recon));
+            search.update(&pool, &next, &unchanged, &recon);
             luma = next;
         }
         // The tables are now of the frame before `luma`; refill from the

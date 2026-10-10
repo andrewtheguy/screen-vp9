@@ -1,13 +1,29 @@
 //! The threads an encoder codes on, made once for its life and parked
-//! between the phases of a frame rather than spawned for each: a frame's
+//! between frames rather than spawned for each phase of one: a frame's
 //! phases are short, and a thread spawned and joined costs as much as some
-//! of them. A phase hands every thread the same closure with its own index,
-//! as `std::thread::scope` would, and returns once every thread is done
-//! with it, so the closure may borrow what the phase has on its stack.
+//! of them. A phase hands the threads one closure, which takes work from a
+//! queue the phase keeps until there is none, and returns once every
+//! thread that took the closure up is done with it, so the closure may
+//! borrow what the phase has on its stack.
+//!
+//! Waking a parked thread costs more than a small frame's phase does, so
+//! nothing waits on one. The caller runs the closure itself and is done
+//! when the work is: a worker that wakes after that finds the phase gone
+//! and has missed it. And a worker that has finished a phase spins for
+//! `SPIN` before it parks, a frame's phases following one another within
+//! microseconds, so that it is there for the next.
 
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+/// How long a thread spins for what it waits on before it parks: longer
+/// than what a frame does between two phases, and far shorter than a frame.
+const SPIN: Duration = Duration::from_micros(100);
+/// How many times a spinning thread looks before it reads the clock again.
+const LOOKS: u32 = 32;
 
 /// A phase's closure, which the workers are handed by address: what it
 /// borrows outlives `Pool::run`, which hands it out and waits.
@@ -24,12 +40,13 @@ struct Job {
 unsafe impl Send for Job {}
 
 struct State {
-    /// The job posted last, and how many jobs have been posted: a worker
-    /// that has seen this many has seen this one.
+    /// The job posted last, until its caller is done with it, and how many
+    /// jobs have been posted: a worker that has seen this many has seen
+    /// this one.
     job: Option<Job>,
     posted: u64,
-    /// How many workers have the posted job still to finish.
-    left: usize,
+    /// How many workers took the posted job and have it still to finish.
+    running: usize,
     /// What a worker's run of the job panicked with, for the caller.
     panic: Option<Box<dyn Any + Send>>,
     stop: bool,
@@ -37,6 +54,10 @@ struct State {
 
 struct Shared {
     state: Mutex<State>,
+    /// `State::posted` and `State::running` as they were last set, for a
+    /// thread that spins to read without the lock.
+    posted: AtomicU64,
+    running: AtomicUsize,
     /// Workers wait on this for a job; the caller on `done` for its end.
     wake: Condvar,
     done: Condvar,
@@ -45,6 +66,22 @@ struct Shared {
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Spin until `done` or for `SPIN`, whichever is first.
+    fn spin(done: impl Fn() -> bool) {
+        let start = Instant::now();
+        loop {
+            for _ in 0..LOOKS {
+                if done() {
+                    return;
+                }
+                std::hint::spin_loop();
+            }
+            if start.elapsed() >= SPIN {
+                return;
+            }
+        }
     }
 }
 
@@ -56,7 +93,8 @@ pub(super) struct Pool {
 
 impl Pool {
     pub(super) fn new(threads: usize) -> Self {
-        let shared = Arc::new(Shared { state: Mutex::new(State { job: None, posted: 0, left: 0, panic: None, stop: false }), wake: Condvar::new(), done: Condvar::new() });
+        let state = State { job: None, posted: 0, running: 0, panic: None, stop: false };
+        let shared = Arc::new(Shared { state: Mutex::new(state), posted: AtomicU64::new(0), running: AtomicUsize::new(0), wake: Condvar::new(), done: Condvar::new() });
         let workers = (1..threads.max(1))
             .map(|index| {
                 let shared = Arc::clone(&shared);
@@ -71,9 +109,12 @@ impl Pool {
         self.workers.len() + 1
     }
 
-    /// Run `f` on `count` threads at once (as many as there are, at most),
-    /// this one as `f(0)` and each worker as `f(index)` with its own index
-    /// from 1, and return once every one has returned. A panic in any of
+    /// Run `f` on up to `count` threads at once (as many as there are, at
+    /// most): on this one as `f(0)`, and as `f(index)` on each worker that
+    /// takes it up before `f(0)` returns, with its own index from 1. `f`
+    /// is to take work from a queue until there is none, so that `f(0)`
+    /// returns when the work is done, whoever did it. Returns once every
+    /// thread that took `f` up has returned from it. A panic in any of
     /// them is raised again here once the rest have returned.
     pub(super) fn run(&self, count: usize, f: impl Fn(usize) + Sync) {
         let count = count.clamp(1, self.threads());
@@ -84,21 +125,25 @@ impl Pool {
         let f: &(dyn Fn(usize) + Sync + '_) = &f;
         // SAFETY: the pointer's lifetime is erased only to be kept in the
         // shared state, which hands it to workers for as long as this call
-        // borrows `f`: the call returns once every one of them is done.
+        // borrows `f`: a worker takes it under the lock while it is
+        // posted, and the call takes it down and then returns once every
+        // worker that took it is done.
         let erased: *const (dyn Fn(usize) + Sync + 'static) = unsafe { std::mem::transmute(std::ptr::from_ref(f)) };
         {
             let mut state = self.shared.lock();
             state.job = Some(Job { f: erased, count });
             state.posted += 1;
-            state.left = count - 1;
+            self.shared.posted.store(state.posted, Ordering::Release);
             self.shared.wake.notify_all();
         }
         let mine = catch_unwind(AssertUnwindSafe(|| f(0)));
+        // No worker takes it up from here on.
+        self.shared.lock().job = None;
+        Shared::spin(|| self.shared.running.load(Ordering::Acquire) == 0);
         let mut state = self.shared.lock();
-        while state.left > 0 {
+        while state.running > 0 {
             state = self.shared.done.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        state.job = None;
         let theirs = state.panic.take();
         drop(state);
         if let Some(panic) = theirs.or(mine.err()) {
@@ -106,8 +151,9 @@ impl Pool {
         }
     }
 
-    /// A worker: each job posted that is for its index, run once, and
-    /// between them parked.
+    /// A worker: each job posted that is for its index and still up when
+    /// it looks, run once, and between them spinning a moment and then
+    /// parked.
     fn work(shared: &Shared, index: usize) {
         let mut seen = 0;
         let mut state = shared.lock();
@@ -116,22 +162,34 @@ impl Pool {
                 return;
             }
             if state.posted == seen {
-                state = shared.wake.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+                // The next phase's job is likely on its way: spin for it,
+                // and park only if it is still not there under the lock.
+                drop(state);
+                Shared::spin(|| shared.posted.load(Ordering::Acquire) != seen);
+                state = shared.lock();
+                if state.posted == seen && !state.stop {
+                    state = shared.wake.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
                 continue;
             }
             seen = state.posted;
             let Some(job) = state.job.filter(|job| index < job.count) else { continue };
+            state.running += 1;
+            shared.running.store(state.running, Ordering::Release);
             drop(state);
-            // SAFETY: `Pool::run` keeps the closure alive until `left` is
-            // 0, which it is not until this worker says so below.
+            // SAFETY: `Pool::run` keeps the closure alive until `running`
+            // is 0 with the job taken down, and this worker took the job
+            // while it was up and counts in `running` until it says so
+            // below.
             let f = unsafe { &*job.f };
             let outcome = catch_unwind(AssertUnwindSafe(|| f(index)));
             state = shared.lock();
             if let Err(panic) = outcome {
                 state.panic.get_or_insert(panic);
             }
-            state.left -= 1;
-            if state.left == 0 {
+            state.running -= 1;
+            shared.running.store(state.running, Ordering::Release);
+            if state.running == 0 {
                 shared.done.notify_one();
             }
         }
@@ -155,7 +213,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn every_thread_runs_the_closure_with_its_own_index_and_the_caller_waits() {
+    fn every_thread_there_in_time_runs_the_closure_with_its_own_index_and_the_caller_waits() {
         let pool = Pool::new(4);
         assert_eq!(pool.threads(), 4);
         for count in [1, 2, 4, 9] {
@@ -179,7 +237,10 @@ mod tests {
         let pool = Pool::new(3);
         let mut out = [0u32; 3];
         let slots: Vec<Mutex<&mut u32>> = out.iter_mut().map(Mutex::new).collect();
-        pool.run(3, |i| **slots[i].lock().unwrap() = i as u32 * 10 + 1);
+        pool.run(3, |i| {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            **slots[i].lock().unwrap() = i as u32 * 10 + 1;
+        });
         drop(slots);
         assert_eq!(out, [1, 11, 21]);
     }
@@ -191,6 +252,8 @@ mod tests {
             let finished = AtomicUsize::new(0);
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 pool.run(3, |i| {
+                    // Long enough for every worker to have taken it up.
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                     if i == culprit {
                         panic!("thread {i}");
                     }
@@ -204,9 +267,28 @@ mod tests {
             // The pool is whole after it.
             let count = AtomicUsize::new(0);
             pool.run(3, |_| {
+                std::thread::sleep(std::time::Duration::from_millis(5));
                 count.fetch_add(1, Ordering::Relaxed);
             });
             assert_eq!(count.into_inner(), 3);
+        }
+    }
+
+    #[test]
+    fn work_the_caller_finishes_alone_waits_on_no_one() {
+        let pool = Pool::new(4);
+        // Parked workers, and a queue the caller empties at once: every
+        // item is taken once, by whoever was there.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        for _ in 0..200 {
+            let next = AtomicUsize::new(0);
+            let taken = AtomicUsize::new(0);
+            pool.run(4, |_| {
+                while next.fetch_add(1, Ordering::Relaxed) < 8 {
+                    taken.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            assert_eq!(taken.into_inner(), 8);
         }
     }
 

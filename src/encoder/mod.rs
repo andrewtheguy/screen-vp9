@@ -37,6 +37,7 @@ mod tokens;
 mod transform;
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, loop_filtered, quality_to_q, tile_columns_log2};
 use pool::Pool;
@@ -53,8 +54,9 @@ const MIN_TILE_WIDTH_B64: usize = 4;
 const TILE_ROW_RECORDS: usize = 1 << 14;
 
 /// Run `work` on each of `jobs` on up to `threads` of `pool`'s threads,
-/// this one among them, as many jobs to a thread as it takes to leave none
-/// over, and give back what each gives, in order.
+/// this one among them, as many jobs to a turn as leave none over if every
+/// thread takes one turn, each thread taking the next turn as it finishes
+/// one; and give back what each gives, in order.
 fn on_threads<J: Send, R: Send>(pool: &Pool, threads: usize, jobs: impl ExactSizeIterator<Item = J>, work: impl Fn(J) -> R + Sync) -> Vec<R> {
     let per = jobs.len().div_ceil(threads.max(1)).max(1);
     let mut chunks: Vec<Mutex<Vec<J>>> = Vec::new();
@@ -65,9 +67,12 @@ fn on_threads<J: Send, R: Send>(pool: &Pool, threads: usize, jobs: impl ExactSiz
         chunks.last_mut().expect("pushed above").get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).push(job);
     }
     let done: Vec<Mutex<Vec<R>>> = chunks.iter().map(|_| Mutex::new(Vec::new())).collect();
-    pool.run(chunks.len(), |i| {
-        let chunk = std::mem::take(&mut *chunks[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        *done[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner) = chunk.into_iter().map(&work).collect();
+    let next = AtomicUsize::new(0);
+    pool.run(chunks.len(), |_| {
+        while let Some((chunk, done)) = Some(next.fetch_add(1, Ordering::Relaxed)).and_then(|i| chunks.get(i).zip(done.get(i))) {
+            let chunk = std::mem::take(&mut *chunk.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+            *done.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = chunk.into_iter().map(&work).collect();
+        }
     });
     done.into_iter().flat_map(|d| d.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)).collect()
 }
@@ -455,8 +460,15 @@ impl Encoder {
         }
         let keyframe = keyframe || !self.started;
         self.name(changed.filter(|_| !keyframe));
+        // The search's anchors are of the source coded last, which the
+        // comparison is about to write over.
+        if keyframe {
+            self.search.forget();
+        } else {
+            self.search.catch_up(&self.pool, &self.previous[0]);
+        }
         self.compare(picture, keyframe);
-        let vectors = self.search.update(&self.pool, &self.previous[0], (!keyframe).then_some(&self.still[..]), (!keyframe).then_some(&self.reference));
+        let vectors = if keyframe { Vec::new() } else { self.search.update(&self.pool, &self.previous[0], &self.still, &self.reference) };
         for contexts in &mut self.contexts {
             contexts.start(self.last_inter);
         }
@@ -470,13 +482,9 @@ impl Encoder {
         let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
         let costs = tokens::Costs::new(&probs);
         let frame = tile::Frame { geometry: g, source: &source, previous, quantizer: &quantizer, costs: &costs, fast: self.speed == Speed::Fastest };
-        tile::code(&self.pool, self.threads, &frame, &mut self.contexts, &mut self.recon.columns);
         // The header updates the probabilities from what the frame's bools
         // count, and then the bools are coded.
-        let mut counts = probs::Counts::new();
-        for tape in self.contexts.iter().flat_map(|contexts| &contexts.tapes) {
-            counts.add(&tape.counts);
-        }
+        let counts = tile::code(&self.pool, self.threads, &frame, &mut self.contexts, &mut self.recon.columns);
         let compressed = header::compressed(keyframe, &mut probs, &counts);
         // An inter frame's blocks are in segments, the inactive segment's
         // features written once after each keyframe.
