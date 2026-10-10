@@ -221,9 +221,14 @@ impl Search {
         self.pending.clear();
     }
 
-    /// Before an inter frame, with `luma` still the source coded last at
-    /// the picture's width: take every anchor of it, if that frame was a
-    /// keyframe.
+    /// Whether the anchors of the source coded last are still to be taken.
+    pub(super) fn waiting(&self) -> bool {
+        self.unhashed
+    }
+
+    /// Before an inter frame that changes the picture, with `luma` still
+    /// the source coded last at the picture's width: take every anchor of
+    /// it, none being taken since a keyframe.
     pub(super) fn catch_up(&mut self, pool: &Pool, luma: &[u8]) {
         if !std::mem::take(&mut self.unhashed) {
             return;
@@ -248,6 +253,11 @@ impl Search {
         // reaches a changed pixel: one in it, or right of it, or below. A
         // row of 8×8s with no change in it or the row below has none.
         let row_changed: Vec<bool> = (0..shape.mi_rows).map(|r| unchanged[r * mi_cols..][..mi_cols].contains(&false)).collect();
+        // A frame that changes nothing searches nothing, and leaves the
+        // tables and the anchors as they are, taken or not.
+        if !row_changed.contains(&true) {
+            return vec![[Mv::ZERO; VECTORS]; shape.sb_rows * shape.sb_cols];
+        }
         let mut stale = vec![false; shape.mi_rows * mi_cols];
         for (r, stale) in stale.chunks_exact_mut(mi_cols).enumerate() {
             if row_changed[r] || row_changed.get(r + 1).is_some_and(|&n| n) {
@@ -547,6 +557,30 @@ mod tests {
             .collect();
         all.sort_unstable();
         all
+    }
+
+    /// A frame that changes nothing takes no anchor and searches nothing,
+    /// and the frame after it finds what it would have found without it.
+    #[test]
+    fn a_still_frame_leaves_the_anchors_to_the_frame_that_changes() {
+        let (w, h) = (320usize, 200usize);
+        let geometry = Geometry::new(w as u16, h as u16);
+        let pool = Pool::new(3);
+        let recon = Reconstruction::new(&geometry, 0);
+        let luma = noise(w, h, 1);
+        let mut scrolled = luma.clone();
+        scrolled.rotate_left(w * 16);
+        let count = geometry.mi_rows * geometry.mi_cols;
+        let mut direct = Search::new(&geometry, 3);
+        direct.catch_up(&pool, &luma);
+        let expected = direct.update(&pool, 3, &scrolled, &vec![false; count], &recon);
+        assert!(expected.iter().any(|v| v[0] != Mv::ZERO), "the scroll is found");
+        let mut search = Search::new(&geometry, 3);
+        let none = search.update(&pool, 3, &luma, &vec![true; count], &recon);
+        assert!(none.iter().all(|v| v.iter().all(|&mv| mv == Mv::ZERO)));
+        assert!(search.waiting());
+        search.catch_up(&pool, &luma);
+        assert!(search.update(&pool, 3, &scrolled, &vec![false; count], &recon) == expected);
     }
 
     /// After frames that change a little and frames that change much, the

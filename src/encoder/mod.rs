@@ -119,6 +119,22 @@ enum Finish<'a> {
     Plane(Vec<Strip<'a>>),
 }
 
+/// Make `previous`, a band of the previous source at `width`, the rows
+/// `rows` of the picture `source` reads, in the 8×8s of them the frame may
+/// code by `named`.
+fn take_row<'s>(previous: &mut [&mut [u8]; 3], source: impl Fn(usize, usize) -> &'s [u8], named: &[bool], rows: std::ops::Range<usize>, width: usize) {
+    let mut c = 0;
+    while let Some(start) = named[c..].iter().position(|&n| n).map(|i| c + i) {
+        c = named[start..].iter().position(|&n| !n).map_or(named.len(), |i| start + i);
+        let span = start * 8..(c * 8).min(width);
+        for (plane, previous) in previous.iter_mut().enumerate() {
+            for y in rows.clone() {
+                previous[y * width..][span.clone()].copy_from_slice(&source(plane, y)[span.clone()]);
+            }
+        }
+    }
+}
+
 /// Loop filter one plane, in the tile columns `columns`, over the
 /// superblocks that have `masks`; `copy` is room for a superblock and the
 /// eight pixels left of it.
@@ -472,13 +488,18 @@ impl Encoder {
         self.name(changed.filter(|_| !keyframe));
         self.at_once = if self.named.iter().filter(|&&named| named).count() > LIGHT_FRAME { self.threads } else { 1 };
         // The search's anchors are of the source coded last, which the
-        // comparison is about to write over.
+        // comparison writes over where the picture changed. Those a
+        // keyframe left untaken wait for the first frame that changes
+        // anything: a picture settled after a keyframe searches nothing.
         if keyframe {
             self.search.forget();
-        } else {
-            self.search.catch_up(&self.pool, &self.previous[0]);
         }
-        self.compare(picture, keyframe);
+        let waiting = !keyframe && self.search.waiting();
+        self.compare(picture, keyframe, !waiting);
+        if waiting && self.still.contains(&false) {
+            self.search.catch_up(&self.pool, &self.previous[0]);
+            self.keep(picture);
+        }
         let vectors = if keyframe { Vec::new() } else { self.search.update(&self.pool, self.at_once, &self.previous[0], &self.still, &self.reference) };
         for contexts in &mut self.contexts {
             contexts.start(self.last_inter);
@@ -681,9 +702,9 @@ impl Encoder {
     /// source over the part of it the picture holds, or where the frame may
     /// not code it, and unchanged where it is still and was last coded at
     /// the dial's quantizer; and make the previous source `picture` where
-    /// the frame may code it, in a band of 8×8 rows on each thread. With
-    /// `everything`, every 8×8 is changed.
-    fn compare(&mut self, picture: &Picture, everything: bool) {
+    /// the frame may code it and `keep` is set, in a band of 8×8 rows on
+    /// each thread. With `everything`, every 8×8 is changed.
+    fn compare(&mut self, picture: &Picture, everything: bool, keep: bool) {
         let g = &self.geometry;
         let width = usize::from(g.width);
         let (planes, stride) = (picture.planes(), picture.strides()[0]);
@@ -736,18 +757,32 @@ impl Encoder {
                 // already, so a row with a change is taken whole where the
                 // frame may code it: elsewhere the previous source is what
                 // was coded.
-                if !still.contains(&false) {
-                    continue;
+                if keep && still.contains(&false) {
+                    take_row(&mut previous, source, named, rows, width);
                 }
-                let mut c = 0;
-                while let Some(start) = named[c..].iter().position(|&n| n).map(|i| c + i) {
-                    c = named[start..].iter().position(|&n| !n).map_or(g.mi_cols, |i| start + i);
-                    let span = start * 8..(c * 8).min(width);
-                    for (plane, previous) in previous.iter_mut().enumerate() {
-                        for y in rows.clone() {
-                            previous[y * width..][span.clone()].copy_from_slice(&source(plane, y)[span.clone()]);
-                        }
-                    }
+            }
+        });
+    }
+
+    /// Make the previous source `picture` in the rows of 8×8s `compare`
+    /// found a change in, where the frame may code them: what it does
+    /// itself unless told to leave the previous source as it is.
+    fn keep(&mut self, picture: &Picture) {
+        let g = &self.geometry;
+        let width = usize::from(g.width);
+        let (planes, stride) = (picture.planes(), picture.strides()[0]);
+        let band = g.mi_rows.div_ceil(self.threads);
+        let [p0, p1, p2] = &mut self.previous;
+        let marks = self.still.chunks(band * g.mi_cols).zip(self.named.chunks(band * g.mi_cols));
+        let bands = marks.zip(p0.chunks_mut(band * 8 * width)).zip(p1.chunks_mut(band * 8 * width)).zip(p2.chunks_mut(band * 8 * width));
+        on_threads(&self.pool, self.at_once, bands.enumerate(), |(b, ((((still, named), p0), p1), p2))| {
+            let mut previous = [p0, p1, p2];
+            let y0 = b * band * 8;
+            let rows = previous[0].len() / width;
+            let source = |plane: usize, y: usize| &planes[plane][(y0 + y) * stride..][..width];
+            for (r, (still, named)) in still.chunks_exact(g.mi_cols).zip(named.chunks_exact(g.mi_cols)).enumerate() {
+                if still.contains(&false) {
+                    take_row(&mut previous, source, named, r * 8..(r * 8 + 8).min(rows), width);
                 }
             }
         });

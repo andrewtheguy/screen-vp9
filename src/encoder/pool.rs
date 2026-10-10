@@ -212,6 +212,19 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Count this thread into `there` and hold it until `count` are: a
+    /// closure that waits for every thread it is for, however long a
+    /// loaded machine takes to wake them, where the encoder's would be done
+    /// without them.
+    fn gather(there: &AtomicUsize, count: usize) {
+        there.fetch_add(1, Ordering::Relaxed);
+        let started = Instant::now();
+        while there.load(Ordering::Relaxed) < count {
+            assert!(started.elapsed() < Duration::from_secs(60), "{count} threads take the closure up");
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn every_thread_there_in_time_runs_the_closure_with_its_own_index_and_the_caller_waits() {
         let pool = Pool::new(4);
@@ -219,14 +232,15 @@ mod tests {
         for count in [1, 2, 4, 9] {
             let ran = Mutex::new(Vec::new());
             let sum = AtomicUsize::new(0);
+            let there = AtomicUsize::new(0);
+            let n = count.min(4);
             pool.run(count, |i| {
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                gather(&there, n);
                 sum.fetch_add(i, Ordering::Relaxed);
                 ran.lock().unwrap().push(i);
             });
             let mut ran = ran.into_inner().unwrap();
             ran.sort_unstable();
-            let n = count.min(4);
             assert_eq!(ran, (0..n).collect::<Vec<_>>(), "{count} asked for");
             assert_eq!(sum.into_inner(), n * (n - 1) / 2);
         }
@@ -237,8 +251,9 @@ mod tests {
         let pool = Pool::new(3);
         let mut out = [0u32; 3];
         let slots: Vec<Mutex<&mut u32>> = out.iter_mut().map(Mutex::new).collect();
+        let there = AtomicUsize::new(0);
         pool.run(3, |i| {
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            gather(&there, 3);
             **slots[i].lock().unwrap() = i as u32 * 10 + 1;
         });
         drop(slots);
@@ -250,10 +265,10 @@ mod tests {
         let pool = Pool::new(3);
         for culprit in 0..3 {
             let finished = AtomicUsize::new(0);
+            let there = AtomicUsize::new(0);
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 pool.run(3, |i| {
-                    // Long enough for every worker to have taken it up.
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    gather(&there, 3);
                     if i == culprit {
                         panic!("thread {i}");
                     }
@@ -266,10 +281,7 @@ mod tests {
             assert_eq!(finished.load(Ordering::Relaxed), 2, "the others ran to the end");
             // The pool is whole after it.
             let count = AtomicUsize::new(0);
-            pool.run(3, |_| {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                count.fetch_add(1, Ordering::Relaxed);
-            });
+            pool.run(3, |_| gather(&count, 3));
             assert_eq!(count.into_inner(), 3);
         }
     }
