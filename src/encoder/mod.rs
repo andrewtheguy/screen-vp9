@@ -46,6 +46,11 @@ use pool::Pool;
 const MAX_TILE_WIDTH_B64: usize = 64;
 /// The narrowest a tile column may be, in superblocks.
 const MIN_TILE_WIDTH_B64: usize = 4;
+/// The records a tile column's tapes hold for each tile row the frame is
+/// in, two rows from this many and four from four times it: a busy
+/// keyframe's bools at 1920×1080 are coded in 8 ms of 18 in four rows, for
+/// 0.02% more bytes, and a line of text stays in one.
+const TILE_ROW_RECORDS: usize = 1 << 14;
 
 /// Run `work` on each of `jobs` on up to `threads` of `pool`'s threads,
 /// this one among them, as many jobs to a thread as it takes to leave none
@@ -97,8 +102,8 @@ type Strip<'a> = (usize, usize, &'a mut Vec<u8>);
 
 /// What is left of a frame once its blocks are decided, a job each.
 enum Finish<'a> {
-    /// A tile column's tapes to code.
-    Tapes(&'a tile::Contexts),
+    /// A tile's tapes to code: those of its superblock rows.
+    Tapes(&'a [tape::Tape]),
     /// A plane to loop filter, in its tile columns.
     Plane(Vec<Strip<'a>>),
 }
@@ -478,7 +483,19 @@ impl Encoder {
         let segmentation = (!keyframe).then(|| header::Segmentation::choose(&counts.segments, !self.segmented));
         let filter_level = if self.filtered { loopfilter::level(quantizer.ac_step(), keyframe) } else { 0 };
         let table = probs.table();
-        let tiles = self.finish(&table, segmentation.as_ref(), filter_level);
+        // The bools of a tile column are coded by one thread, one after
+        // another, which of a busy frame is the longest thing left: in tile
+        // rows each is a bool coder of its own, and a decoder predicts
+        // across them as if they were not there. A row costs its size and
+        // its coder's last bytes, so a frame is in rows by how much its
+        // heaviest column recorded.
+        let heaviest = self.contexts.iter().map(|contexts| contexts.tapes.iter().map(tape::Tape::len).sum::<usize>()).max().unwrap_or(0);
+        let tile_rows_log2 = match heaviest / TILE_ROW_RECORDS {
+            4.. if self.geometry.sb_rows >= 4 => 2,
+            1.. if self.geometry.sb_rows >= 2 => 1,
+            _ => 0,
+        };
+        let tiles = self.finish(&table, segmentation.as_ref(), filter_level, tile_rows_log2);
         let g = &self.geometry;
         let uncompressed = header::Uncompressed {
             keyframe,
@@ -489,6 +506,7 @@ impl Encoder {
             tile_cols_log2: self.tile_cols_log2,
             min_log2_tile_cols: g.min_log2_tile_cols(),
             max_log2_tile_cols: g.max_log2_tile_cols(),
+            tile_rows_log2,
             segmentation,
         };
         out.extend(uncompressed.write(compressed.len()));
@@ -588,7 +606,7 @@ impl Encoder {
     /// column and a plane are each a job, a thread taking the next as it
     /// finishes one. A superblock with no active block has no edge to
     /// filter and is passed over. Gives back each tile column's bytes.
-    fn finish(&mut self, table: &[u8], segmentation: Option<&header::Segmentation>, level: u8) -> Vec<Vec<u8>> {
+    fn finish(&mut self, table: &[u8], segmentation: Option<&header::Segmentation>, level: u8, tile_rows_log2: u32) -> Vec<Vec<u8>> {
         let Self { geometry: g, pool, threads, recon, contexts, tile_cols_log2: log2, .. } = self;
         let tiles: Vec<_> = (0..1 << *log2).map(|i| g.tile_cols(i, *log2).start).zip(&*contexts).collect();
         let masks: Vec<Option<loopfilter::Masks>> = (0..if level > 0 { g.sb_rows * g.sb_cols } else { 0 })
@@ -607,13 +625,17 @@ impl Encoder {
             }
         }
         // The tapes first: a tile column's is the longer job.
-        let jobs: Vec<Finish<'_>> = contexts.iter().map(Finish::Tapes).chain(planes.into_iter().filter(|plane| !plane.is_empty()).map(Finish::Plane)).collect();
+        // The tiles in the order a frame holds them: a tile row's after
+        // the row's above.
+        let row = |i: usize| (i * g.sb_rows) >> tile_rows_log2;
+        let coded = (0..1 << tile_rows_log2).flat_map(|i| contexts.iter().map(move |contexts| Finish::Tapes(&contexts.tapes[row(i)..row(i + 1)])));
+        let jobs: Vec<Finish<'_>> = coded.chain(planes.into_iter().filter(|plane| !plane.is_empty()).map(Finish::Plane)).collect();
         // A superblock that starts a tile column has its vertical pass run
         // on a copy of it with the eight pixels left of it, which lie in
         // the column before.
         let mut copies = vec![vec![0u8; 72 * 64]; (*threads).min(jobs.len())];
         let done = on_workers(pool, jobs.into_iter(), &mut copies, |job, copy| match job {
-            Finish::Tapes(contexts) => Some(tape::code(&contexts.tapes, table, segmentation)),
+            Finish::Tapes(tapes) => Some(tape::code(tapes, table, segmentation)),
             Finish::Plane(columns) => {
                 filter_plane(g, &masks, columns, copy);
                 None

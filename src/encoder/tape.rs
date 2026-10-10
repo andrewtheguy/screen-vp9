@@ -50,6 +50,11 @@ impl Tape {
         self.counts.clear();
     }
 
+    /// How many records it holds: bools, tokens and segments.
+    pub(super) fn len(&self) -> usize {
+        self.records.len()
+    }
+
     /// Code `bit` at the fixed `probability`.
     #[inline(always)]
     pub(super) fn write(&mut self, bit: bool, probability: u8) {

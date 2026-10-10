@@ -190,32 +190,54 @@ impl Costs {
     }
 }
 
+/// One position of a scan, with what its token is coded by: where its
+/// coefficient is, six times its band, and the two earlier coefficients the
+/// position after it takes its context from.
+#[derive(Clone, Copy)]
+struct Place {
+    rc: u16,
+    band: u16,
+    next: [u16; 2],
+}
+
+/// The places of the scan of transform size `tx` and type `tx_type`, the
+/// scan's tables read once into one, so that a token costs one read of it.
+fn places(tx: usize, tx_type: TxType) -> &'static [Place] {
+    static PLACES: std::sync::LazyLock<[Vec<Place>; 10]> = std::sync::LazyLock::new(|| {
+        std::array::from_fn(|i| {
+            let (tx, tx_type) = (i / 3, [TxType::DctDct, TxType::AdstDct, TxType::DctAdst][i % 3]);
+            let Scan { order, neighbors, .. } = scan(tx, tx_type);
+            let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
+            (0..order.len()).map(|c| Place { rc: order[c], band: u16::from(bands[c]) * 6, next: [2 * c + 2, 2 * c + 3].map(|n| neighbors.get(n).copied().unwrap_or(0)) }).collect()
+        })
+    });
+    let kind = match tx_type {
+        TxType::AdstDct if tx < 3 => 1,
+        TxType::DctAdst if tx < 3 => 2,
+        _ => 0,
+    };
+    &PLACES[tx.min(3) * 3 + kind]
+}
+
 /// What `write` would record costs at `costs`, in 256ths of a bit.
 pub(super) fn estimate(costs: &Costs, kind: Kind, ctx: usize, levels: &[i32], eob: usize, energy: &mut [u8; 1024]) -> u32 {
-    let tx = kind.tx;
-    let first = token_context(tx, kind.chroma, kind.inter);
-    let Scan { order: scan, neighbors, .. } = scan(tx, kind.tx_type);
-    let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
-    let max = 16 << (2 * tx);
+    let first = token_context(kind.tx, kind.chroma, kind.inter);
+    let places = places(kind.tx, kind.tx_type);
     let mut ctx = ctx;
     let mut more = true;
     let mut total = 0;
-    for c in 0..eob {
-        let rc = usize::from(scan[c]);
+    for place in &places[..eob] {
+        let rc = usize::from(place.rc);
         let level = levels[rc];
         let token = usize::from(TOKEN_OF[(level.unsigned_abs() as usize).min(67)]);
-        energy[rc] = PT_ENERGY_CLASS[token];
-        let costs = &costs.0[first + usize::from(bands[c]) * 6 + ctx];
+        energy[rc & 1023] = PT_ENERGY_CLASS[token];
+        let costs = &costs.0[first + usize::from(place.band) + ctx];
         total += u32::from(costs[token]) + if more { u32::from(costs[TOKENS]) } else { 0 };
         more = level != 0;
-        let next = c + 1;
-        if next < max {
-            let (a, b) = (usize::from(neighbors[2 * next]), usize::from(neighbors[2 * next + 1]));
-            ctx = (1 + usize::from(energy[a]) + usize::from(energy[b])) >> 1;
-        }
+        ctx = (1 + usize::from(energy[usize::from(place.next[0]) & 1023]) + usize::from(energy[usize::from(place.next[1]) & 1023])) >> 1;
     }
-    if eob < max {
-        total += u32::from(costs.0[first + usize::from(bands[eob]) * 6 + ctx][EOB_TOKEN]);
+    if let Some(place) = places.get(eob) {
+        total += u32::from(costs.0[first + usize::from(place.band) + ctx][EOB_TOKEN]);
     }
     total
 }
@@ -237,32 +259,25 @@ pub(super) struct Kind {
 /// band and context it is coded at, which come from the energy of the
 /// tokens before it. `energy` is scratch, its contents whatever they are.
 pub(super) fn write(t: &mut Tape, kind: Kind, ctx: usize, levels: &[i32], eob: usize, energy: &mut [u8; 1024]) {
-    let tx = kind.tx;
-    let first = token_context(tx, kind.chroma, kind.inter);
-    let Scan { order: scan, neighbors, .. } = scan(tx, kind.tx_type);
-    let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
-    let max = 16 << (2 * tx);
+    let first = token_context(kind.tx, kind.chroma, kind.inter);
+    let places = places(kind.tx, kind.tx_type);
     // The energy of each coefficient coded so far, by raster position: a
     // position's context is read from neighbours earlier in the scan, so
     // only from what this block has written.
     let mut ctx = ctx;
     // An end of block cannot follow a zero, so after one it is not coded.
     let mut more = true;
-    for c in 0..eob {
-        let rc = usize::from(scan[c]);
+    for place in &places[..eob] {
+        let rc = usize::from(place.rc);
         let level = levels[rc];
         let token = usize::from(TOKEN_OF[(level.unsigned_abs() as usize).min(67)]);
-        energy[rc] = PT_ENERGY_CLASS[token];
-        t.token(first + usize::from(bands[c]) * 6 + ctx, more, level, token);
+        energy[rc & 1023] = PT_ENERGY_CLASS[token];
+        t.token(first + usize::from(place.band) + ctx, more, level, token);
         more = level != 0;
-        let next = c + 1;
-        if next < max {
-            let (a, b) = (usize::from(neighbors[2 * next]), usize::from(neighbors[2 * next + 1]));
-            ctx = (1 + usize::from(energy[a]) + usize::from(energy[b])) >> 1;
-        }
+        ctx = (1 + usize::from(energy[usize::from(place.next[0]) & 1023]) + usize::from(energy[usize::from(place.next[1]) & 1023])) >> 1;
     }
-    if eob < max {
-        t.end(first + usize::from(bands[eob]) * 6 + ctx);
+    if let Some(place) = places.get(eob) {
+        t.end(first + usize::from(place.band) + ctx);
     }
 }
 

@@ -29,6 +29,7 @@ impl Quantizer {
     /// Quantize the `n`×`n` `coeffs` into `levels`, both raster order, and
     /// return the end of block: one past the last nonzero level in the scan
     /// whose inverse is `iscan`.
+    #[cfg(test)]
     pub(super) fn quantize(&self, n: usize, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> usize {
         self.quantize_in::<false>(n, iscan, coeffs, levels).0
     }

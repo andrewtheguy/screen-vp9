@@ -122,6 +122,9 @@ pub(super) struct Uncompressed {
     pub(super) tile_cols_log2: u32,
     pub(super) min_log2_tile_cols: u32,
     pub(super) max_log2_tile_cols: u32,
+    /// The log2 of the tile rows, 0 to 2: each row of a tile column is a
+    /// bool coder of its own and nothing else.
+    pub(super) tile_rows_log2: u32,
     /// An inter frame's segments; none on a keyframe.
     pub(super) segmentation: Option<Segmentation>,
 }
@@ -253,7 +256,10 @@ impl Uncompressed {
         if self.tile_cols_log2 < self.max_log2_tile_cols {
             w.flag(false);
         }
-        w.flag(false); // tile_rows_log2
+        w.flag(self.tile_rows_log2 != 0);
+        if self.tile_rows_log2 != 0 {
+            w.flag(self.tile_rows_log2 != 1);
+        }
         w.put(compressed_size as u32, 16); // header_size_in_bytes
     }
 }
@@ -310,7 +316,7 @@ mod tests {
 
     #[test]
     fn the_keyframe_header_reads_as_profile_1_at_bt601_studio_swing() {
-        let header = Uncompressed { keyframe: true, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2, segmentation: None };
+        let header = Uncompressed { keyframe: true, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2, tile_rows_log2: 0, segmentation: None };
         let bytes = header.write(7);
         let crate::FrameHeader { profile, keyframe } = crate::frame_header(&bytes).expect("a VP9 frame");
         assert_eq!((profile, keyframe), (1, true));
@@ -339,7 +345,7 @@ mod tests {
 
     #[test]
     fn the_inter_header_reads_last_and_refreshes_it() {
-        let header = Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2, segmentation: None };
+        let header = Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2, tile_rows_log2: 0, segmentation: None };
         let bytes = header.write(9);
         let crate::FrameHeader { profile, keyframe } = crate::frame_header(&bytes).expect("a VP9 frame");
         assert_eq!((profile, keyframe), (1, false));
@@ -366,7 +372,7 @@ mod tests {
     /// predicted, with the prediction's probabilities.
     #[test]
     fn the_segmented_header_codes_the_map_and_the_inactive_segments_features() {
-        let header = |tree, features| Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2, segmentation: Some(Segmentation { temporal: false, tree, pred: [255; 3], features }) };
+        let header = |tree, features| Uncompressed { keyframe: false, width: 1440, height: 900, q_index: 32, filter_level: 10, tile_cols_log2: 0, min_log2_tile_cols: 0, max_log2_tile_cols: 2, tile_rows_log2: 0, segmentation: Some(Segmentation { temporal: false, tree, pred: [255; 3], features }) };
         let bytes = header(200, true).write(9);
         let bit = |i: usize| bytes[i / 8] >> (7 - i % 8) & 1;
         let field = |at: usize, n: usize| (at..at + n).fold(0u32, |v, i| v << 1 | u32::from(bit(i)));
