@@ -1,55 +1,54 @@
-# screen-vp9
+# screen-vp9-native
 
-VP9 for a desktop picture, as [wlshare](https://github.com/andrewtheguy/wlshare)
-and the [remotex](https://github.com/andrewtheguy/remotex) gateway both code it.
+VP9 for a desktop picture, coded in Rust: what
+[wlshare](https://github.com/andrewtheguy/wlshare) and the
+[remotex](https://github.com/andrewtheguy/remotex) gateway can code a screen
+with in place of [screen-vp9](https://github.com/andrewtheguy/screen-vp9),
+whose encoder is libvpx's. Nothing a user builds links libvpx.
 
-- One libvpx encoder configuration: a quantizer pinned to a 1–100 quality dial
-  rather than a bitrate, screen-content tuning, no lag, no dropped frames, and
-  the colour matrix and range declared in the bitstream.
+- `Encoder`: 8-bit 4:4:4, VP9 profile 1, and nothing else. A quantizer pinned
+  to a 1–100 quality dial rather than a bitrate, no lag, no dropped frames, no
+  keyframe that was not asked for, and the colour matrix and range declared in
+  the bitstream. There is no 4:2:0: a browser with no software VP9 refuses the
+  stream by name at `VideoDecoder.configure`.
 - The stream's shape follows the picture's width and the threads, for the
   decoder's sake: one tile column under 1440 wide, two from 1440, four from
-  2048 and eight from 5760, never more than the threads. A 4:4:4 stream in
-  four columns or more, 2048 wide on four threads, is coded without the loop
-  filter, which a software decoder's threads otherwise wait on; that costs 2%
-  to 4% more bytes and 0.5 to 0.9 dB of luma. 4:2:0 always keeps the filter.
-- `Picture`: the 8-bit 4:2:0 or 4:4:4 BT.601 studio-swing planes libvpx reads,
-  converted from packed RGB or `B, G, R, X`, the whole picture or the rectangle
-  that changed, on up to four of the encoder's threads: a 4K picture in 2.9 ms
-  for 5.5, and a window dragged across one in the quarter of it that moved.
-- A frame told where its picture changed skips every block outside those
-  rectangles, through libvpx's active map: a 4K frame with one small change
-  encodes in 11 ms for 26, and a 1440p one in 5 for 12.
+  2048 and eight from 5760, never more than the threads. A stream in four
+  columns or more, 2048 wide on four threads, is coded without the loop
+  filter, which a software decoder's threads otherwise wait on.
+- `Picture`: the BT.601 studio-swing planes the encoder reads, converted from
+  packed RGB or `B, G, R, X`, the whole picture or the rectangle that changed,
+  on up to four of the encoder's threads.
+- A frame told where its picture changed codes the 8×8s those rectangles touch
+  and leaves every other block as the decoder has it, in a segment a decoder
+  reads nothing more of and does not loop filter.
 - `Stream`: the encoder and its picture together, fed a packed picture and
   where it changed, which is how both users drive it. It reads and codes the
   whole picture where a frame has none to be a change to, and says how coarse
   the coarsest block a decoder holds is, which is what a settle is owed for:
   the whole picture as one inter frame at the ceiling, the dial left where the
   link had it.
-- `Decoder`: the planes back, for every test here and in a user.
 - `frame_header`: the profile and keyframe bit a frame says about itself;
   `codec_string`: the WebCodecs string a browser's `VideoDecoder` is configured
-  with for a stream's size, chroma and frame rate.
+  with for a stream's size and frame rate.
 - `walk::QualityWalk`: the quality and frame rate a link will bear, walked on
   the dial, so a stream wlshare codes and one remotex codes answer a slow link
-  the same way. It is told
-  what each frame left the client holding and says when a quiet desktop is owed
-  its settle, half a second on.
+  the same way. It is told what each frame left the client holding and says
+  when a quiet desktop is owed its settle, half a second on.
 
-libvpx comes from [libvpx-prebuilt](https://github.com/andrewtheguy/libvpx-prebuilt)'s
-static archive for macOS arm64, Linux x86_64 and aarch64 and Windows x86_64;
-nothing is configured or installed at build time.
+The kernels are NEON on arm64 and AVX2 on amd64, and the build is refused
+without them. NEON is in every arm64 target's baseline; AVX2 is not in
+amd64's, so a user's amd64 build sets `-C target-feature=+avx2`, as this
+repository's `.cargo/config.toml` does.
 
-`examples/bench.rs` times two encoders against each other on a captured IVF
-stream, interleaved frame by frame so that load on the machine lands on both,
-and reports the ratio of their times with the bytes and PSNR each made. Naming
-one candidate twice measures the harness itself:
-
-```sh
-cargo run --release --example bench -- capture.ivf 90 5 --a libvpx --b libvpx
-```
+Every frame the encoder makes in a test is decoded by libvpx, from
+[libvpx-prebuilt](https://github.com/andrewtheguy/libvpx-prebuilt)'s static
+archive: a dev-dependency, which no build of a user fetches or links. How the
+encoder is built and what it was measured on is in
+[docs/encoder.md](docs/encoder.md).
 
 Use it by release tag:
 
 ```toml
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.13" }
+screen-vp9-native = { git = "https://github.com/andrewtheguy/screen-vp9-native", tag = "v0.0.1" }
 ```

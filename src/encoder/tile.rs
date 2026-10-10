@@ -256,13 +256,10 @@ impl InterMode {
 #[derive(Clone, Copy, Default)]
 pub(super) struct ModeInfo {
     skip: bool,
-    /// An intra block's mode, which a keyframe codes the next blocks' modes
-    /// by; DC for an inter block, as a decoder takes it. Of a block of
-    /// four 4×4s, the last's.
-    mode: IntraMode,
     /// Per 4×4 of an 8×8, its mode: the block's for a block of one, and
-    /// DC for an inter block. A block's neighbours read the ones along
-    /// their edge (libvpx's `vp9_above_block_mode`, `vp9_left_block_mode`).
+    /// DC for an inter block, as a decoder takes it. A block's neighbours
+    /// read the ones along their edge, which a keyframe codes their modes
+    /// by (libvpx's `vp9_above_block_mode`, `vp9_left_block_mode`).
     sub: [IntraMode; 4],
     /// How an inter block's vector was coded, and the vector; none for an
     /// intra block.
@@ -321,10 +318,11 @@ impl Contexts {
         }
     }
 
-    /// The intra modes of the frame coded last's intra blocks, one per 8×8.
+    /// The intra modes of the frame coded last's intra blocks, one per 8×8:
+    /// of a block of four 4×4s, the last's.
     #[cfg(test)]
     pub(super) fn intra_modes(&self) -> impl Iterator<Item = IntraMode> + '_ {
-        self.mode_info.iter().filter(|m| m.inter.is_none()).map(|m| m.mode)
+        self.mode_info.iter().filter(|m| m.inter.is_none()).map(|m| m.sub[3])
     }
 
     /// What the loop filter reads of the block coded last at the 8×8 in row
@@ -1349,7 +1347,6 @@ impl<'a> Tile<'a> {
             Mode::Intra4 { sub, .. } => sub,
             _ => [IntraMode::Dc; 4],
         };
-        let intra = sub[3];
         let inter = match mode {
             Mode::Intra { .. } | Mode::Intra4 { .. } => None,
             Mode::Inter(mv) => Some(self.inter_mode(mi_row, mi_col, n, mv)),
@@ -1421,7 +1418,7 @@ impl<'a> Tile<'a> {
         }
         let (w, col) = (self.contexts.width, mi_col - self.mi_col_start);
         for row in mi_row..(mi_row + bw).min(g.mi_rows) {
-            self.contexts.mode_info[(row - self.top) * w + col..][..bw.min(w - col)].fill(ModeInfo { skip, mode: intra, sub, inter, tx, n, inactive, predicted });
+            self.contexts.mode_info[(row - self.top) * w + col..][..bw.min(w - col)].fill(ModeInfo { skip, sub, inter, tx, n, inactive, predicted });
         }
         if skip {
             // A skipped block leaves no coefficient above or left of the

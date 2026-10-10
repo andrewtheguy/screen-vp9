@@ -1,8 +1,30 @@
-# A Rust VP9 encoder for screen-vp9
+# The encoder of screen-vp9-native
 
-A plan for replacing the libvpx *encoder* behind `Encoder` with one written in
-Rust, built for exactly what wlshare and the remotex gateway ask of this crate
-and nothing more. Decoding stays with libvpx permanently.
+How the VP9 encoder in this crate was planned, built and measured. It began as
+a plan for replacing the libvpx *encoder* behind `screen-vp9`'s `Encoder` with
+one written in Rust, built for exactly what wlshare and the remotex gateway
+ask of that crate and nothing more, on a branch of that repository that was to
+be merged once the encoder passed a gate against libvpx.
+
+**That changed on 2026-10-09.** The work was forked into this repository as
+`screen-vp9-native`, and everything of `screen-vp9` the encoder replaces was
+deleted here: the libvpx encoder, `Chroma` and its 4:2:0 half, the decoder as
+an API. `screen-vp9` stays as it is. Either user takes this crate in its place
+when it chooses to, and a client that needs 4:2:0 is not cut off by a pin
+bump on a crate both share. libvpx is a dev-dependency here: its decoder, in
+`src/decoder.rs`, is what the tests hold every frame to, and nothing a user
+builds links it.
+
+What follows is the record as it was written on the branch, phase by phase,
+and reads in its own tense: "this crate" is `screen-vp9`, `main` is its
+`main`, and the comparisons with libvpx were made by a harness that played
+each capture into both encoders (`captures_against_libvpx`,
+`keyframes_against_libvpx`, `settles_against_libvpx`, `examples/bench.rs` and
+`tools/gate_tables.py`), which is in this repository's history up to the
+commit that removed the libvpx encoder. What is here now measures this
+encoder alone, with libvpx decoding: `captures_measured`,
+`keyframes_measured` and `settles_measured` in `src/encoder/mod.rs`. A
+comparison with libvpx is made from `screen-vp9`, on the same captures.
 
 Replanned on 2026-10-09, after phases 1 to 5 were built, against the `main`
 of each user as it stood that day: wlshare 0.0.61, remotex 0.0.376, vp9-wasm
@@ -15,8 +37,8 @@ bad evidence and what is done next, in order, are in
 
 ## Decisions
 
-- **Scope:** encode only. `Decoder` stays libvpx, which also makes libvpx the
-  independent decoder every encoder test needs.
+- **Scope:** encode only. Decoding is libvpx's, which is the independent
+  decoder every encoder test needs: a dev-dependency since the fork.
 - **4:4:4 only, kept.** The encoder codes 8-bit 4:4:4, VP9 profile 1, BT.601
   at studio swing. There is no 4:2:0, whatever else is replanned: one chroma
   is what keeps the encoder small. At switch over `Chroma::Subsampled` leaves
@@ -25,15 +47,13 @@ bad evidence and what is done next, in order, are in
   chroma answer that selected it. A browser with no software VP9 (iOS,
   iPadOS) refuses the stream by name at `VideoDecoder.configure`, as it
   refuses any configuration it lacks; that is accepted.
-- **Location:** a module inside this crate, behind the existing `Encoder` API
-  and so behind `Stream`, which is what both users hold.
-- **Branch:** the work is merged into `rust-encoder`, a long-lived branch off
-  `main`, so that `main` keeps taking other changes and releases.
-  `rust-encoder` takes `main` in as it moves and is merged into `main` once,
-  at switch over.
-- **No fallback:** when the Rust encoder passes the gate, the libvpx encoder
-  path is deleted, not kept behind a feature. Until then the module is
-  reachable only from tests.
+- **Location:** this crate's `Encoder`, and so behind `Stream`, which is what
+  both users hold. Until the fork it was a module of `screen-vp9` reachable
+  only from tests, on its `rust-encoder` branch, which took `main` in as it
+  moved; `main`'s v0.0.13 (the settle, a rectangle's conversion on the
+  encoder's threads) was the last taken.
+- **No fallback:** there is no libvpx encoder here, behind a feature or
+  otherwise. The fallback is the other crate.
 - **SIMD is the baseline, not a choice: NEON on arm64 and AVX2 on amd64,**
   the build refused without them (`src/encoder/lanes.rs`). The scalar lane
   is the reference the kernels are tested against and nothing runs on it.
@@ -749,14 +769,22 @@ The replan, from here. Each phase is measured on the captures of
    picture, the transform trial and the three planes, as a keyframe's is;
    and `walk`'s one quiet settle at 2.3× libvpx's bytes (382 against 167),
    four 32×32 blocks where libvpx codes a 64×64.
-10. **Switch over.** The libvpx encoder and `Chroma::Subsampled` removed
-    behind the same API, `Speed` kept, `AGENTS.md` reworded, a release tagged;
-    then in wlshare and remotex: the pin bumped, 4:2:0 dropped,
-    `-C target-feature=+avx2` set for their amd64 builds (a `.cargo/config.toml`
-    or `RUSTFLAGS` in each container build), and wlshare's
-    `scripts/vp9-samples.sh` run once so that vp9-wasm's benchmark decodes
-    what the Rust encoder writes. The crate then encodes in Rust and speaks
-    to libvpx only to decode.
+10. **The fork, in place of a switch over.** Done on 2026-10-09: the crate
+    renamed `screen-vp9-native`; the libvpx encoder, `Chroma`, the decoder as
+    an API, the walk's `stays_at` (a dial this encoder cannot refuse) and
+    the harness that compared the two encoders deleted; `Speed` kept; libvpx
+    a dev-dependency. What the API is now: `Encoder::new(width, height,
+    quality, threads)` and `Stream::new` the same, `encode` and the settles
+    returning whether the frame is a keyframe (this encoder always makes
+    one), `set_quality` infallible, `Picture::new(width, height, threads)`,
+    `codec_string(w, h, fps)`, and an `Error` of five cases, none of them
+    libvpx's. Left for a user that takes it: the dependency swapped, its
+    4:2:0 stream dropped (wlshare's `WLS0`, remotex's `420` chroma and the
+    browser's answer that selected it), its own decoder for its tests,
+    `-C target-feature=+avx2` set for its amd64 builds (a
+    `.cargo/config.toml` or `RUSTFLAGS` in each container build), and
+    wlshare's `scripts/vp9-samples.sh` run once so that vp9-wasm's benchmark
+    decodes what this encoder writes. A release is not tagged yet.
 
 ## Test material
 
@@ -793,8 +821,7 @@ first plan measured wlshare at.
 The eighteen decoded samples the first gate read, and the libvpx-coded
 samples `vp9-samples.sh` makes for vp9-wasm, are not encoder material: the
 first are decodes of decodes, the second are coded by the encoder under
-test's rival. `streams_against_libvpx` still reads the former, as a check
-that a stream decodes and matches, and decides nothing.
+test's rival.
 
 ## Reuse and licence
 

@@ -2,3 +2,4 @@
 # building this crate for amd64 sets the same (see `src/encoder/lanes.rs`).
 [target.'cfg(target_arch = "x86_64")']
 rustflags = ["-C", "target-feature=+avx2"]
+rustdocflags = ["-C", "target-feature=+avx2"]

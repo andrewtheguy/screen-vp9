@@ -14,12 +14,6 @@ version = "0.1.0"
 source = "git+https://github.com/andrewtheguy/libvpx-prebuilt?tag=v1.16.0-20260924182850-e78d74f#e78d74fff89fe8d03a6ee0323da9421cf6c5dc73"
 
 [[package]]
-name = "log"
-version = "0.4.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
-
-[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -47,11 +41,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "screen-vp9"
-version = "0.0.13"
+name = "screen-vp9-native"
+version = "0.0.1"
 dependencies = [
  "libvpx-prebuilt-sys",
- "log",
  "thiserror",
  "yuv",
 ]

@@ -1,15 +1,14 @@
-//! The VP9 encoder in Rust that `docs/rust-encoder-plan.md` sets out: 8-bit
-//! 4:4:4, profile 1, the subset of VP9 the plan's table names and no more.
-//! Reachable only from tests until it passes the plan's gate.
+//! The VP9 encoder: 8-bit 4:4:4, profile 1, the subset of VP9 a desktop is
+//! coded in (`docs/encoder.md`) and no more.
 //!
-//! So far it codes keyframes and inter frames against the frame before, each
-//! superblock split as far as its source varies, every block either DC
-//! predicted or the previous frame at a whole-pixel vector, at a transform
-//! size of its own, its residual coded at the dial's quantizer, and the frame
-//! reconstructed exactly as libvpx's decoder reconstructs it, its loop filter
-//! run over it before it is kept. Where the source has not changed since the
-//! frame before, a block is that frame's, skipped; where it moved, a hash
-//! search finds where it came from. An inter frame's blocks are in two
+//! It codes keyframes and inter frames against the frame before, each
+//! superblock split as far as its source varies, every block predicted by an
+//! intra mode or from the previous frame at a whole-pixel vector, at a
+//! transform size of its own, its residual coded at the dial's quantizer, and
+//! the frame reconstructed exactly as a decoder reconstructs it, its loop
+//! filter run over it before it is kept. Where the source has not changed
+//! since the frame before, a block is that frame's, skipped; where it moved,
+//! a hash search finds where it came from. An inter frame's blocks are in two
 //! segments, as libvpx's are under an active map: the blocks left as the
 //! previous frame has them are the inactive segment, which a decoder reads
 //! nothing of but the segment and does not loop filter, and the rest the
@@ -39,7 +38,7 @@ mod transform;
 
 use std::sync::Mutex;
 
-use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, loop_filtered, quality_to_q, tile_columns_log2};
+use crate::{Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, loop_filtered, quality_to_q, tile_columns_log2};
 use pool::Pool;
 
 
@@ -223,11 +222,14 @@ impl Reconstruction {
     }
 }
 
-/// One 4:4:4 VP9 stream at one picture size.
-pub(crate) struct Encoder {
+/// One VP9 stream at one picture size: 8-bit 4:4:4, its quantizer pinned to
+/// the dial. A picture of another size needs another encoder, whose first
+/// frame is a keyframe by construction. Within one encoder, every inter frame
+/// is expressed as a change from the frame before.
+pub struct Encoder {
     geometry: Geometry,
     tile_cols_log2: u32,
-    /// Whether frames are loop filtered: where the libvpx encoder's are.
+    /// Whether frames are loop filtered (`crate::loop_filtered`).
     filtered: bool,
     /// The most threads the tile columns are coded on.
     threads: usize,
@@ -279,10 +281,13 @@ pub(crate) struct Encoder {
 }
 
 impl Encoder {
-    /// An encoder for a `width`×`height` picture at `quality` (1–100,
-    /// clamped), its tile columns chosen as the libvpx encoder's are for
-    /// `threads` threads.
-    pub(crate) fn new(width: u16, height: u16, quality: u8, threads: usize) -> Result<Self, Error> {
+    /// An encoder for a `width`×`height` picture, starting at `quality`
+    /// (1–100, clamped), coded by `threads` threads. The thread count is the
+    /// caller's: how many cores a machine can spare is a question about what
+    /// else it runs. It also bounds the tile columns, and so decides with the
+    /// width whether a stream is loop filtered: from 2048 wide on four
+    /// threads or more it is not.
+    pub fn new(width: u16, height: u16, quality: u8, threads: usize) -> Result<Self, Error> {
         if width == 0 || height == 0 {
             return Err(Error::Empty(width, height));
         }
@@ -294,7 +299,7 @@ impl Encoder {
         let pixels = usize::from(width) * usize::from(height);
         Ok(Self {
             tile_cols_log2,
-            filtered: loop_filtered(Chroma::Full, width, threads),
+            filtered: loop_filtered(width, threads),
             threads,
             pool: Pool::new(threads),
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
@@ -317,34 +322,43 @@ impl Encoder {
         })
     }
 
+    /// The picture size this encoder codes.
+    pub fn size(&self) -> (u16, u16) {
+        (self.geometry.width, self.geometry.height)
+    }
+
     /// The dial this encoder is coding at.
-    pub(crate) fn quality(&self) -> u8 {
+    pub fn quality(&self) -> u8 {
         self.quality
     }
 
     /// Move the dial (1–100, clamped) without a keyframe: the next frame
     /// codes every block it may code again at the new quantizer, changed or
-    /// not.
-    pub(crate) fn set_quality(&mut self, quality: u8) {
+    /// not. This is how a link that is behind gives quality up, and "without
+    /// a keyframe" is the whole reason: a keyframe is the most bytes a frame
+    /// can be, at the exact moment the link has run out of room.
+    pub fn set_quality(&mut self, quality: u8) {
         self.quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
     }
 
     /// The speed the encoder is coding at.
-    pub(crate) fn speed(&self) -> Speed {
+    pub fn speed(&self) -> Speed {
         self.speed
     }
 
     /// Move the speed: `Fastest` decides by the proxies alone, `Usual` by
     /// coding each way where that pays.
-    pub(crate) fn set_speed(&mut self, speed: Speed) {
+    pub fn set_speed(&mut self, speed: Speed) {
         self.speed = speed;
     }
 
     /// The coarsest dial any block of the picture a decoder now holds was
-    /// last coded at, as `crate::Encoder::coarsest`: a frame told where its
-    /// picture changed leaves the rest at the dial they had. Before the
-    /// first frame, the dial.
-    pub(crate) fn coarsest(&self) -> u8 {
+    /// last coded at: [`Self::quality`] as each frame was encoded, for the
+    /// blocks that frame coded. A frame told where its picture changed leaves
+    /// the rest at the dial they had, so a picture the dial was walked down
+    /// for is coarse here until every block of it has been coded finer,
+    /// which a settle does at once. Before the first frame, the dial.
+    pub fn coarsest(&self) -> u8 {
         if !self.started {
             return self.quality;
         }
@@ -352,8 +366,7 @@ impl Encoder {
     }
 
     /// Settle the picture at `quality`: code `picture` whole at that dial
-    /// and leave the dial where it was, as `crate::Stream::settle_bgrx`
-    /// does. What a desktop that went quiet while the link had it coarse is
+    /// and leave the dial where it was. What a desktop that went quiet while the link had it coarse is
     /// owed (`crate::walk::QualityWalk::settle_at`): as an inter frame every
     /// 8×8 still at a coarser dial is coded where it is with its residual,
     /// so [`Self::coarsest`] is `quality` after it, and the frames of the
@@ -361,7 +374,7 @@ impl Encoder {
     /// makes it one a decoder can start from, at `quality` all the same.
     /// Returns what [`Self::encode`] does; a picture that is not this
     /// encoder's is refused with the dial as it was.
-    pub(crate) fn settle(&mut self, picture: &Picture, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
+    pub fn settle(&mut self, picture: &Picture, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
         let walked = self.quality;
         self.set_quality(quality);
         let encoded = self.encode(picture, keyframe, None, out);
@@ -376,15 +389,17 @@ impl Encoder {
     /// keyframe.
     ///
     /// `changed` is where the picture differs from the one coded before it,
-    /// as `crate::Encoder::encode` takes it: the 8×8s outside every
-    /// rectangle are skipped, left as the decoder has them and at the dial
-    /// they were coded at, whatever the picture holds there. A keyframe
-    /// codes everything.
-    pub(crate) fn encode(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>, out: &mut Vec<u8>) -> Result<bool, Error> {
+    /// or `None` for a picture that may differ anywhere: the 8×8s outside
+    /// every rectangle are skipped, left as the decoder has them and at the
+    /// dial they were coded at, whatever the picture holds there. It is the
+    /// caller's word and not checked: a change outside the rectangles is not
+    /// coded, by this frame or by a later one that does not name it. A
+    /// keyframe codes everything.
+    pub fn encode(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>, out: &mut Vec<u8>) -> Result<bool, Error> {
         let g = &self.geometry;
-        if picture.size() != (g.width, g.height) || picture.chroma() != Chroma::Full {
+        if picture.size() != (g.width, g.height) {
             let (pw, ph) = picture.size();
-            return Err(Error::Mismatch(g.width, g.height, Chroma::Full.name(), pw, ph, picture.chroma().name()));
+            return Err(Error::Mismatch(g.width, g.height, pw, ph));
         }
         let keyframe = keyframe || !self.started;
         self.name(changed.filter(|_| !keyframe));
@@ -656,6 +671,7 @@ impl Encoder {
 
     /// The last frame coded, as a decoder has it: the planes, tight at the
     /// picture's width.
+    #[cfg(test)]
     fn reconstruction(&self) -> [Vec<u8>; 3] {
         let (width, height) = (usize::from(self.geometry.width), usize::from(self.geometry.height));
         std::array::from_fn(|plane| {
@@ -671,7 +687,7 @@ impl Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Decoder;
+    use crate::decoder::{Decoded, Decoder};
 
     /// `w`×`h` RGB noise from `seed`.
     fn noise_rgb(w: u16, h: u16, seed: u32) -> Vec<u8> {
@@ -728,7 +744,7 @@ mod tests {
     }
 
     fn picture(w: u16, h: u16, rgb: &[u8]) -> Picture {
-        let mut picture = Picture::new(w, h, Chroma::Full, 1).expect("a picture");
+        let mut picture = Picture::new(w, h, 1).expect("a picture");
         picture.read_rgb(rgb).expect("its own picture");
         picture
     }
@@ -744,7 +760,7 @@ mod tests {
 
     /// The mean squared error between the planes of `picture` and those of a
     /// decode, over the picture.
-    fn mse(picture: &Picture, decoded: &crate::Decoded<'_>) -> f64 {
+    fn mse(picture: &Picture, decoded: &Decoded<'_>) -> f64 {
         let (w, h) = picture.size();
         let (w, h) = (usize::from(w), usize::from(h));
         let mut sum = 0.0;
@@ -805,7 +821,6 @@ mod tests {
             assert_eq!(crate::frame_header(&frame), Some(crate::FrameHeader { profile: 1, keyframe }));
             let decoded = self.decoder.decode(&frame).unwrap_or_else(|e| panic!("{w}x{h} at quality {quality}, frame {n}: {e}"));
             assert_eq!(decoded.size(), (u32::from(w), u32::from(h)));
-            assert_eq!(decoded.chroma(), Chroma::Full);
             assert!(decoded.declares_bt601_studio_swing());
             let recon = self.encoder.reconstruction();
             let stride = usize::from(w);
@@ -857,7 +872,7 @@ mod tests {
     #[test]
     fn a_flat_picture_is_coded_in_whole_superblocks() {
         let (w, h) = (640, 384);
-        let mut flat = Picture::new(w, h, Chroma::Full, 1).expect("a picture");
+        let mut flat = Picture::new(w, h, 1).expect("a picture");
         flat.read_rgb(&[40, 90, 200].repeat(usize::from(w) * usize::from(h))).expect("its own picture");
         let (bytes, mse) = round_trip(&flat, 100, 1);
         // Sixty superblocks of a partition symbol, a skip flag and two modes
@@ -867,10 +882,10 @@ mod tests {
         assert!(mse < 1.0, "squared error {mse}");
     }
 
-    /// Where the libvpx encoder leaves the loop filter out, of 4:4:4 in four
-    /// tile columns, so does this one, and every frame's header says so.
+    /// The loop filter is left out in four tile columns, and every frame's
+    /// header says so.
     #[test]
-    fn the_loop_filter_is_left_out_where_libvpx_leaves_it_out() {
+    fn the_loop_filter_is_left_out_of_four_tile_columns() {
         for (w, threads, filtered) in [(2047, 4, true), (2048, 4, false), (2048, 2, true)] {
             let rgb = desktop_rgb(w, 64);
             let mut stream = Stream::new(w, 64, 50, threads);
@@ -1412,7 +1427,7 @@ mod tests {
             assert_eq!((stream.encoder.quality(), stream.encoder.coarsest()), (QUALITY_MIN, 90));
 
             // A picture that is not the encoder's moves nothing.
-            let other = Picture::new(w, h + 8, Chroma::Full, 1).expect("a picture");
+            let other = Picture::new(w, h + 8, 1).expect("a picture");
             assert!(matches!(stream.encoder.settle(&other, 90, false, &mut Vec::new()), Err(Error::Mismatch(..))));
             assert_eq!(stream.encoder.quality(), QUALITY_MIN);
         }
@@ -1521,7 +1536,7 @@ mod tests {
     }
 
     /// The mean squared error of a decode's luma against `picture`'s.
-    fn luma_mse(picture: &Picture, decoded: &crate::Decoded<'_>) -> f64 {
+    fn luma_mse(picture: &Picture, decoded: &Decoded<'_>) -> f64 {
         let (w, h) = picture.size();
         let (w, h) = (usize::from(w), usize::from(h));
         let (source, plane, stride) = (picture.planes()[0], decoded.planes()[0], decoded.strides()[0]);
@@ -1534,13 +1549,13 @@ mod tests {
         sum / (w * h) as f64
     }
 
-    /// What a captured frame was, the kinds the gate reads apart.
+    /// What a captured frame was, the kinds measured apart.
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     enum Kind {
         /// A keyframe: asked, or the first at a size.
         Key,
-        /// The whole picture as an inter frame: a settle, or a frame after
-        /// one libvpx made nothing of.
+        /// The whole picture as an inter frame: a settle, or a frame its
+        /// session knew no damage for.
         Whole,
         /// Rectangles within a superblock's area.
         Small,
@@ -1562,14 +1577,13 @@ mod tests {
         }
     }
 
-    /// Both encoders' bytes, times and luma PSNRs over the frames of one kind.
+    /// The bytes, times and luma PSNRs of the frames of one kind.
     #[derive(Default)]
     struct Tally {
         frames: usize,
-        bytes: [usize; 2],
-        times: [Vec<f64>; 2],
-        psnr: [f64; 2],
-        ratios: Vec<f64>,
+        bytes: usize,
+        times: Vec<f64>,
+        psnr: f64,
     }
 
     fn median(v: &mut [f64]) -> f64 {
@@ -1580,11 +1594,6 @@ mod tests {
         v[v.len() / 2]
     }
 
-    /// Play the capture at `path` into this encoder and, with `against`, into
-    /// libvpx too, as the session played it into its stream: the same
-    /// rectangles, the same dial, a keyframe where one was asked, which of
-    /// them goes first alternating, on `threads`. Per kind of frame, what
-    /// each made of it.
     /// `frames`, each a VP9 frame of a `width`×`height` stream, as an IVF
     /// file at `path`, for another decoder to read.
     fn write_ivf(path: &std::path::Path, (width, height): (u16, u16), frames: &[Vec<u8>]) {
@@ -1607,31 +1616,28 @@ mod tests {
         std::fs::write(path, ivf).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     }
 
-    fn play(path: &std::path::Path, threads: usize, against: bool) -> (std::collections::BTreeMap<Kind, Tally>, (u16, u16), usize) {
-        let mut encoders: Option<(crate::Encoder, Encoder, [Decoder; 2])> = None;
-        let mut picture: Option<Picture> = None;
+    /// Play the capture at `path` into the encoder as the session played it
+    /// into its stream: the same rectangles, the same dial, a keyframe where
+    /// one was asked, on `threads`, every frame through a libvpx decoder.
+    /// Per kind of frame, what the encoder made of it.
+    fn play(path: &std::path::Path, threads: usize) -> (std::collections::BTreeMap<Kind, Tally>, (u16, u16), usize) {
+        let mut stream: Option<(Encoder, Decoder, Picture)> = None;
         let mut tallies: std::collections::BTreeMap<Kind, Tally> = std::collections::BTreeMap::new();
-        let (mut n, mut size, mut libvpx_carried) = (0usize, (0u16, 0u16), false);
-        // With `IVF` set to a directory, this encoder's stream is kept and
-        // written there as `<capture>-<WxH>.ivf`, a file per size.
+        let (mut n, mut size) = (0usize, (0u16, 0u16));
+        // With `IVF` set to a directory, the stream is kept and written
+        // there as `<capture>-<WxH>.ivf`, a file per size.
         let ivf = std::env::var_os("IVF").map(std::path::PathBuf::from);
         let frames = std::env::var_os("FRAMES").is_some();
-        type Stream = ((u16, u16), Vec<Vec<u8>>);
-        let mut streams: Vec<Stream> = Vec::new();
+        type Kept = ((u16, u16), Vec<Vec<u8>>);
+        let mut kept: Vec<Kept> = Vec::new();
         each_captured(path, |frame| {
             let (w, h) = frame.size;
             let fresh = size != (w, h);
             if fresh {
                 size = (w, h);
-                picture = Some(Picture::new(w, h, Chroma::Full, threads).expect("a picture"));
-                encoders = Some((
-                    crate::Encoder::new(w, h, Chroma::Full, frame.quality, threads).expect("a libvpx encoder"),
-                    Encoder::new(w, h, frame.quality, threads).expect("an encoder"),
-                    [Decoder::new(1).expect("a decoder"), Decoder::new(1).expect("a decoder")],
-                ));
+                stream = Some((Encoder::new(w, h, frame.quality, threads).expect("an encoder"), Decoder::new(1).expect("a decoder"), Picture::new(w, h, threads).expect("a picture")));
             }
-            let (libvpx, rust, decoders) = encoders.as_mut().expect("made above");
-            let picture = picture.as_mut().expect("made above");
+            let (encoder, decoder, picture) = stream.as_mut().expect("made above");
             let stride = usize::from(w) * 4;
             match frame.changed {
                 Some(rects) => {
@@ -1641,11 +1647,8 @@ mod tests {
                 }
                 None => picture.read_bgrx(frame.pixels, stride).expect("the picture"),
             }
-            if libvpx.quality() != frame.quality {
-                libvpx.set_quality(frame.quality).expect("the dial");
-            }
-            if rust.quality() != frame.quality {
-                rust.set_quality(frame.quality);
+            if encoder.quality() != frame.quality {
+                encoder.set_quality(frame.quality);
             }
             let kind = match frame.changed {
                 _ if frame.keyframe || fresh => Kind::Key,
@@ -1661,67 +1664,33 @@ mod tests {
                     }
                 }
             };
-            let changed = frame.changed;
-            let mut out = [Vec::new(), Vec::new()];
-            let mut times = [0.0; 2];
-            let mut produced = true;
-            for c in if n % 2 == 0 { [0, 1] } else { [1, 0] } {
-                if c == 0 && !against {
-                    continue;
-                }
-                let started = std::time::Instant::now();
-                if c == 0 {
-                    // libvpx is handed the rectangles as its stream would be:
-                    // not after a frame it produced nothing for.
-                    produced = libvpx.encode(picture, frame.keyframe, changed.filter(|_| libvpx_carried), &mut out[0]).expect("an encode").is_some();
-                } else {
-                    rust.encode(picture, frame.keyframe, changed, &mut out[1]).expect("a frame");
-                }
-                times[c] = started.elapsed().as_secs_f64() * 1000.0;
-            }
-            libvpx_carried = produced;
+            let mut out = Vec::new();
+            let started = std::time::Instant::now();
+            encoder.encode(picture, frame.keyframe, frame.changed, &mut out).expect("a frame");
+            let time = started.elapsed().as_secs_f64() * 1000.0;
+            let decoded = decoder.decode(&out).expect("a frame libvpx decodes");
+            let quality = psnr(luma_mse(picture, &decoded).max(1e-3));
             let tally = tallies.entry(kind).or_default();
             tally.frames += 1;
-            let mut quality = [0.0; 2];
-            for c in 0..2 {
-                if c == 0 && (!against || !produced) {
-                    continue;
-                }
-                let decoded = decoders[c].decode(&out[c]).expect("a frame libvpx decodes");
-                tally.bytes[c] += out[c].len();
-                tally.times[c].push(times[c]);
-                quality[c] = psnr(luma_mse(picture, &decoded).max(1e-3));
-                tally.psnr[c] += quality[c];
-            }
-            if against && produced {
-                tally.ratios.push(times[1] / times[0]);
-            }
+            tally.bytes += out.len();
+            tally.times.push(time);
+            tally.psnr += quality;
             // With `FRAMES` set, each frame on a line of its own: its
-            // number, dial and kind, and both encoders' bytes, time and PSNR.
+            // number, dial and kind, and its bytes, time and PSNR.
             if frames {
-                println!(
-                    "    #{n:<4} q{:<3} {:<5} | libvpx {:>8} B {:>6.2} ms {:>5.2} dB | rust {:>8} B {:>6.2} ms {:>5.2} dB",
-                    frame.quality,
-                    kind.name(),
-                    out[0].len(),
-                    times[0],
-                    quality[0],
-                    out[1].len(),
-                    times[1],
-                    quality[1]
-                );
+                println!("    #{n:<4} q{:<3} {:<5} | {:>8} B {time:>6.2} ms {quality:>5.2} dB", frame.quality, kind.name(), out.len());
             }
             if ivf.is_some() {
                 if fresh {
-                    streams.push(((w, h), Vec::new()));
+                    kept.push(((w, h), Vec::new()));
                 }
-                streams.last_mut().expect("pushed above").1.push(std::mem::take(&mut out[1]));
+                kept.last_mut().expect("pushed above").1.push(out);
             }
             n += 1;
             true
         });
         if let Some(dir) = ivf {
-            for ((w, h), stream) in &streams {
+            for ((w, h), stream) in &kept {
                 write_ivf(&dir.join(format!("{}-{w}x{h}.ivf", capture_name(path))), (*w, *h), stream);
             }
         }
@@ -1754,7 +1723,7 @@ mod tests {
         let mut picture = None;
         each_captured(path, |frame| {
             let (w, h) = frame.size;
-            let mut p = Picture::new(w, h, Chroma::Full, 1).expect("a picture");
+            let mut p = Picture::new(w, h, 1).expect("a picture");
             p.read_bgrx(frame.pixels, usize::from(w) * 4).expect("the picture");
             picture = Some(p);
             false
@@ -1763,84 +1732,58 @@ mod tests {
     }
 
     /// The first picture of each capture (the same knobs as
-    /// `captures_against_libvpx`) coded as a keyframe by both encoders at
-    /// the dials `DIALS` names (`40,60,80,90,100` if unset), each three
-    /// times for the least time: bytes, time and luma PSNR per dial, for
-    /// the picture line of the plan's gate. Run it in release:
+    /// `captures_measured`) coded as a keyframe at the dials `DIALS` names
+    /// (`40,60,80,90,100` if unset), each `PASSES` times (3 if unset) for
+    /// the least time: bytes, time and PSNR per dial, luma's and over all
+    /// three planes. With `IVF` set to a directory, each keyframe is
+    /// written there as `<capture>-q<dial>.ivf`. Run it in release:
     ///
     /// ```text
-    /// ONLY=1920 cargo test --release keyframes_against_libvpx -- --ignored --nocapture
+    /// ONLY=1920 cargo test --release keyframes_measured -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
-    fn keyframes_against_libvpx() {
+    fn keyframes_measured() {
         let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
         let dials: Vec<u8> = std::env::var("DIALS").map_or_else(|_| vec![40, 60, 80, 90, 100], |d| d.split(',').map(|v| v.parse().expect("a dial")).collect());
-        // `PASSES` codes each keyframe that many times (3 if unset), for a
-        // profile that wants more samples than a measurement.
         let passes: usize = std::env::var("PASSES").map_or(3, |t| t.parse().expect("a pass count"));
         for path in captures() {
             let picture = first_picture(&path);
             let (w, h) = picture.size();
             println!("{} {w}x{h} on {threads}", capture_name(&path));
             for &dial in &dials {
-                let mut libvpx = crate::Encoder::new(w, h, Chroma::Full, dial, threads).expect("a libvpx encoder");
-                // `SPEED=fastest` codes libvpx's side at its speed 9, for
-                // what its slower keyframe path is worth.
-                if std::env::var("SPEED").is_ok_and(|s| s == "fastest") {
-                    libvpx.set_speed(crate::Speed::Fastest).expect("the speed");
+                let mut encoder = Encoder::new(w, h, dial, threads).expect("an encoder");
+                let (mut frame, mut least) = (Vec::new(), f64::INFINITY);
+                for _ in 0..passes {
+                    frame.clear();
+                    let started = std::time::Instant::now();
+                    encoder.encode(&picture, true, None, &mut frame).expect("a keyframe");
+                    least = least.min(started.elapsed().as_secs_f64() * 1000.0);
                 }
-                let mut rust = Encoder::new(w, h, dial, threads).expect("an encoder");
-                let mut result = [(0usize, f64::INFINITY, 0.0f64, 0.0f64); 2];
-                for (c, r) in result.iter_mut().enumerate() {
-                    let mut frame = Vec::new();
-                    for _ in 0..passes {
-                        frame.clear();
-                        let started = std::time::Instant::now();
-                        if c == 0 {
-                            libvpx.encode(&picture, true, None, &mut frame).expect("an encode").expect("a frame");
-                        } else {
-                            rust.encode(&picture, true, None, &mut frame).expect("a keyframe");
-                        }
-                        r.1 = r.1.min(started.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    let mut decoder = Decoder::new(1).expect("a decoder");
-                    let decoded = decoder.decode(&frame).expect("a frame libvpx decodes");
-                    r.0 = frame.len();
-                    r.2 = psnr(luma_mse(&picture, &decoded).max(1e-3));
-                    r.3 = psnr(mse(&picture, &decoded).max(1e-3));
-                    // With `IVF` set to a directory, each keyframe is written
-                    // there as `<capture>-q<dial>-<encoder>.ivf`.
-                    if let Some(dir) = std::env::var_os("IVF") {
-                        write_ivf(&std::path::Path::new(&dir).join(format!("{}-q{dial}-{}.ivf", capture_name(&path), ["libvpx", "rust"][c])), (w, h), std::slice::from_ref(&frame));
-                    }
+                let mut decoder = Decoder::new(1).expect("a decoder");
+                let decoded = decoder.decode(&frame).expect("a frame libvpx decodes");
+                println!("  q{dial:<3} | {:>8} B {least:>6.2} ms {:>5.2} dB all {:>5.2} dB", frame.len(), psnr(luma_mse(&picture, &decoded).max(1e-3)), psnr(mse(&picture, &decoded).max(1e-3)));
+                if let Some(dir) = std::env::var_os("IVF") {
+                    write_ivf(&std::path::Path::new(&dir).join(format!("{}-q{dial}.ivf", capture_name(&path))), (w, h), std::slice::from_ref(&frame));
                 }
-                // The PSNR is luma's, the gate's; the second is over all
-                // three planes, for what the chroma does.
-                println!(
-                    "  q{dial:<3} | libvpx {:>8} B {:>6.2} ms {:>5.2} dB | rust {:>8} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time {:.3} dB {:+.2} all {:+.2}",
-                    result[0].0, result[0].1, result[0].2, result[1].0, result[1].1, result[1].2,
-                    result[1].0 as f64 / result[0].0 as f64, result[1].1 / result[0].1, result[1].2 - result[0].2, result[1].3 - result[0].3,
-                );
             }
         }
     }
 
     /// The first picture of each capture (the same knobs as
-    /// `captures_against_libvpx`) coded as a keyframe at the first dial of
-    /// each pair `SETTLES` names (`20:90,65:90` if unset), and then again
-    /// whole at the second, the picture unchanged: a settle, as a caller
-    /// sharpens a quiet picture after the dial walked. Each settle is coded
-    /// `PASSES` times (3 if unset) from the same keyframe for the least
-    /// time; its bytes, time and luma PSNR per pair, for the settle line of
-    /// the plan's gate. Run it in release:
+    /// `captures_measured`) coded as a keyframe at the first dial of each
+    /// pair `SETTLES` names (`20:90,65:90` if unset), and then settled at
+    /// the second, the picture unchanged, as a caller sharpens a quiet
+    /// picture after the dial walked. Each settle is coded `PASSES` times
+    /// (3 if unset) from the same keyframe for the least time; its bytes,
+    /// time and PSNR per pair. Run it in release:
     ///
     /// ```text
-    /// ONLY=1920 cargo test --release settles_against_libvpx -- --ignored --nocapture
+    /// ONLY=1920 cargo test --release settles_measured -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
-    fn settles_against_libvpx() {
+    fn settles_measured() {
         let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
         let pairs: Vec<(u8, u8)> = std::env::var("SETTLES").map_or_else(
             |_| vec![(20, 90), (65, 90)],
@@ -1852,54 +1795,36 @@ mod tests {
             let (w, h) = picture.size();
             println!("{} {w}x{h} on {threads}", capture_name(&path));
             for &(from, to) in &pairs {
-                let mut result = [(0usize, f64::INFINITY, 0.0f64, 0.0f64); 2];
-                for (c, r) in result.iter_mut().enumerate() {
-                    for _ in 0..passes {
-                        let mut libvpx = crate::Encoder::new(w, h, Chroma::Full, from, threads).expect("a libvpx encoder");
-                        let mut rust = Encoder::new(w, h, from, threads).expect("an encoder");
-                        let mut frames = [Vec::new(), Vec::new()];
-                        if c == 0 {
-                            libvpx.encode(&picture, true, None, &mut frames[0]).expect("an encode").expect("a frame");
-                            libvpx.set_quality(to).expect("the dial");
-                        } else {
-                            rust.encode(&picture, true, None, &mut frames[0]).expect("a keyframe");
-                        }
-                        let started = std::time::Instant::now();
-                        if c == 0 {
-                            libvpx.encode(&picture, false, None, &mut frames[1]).expect("an encode").expect("a frame");
-                        } else {
-                            rust.settle(&picture, to, false, &mut frames[1]).expect("a settle");
-                        }
-                        r.1 = r.1.min(started.elapsed().as_secs_f64() * 1000.0);
-                        let mut decoder = Decoder::new(1).expect("a decoder");
-                        decoder.decode(&frames[0]).expect("a keyframe libvpx decodes");
-                        let decoded = decoder.decode(&frames[1]).expect("a settle libvpx decodes");
-                        r.0 = frames[1].len();
-                        r.2 = psnr(luma_mse(&picture, &decoded).max(1e-3));
-                        r.3 = psnr(mse(&picture, &decoded).max(1e-3));
-                    }
+                let (mut bytes, mut least, mut luma, mut all) = (0, f64::INFINITY, 0.0, 0.0);
+                for _ in 0..passes {
+                    let mut encoder = Encoder::new(w, h, from, threads).expect("an encoder");
+                    let mut frames = [Vec::new(), Vec::new()];
+                    encoder.encode(&picture, true, None, &mut frames[0]).expect("a keyframe");
+                    let started = std::time::Instant::now();
+                    encoder.settle(&picture, to, false, &mut frames[1]).expect("a settle");
+                    least = least.min(started.elapsed().as_secs_f64() * 1000.0);
+                    let mut decoder = Decoder::new(1).expect("a decoder");
+                    decoder.decode(&frames[0]).expect("a keyframe libvpx decodes");
+                    let decoded = decoder.decode(&frames[1]).expect("a settle libvpx decodes");
+                    bytes = frames[1].len();
+                    luma = psnr(luma_mse(&picture, &decoded).max(1e-3));
+                    all = psnr(mse(&picture, &decoded).max(1e-3));
                 }
-                // The PSNR is luma's, the gate's; the second is over all
-                // three planes, for what the chroma does.
-                println!(
-                    "  q{from}:{to:<3} | libvpx {:>8} B {:>6.2} ms {:>5.2} dB | rust {:>8} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time {:.3} dB {:+.2} all {:+.2}",
-                    result[0].0, result[0].1, result[0].2, result[1].0, result[1].1, result[1].2,
-                    result[1].0 as f64 / result[0].0 as f64, result[1].1 / result[0].1, result[1].2 - result[0].2, result[1].3 - result[0].3,
-                );
+                println!("  q{from}:{to:<3} | {bytes:>8} B {least:>6.2} ms {luma:>5.2} dB all {all:>5.2} dB");
             }
         }
     }
 
     /// Every frame of each wlshare capture in `tmp/captures/` (or the
     /// directory `CAPTURES` names; `ONLY` keeps the captures whose name
-    /// holds it), played into this encoder and into libvpx as the session
-    /// played it into its stream, on `THREADS` threads (4 if unset). Per
-    /// capture, for the frames of each kind — keyframes, whole inter frames,
-    /// and rectangles within a superblock, within a sixteenth of the picture
-    /// and over more — bytes, median time and luma PSNR of libvpx's decode
-    /// of each, and the ratios the plan's gate reads. With `IVF` set to a
-    /// directory, this encoder's stream of each capture is written there
-    /// too, for the browsers' own decoders to read through ffmpeg
+    /// holds it), played into the encoder as the session played it into
+    /// its stream, on `THREADS` threads (4 if unset), `PASSES` times over
+    /// (1 if unset) for a profiler to watch. Per capture, for the frames of
+    /// each kind — keyframes, whole inter frames, and rectangles within a
+    /// superblock, within a sixteenth of the picture and over more — bytes,
+    /// median and mean time and the luma PSNR of libvpx's decode of each.
+    /// With `IVF` set to a directory, the stream of each capture is written
+    /// there too, for the browsers' own decoders to read through ffmpeg
     /// (`-c:v libvpx-vp9` is Chrome's, `-c:v vp9` Firefox's; `-f framemd5`
     /// of each should agree), one file per size the capture runs at, since
     /// ffmpeg rescales every frame after a size change to the first
@@ -1907,75 +1832,19 @@ mod tests {
     /// in release:
     ///
     /// ```text
-    /// cargo test --release captures_against_libvpx -- --ignored --nocapture
+    /// ONLY=terminal cargo test --release captures_measured -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
-    fn captures_against_libvpx() {
-        let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
-        for path in captures() {
-            let (mut tallies, size, n) = play(&path, threads, true);
-            println!("{} {}x{} on {threads}, {n} frames", capture_name(&path), size.0, size.1);
-            let mut all = Tally::default();
-            for (kind, tally) in &mut tallies {
-                let f = tally.frames as f64;
-                let produced = tally.times[0].len().max(1) as f64;
-                println!(
-                    "  {:<5} {:>5} | libvpx {:>9} B {:>6.2} ms {:>5.2} dB | rust {:>9} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time median {:.3}",
-                    kind.name(),
-                    tally.frames,
-                    tally.bytes[0],
-                    median(&mut tally.times[0]),
-                    tally.psnr[0] / produced,
-                    tally.bytes[1],
-                    median(&mut tally.times[1]),
-                    tally.psnr[1] / f,
-                    tally.bytes[1] as f64 / tally.bytes[0].max(1) as f64,
-                    median(&mut tally.ratios),
-                );
-                all.frames += tally.frames;
-                for c in 0..2 {
-                    all.bytes[c] += tally.bytes[c];
-                    all.times[c].extend_from_slice(&tally.times[c]);
-                    all.psnr[c] += tally.psnr[c];
-                }
-                all.ratios.extend_from_slice(&tally.ratios);
-            }
-            let f = all.frames as f64;
-            println!(
-                "  all   {:>5} | libvpx {:>9} B {:>6.2} ms {:>5.2} dB | rust {:>9} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time median {:.3} total {:.3}",
-                all.frames,
-                all.bytes[0],
-                all.times[0].iter().sum::<f64>() / all.times[0].len().max(1) as f64,
-                all.psnr[0] / all.times[0].len().max(1) as f64,
-                all.bytes[1],
-                all.times[1].iter().sum::<f64>() / f,
-                all.psnr[1] / f,
-                all.bytes[1] as f64 / all.bytes[0].max(1) as f64,
-                median(&mut all.ratios),
-                all.times[1].iter().sum::<f64>() / all.times[0].iter().sum::<f64>().max(1e-9),
-            );
-        }
-    }
-
-    /// The captures played into this encoder alone, `PASSES` times over (1
-    /// if unset), for a profiler to watch; the same knobs as
-    /// `captures_against_libvpx`. Run it in release:
-    ///
-    /// ```text
-    /// ONLY=terminal cargo test --release captures_rust_alone -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
-    fn captures_rust_alone() {
+    fn captures_measured() {
         let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
         let passes: usize = std::env::var("PASSES").map_or(1, |p| p.parse().expect("a pass count"));
         for path in captures() {
             for _ in 0..passes {
-                let (mut tallies, size, n) = play(&path, threads, false);
+                let (mut tallies, size, n) = play(&path, threads);
                 println!("{} {}x{} on {threads}, {n} frames", capture_name(&path), size.0, size.1);
                 for (kind, tally) in &mut tallies {
-                    println!("  {:<5} {:>5} | rust {:>9} B median {:>6.2} ms mean {:>6.2} ms {:>5.2} dB", kind.name(), tally.frames, tally.bytes[1], median(&mut tally.times[1]), tally.times[1].iter().sum::<f64>() / tally.frames as f64, tally.psnr[1] / tally.frames as f64);
+                    println!("  {:<5} {:>5} | {:>9} B median {:>6.2} ms mean {:>6.2} ms {:>5.2} dB", kind.name(), tally.frames, tally.bytes, median(&mut tally.times), tally.times.iter().sum::<f64>() / tally.frames as f64, tally.psnr / tally.frames as f64);
                 }
             }
         }
@@ -1985,8 +1854,6 @@ mod tests {
     fn a_picture_that_is_not_the_encoders_is_refused() {
         let mut encoder = Encoder::new(64, 64, 90, 1).expect("an encoder");
         let mut out = Vec::new();
-        let subsampled = Picture::new(64, 64, Chroma::Subsampled, 1).expect("a picture");
-        assert!(matches!(encoder.encode(&subsampled, true, None, &mut out), Err(Error::Mismatch(..))));
         assert!(matches!(encoder.encode(&noise(64, 32), false, None, &mut out), Err(Error::Mismatch(..))));
         assert!(out.is_empty());
         assert!(matches!(Encoder::new(0, 64, 90, 1), Err(Error::Empty(..))));

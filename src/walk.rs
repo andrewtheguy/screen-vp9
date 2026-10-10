@@ -247,21 +247,6 @@ pub struct QualityWalk {
     /// followed: what the next step down waits to see stop falling
     /// ([`DRAIN_FRACTION`]).
     stepped_on: Option<Duration>,
-    /// The walk as it stood before the move [`Self::observe`] last returned,
-    /// while that move is the last thing that happened: what
-    /// [`Self::stays_at`] puts back when the encoder could not follow it.
-    before: Option<Standing>,
-}
-
-/// What a move changes, bar the quality, which the encoder says, and the
-/// verdicts and the cooldown.
-#[derive(Debug, Clone, Copy)]
-struct Standing {
-    slow: u8,
-    reclaim: u8,
-    reclaimed: Option<(u8, Instant)>,
-    refused: Option<(u8, Instant)>,
-    stepped_on: Option<Duration>,
 }
 
 impl QualityWalk {
@@ -292,7 +277,6 @@ impl QualityWalk {
             reclaimed: None,
             refused: None,
             stepped_on: None,
-            before: None,
         }
     }
 
@@ -309,27 +293,6 @@ impl QualityWalk {
     /// The quality in force.
     pub fn quality(&self) -> u8 {
         self.quality
-    }
-
-    /// The encoder could not be moved and stays at `quality`: the walk stands
-    /// there too, so its next verdict starts from what is in force. The move it
-    /// could not follow is undone whole — frames, the step its success doubled,
-    /// the step up a refusal would walk back, the lag a step down would drain
-    /// — so nothing after is read against a move that never happened. The
-    /// verdicts and the cooldown stay restarted: the move is tried again a
-    /// cooldown on, not on the next frame.
-    pub fn stays_at(&mut self, quality: u8) {
-        if quality == self.quality {
-            return;
-        }
-        if let Some(before) = self.before.take() {
-            self.slow = before.slow;
-            self.reclaim = before.reclaim;
-            self.reclaimed = before.reclaimed;
-            self.refused = before.refused;
-            self.stepped_on = before.stepped_on;
-        }
-        self.quality = quality;
     }
 
     /// Whether the frame rate has been slowed: [`Self::interval`] is more than
@@ -415,7 +378,6 @@ impl QualityWalk {
     /// the dial moved.
     pub fn observe(&mut self, blocked: Duration, lag: Duration, now: Instant) -> Option<Pace> {
         let lag = if self.lag_aware { lag } else { Duration::ZERO };
-        self.before = None;
         if self.held_until.is_some_and(|until| now < until) {
             return None;
         }
@@ -442,13 +404,6 @@ impl QualityWalk {
         if self.changed_at.is_some_and(|at| now.saturating_duration_since(at) < cooldown) {
             return None;
         }
-        let before = Standing {
-            slow: self.slow,
-            reclaim: self.reclaim,
-            reclaimed: self.reclaimed,
-            refused: self.refused,
-            stepped_on: self.stepped_on,
-        };
         let moved = if behind && self.verdicts.count_ones() >= BEHIND_FRAMES {
             // The queue the last step left behind is still draining: the step
             // was enough, and the verdicts wait for the lag to stop falling.
@@ -470,7 +425,6 @@ impl QualityWalk {
         self.verdicts = 0;
         self.clear = None;
         self.changed_at = Some(now);
-        self.before = Some(before);
         Some(self.pace())
     }
 
@@ -493,7 +447,6 @@ impl QualityWalk {
         self.changed_at = Some(now);
         self.stepped_on = None;
         self.reclaimed = None;
-        self.before = None;
     }
 
     /// A keyframe went out: the verdicts wait `KEYFRAME_HOLD` for it to
@@ -502,7 +455,6 @@ impl QualityWalk {
         self.verdicts = 0;
         self.clear = None;
         self.stepped_on = None;
-        self.before = None;
         self.held_until = Some(now + KEYFRAME_HOLD);
     }
 
@@ -1084,43 +1036,6 @@ mod tests {
         let mut walk = QualityWalk::new(30, CAPTURE, true);
         assert_eq!(walk.observe(Duration::ZERO, LAG_BEHIND, start), None);
         assert_eq!(walk.observe(Duration::ZERO, LAG_BEHIND, start).map(|pace| pace.quality), Some(20));
-    }
-
-    /// An encoder that refused a move leaves the walk where the encoder is, and
-    /// a step down that never happened leaves no queue to drain: a lag lower
-    /// than the one it was taken on is a step, not the drain waited out.
-    #[test]
-    fn a_walk_stands_where_the_encoder_stayed() {
-        let start = Instant::now();
-        let mut walk = QualityWalk::new(60, CAPTURE, true);
-        walk.observe(Duration::ZERO, LAG_HEAVY, start);
-        assert_eq!(walk.observe(Duration::ZERO, LAG_HEAVY, start).map(|pace| pace.quality), Some(40));
-        walk.stays_at(60);
-        assert_eq!(walk.quality(), 60);
-        let at = start + ADJUST_COOLDOWN;
-        assert_eq!(walk.observe(Duration::ZERO, LAG_BEHIND, at), None);
-        assert_eq!(walk.observe(Duration::ZERO, LAG_BEHIND, at).map(|pace| pace.quality), Some(50));
-    }
-
-    /// A step up the encoder refused is not one the link took: the next clear
-    /// spell asks for the same step again rather than twice it, and the link
-    /// falling behind is a plain step down, not a refusal of it.
-    #[test]
-    fn a_step_up_the_encoder_refused_is_asked_for_again() {
-        let start = Instant::now();
-        let mut walk = walk(60, start);
-        walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(50));
-        let (moved, at) = clear(&mut walk, CLEAR_RUN, start + ADJUST_COOLDOWN);
-        assert_eq!(moved.map(|pace| pace.quality), Some(53));
-        walk.stays_at(50);
-        let (moved, at) = clear(&mut walk, CLEAR_RUN, at + ADJUST_COOLDOWN);
-        assert_eq!(moved.map(|pace| pace.quality), Some(53));
-        walk.stays_at(50);
-        let soon = at + ADJUST_COOLDOWN;
-        walk.fenced(140 * MS, true, soon);
-        assert_eq!(walk.fenced(140 * MS, true, soon).map(|pace| pace.quality), Some(40));
-        assert_eq!(walk.refused, None);
     }
 
     #[test]

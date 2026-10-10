@@ -11,11 +11,11 @@
 //! `.cargo/config.toml` sets and a user's build sets the same way.
 
 #[cfg(all(target_arch = "aarch64", not(target_feature = "neon")))]
-compile_error!("screen-vp9 needs NEON on arm64: build for a target that has it, such as aarch64-unknown-linux-gnu or aarch64-apple-darwin");
+compile_error!("screen-vp9-native needs NEON on arm64: build for a target that has it, such as aarch64-unknown-linux-gnu or aarch64-apple-darwin");
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
-compile_error!("screen-vp9 needs AVX2 on amd64: build with `-C target-feature=+avx2`, as its `.cargo/config.toml` does");
+compile_error!("screen-vp9-native needs AVX2 on amd64: build with `-C target-feature=+avx2`, as its `.cargo/config.toml` does");
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-compile_error!("screen-vp9 is for arm64 and amd64");
+compile_error!("screen-vp9-native is for arm64 and amd64");
 
 use std::ops::{Add, Mul, Neg, Sub};
 

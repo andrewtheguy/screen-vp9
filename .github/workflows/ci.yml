@@ -1,7 +1,7 @@
 name: CI
 
-# Every target libvpx-prebuilt ships an archive for, since each of them builds
-# this crate for a user: Linux x86_64 and aarch64 for the daemon and the gateway,
+# Every target a user builds this crate for, each of which libvpx-prebuilt ships
+# the tests' decoder for: Linux x86_64 and aarch64 for the daemon and the gateway,
 # macOS arm64 and Windows x86_64 for the gateway.
 on:
   push:
