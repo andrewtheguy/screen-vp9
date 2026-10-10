@@ -29,7 +29,7 @@ use super::mv::{self, Mv};
 use super::pool::Pool;
 use super::predict::{self, Edges, IntraMode};
 use super::probs::{skip_slot, tx_slot};
-use super::quantize::Quantizer;
+use super::quantize::{self, Quantizer};
 use super::tape::Tape;
 use super::transform::TxType;
 use super::tables::{
@@ -89,6 +89,10 @@ const INTRA_MODE_GAIN: i64 = 16;
 /// more than this many AC steps over 256: libvpx's keyframe threshold for
 /// the split (`set_vbp_thresholds`, `thresholds[3]`, over
 /// `fill_variance_4x4avg`), which is a few grey levels, and where text is.
+/// At 10 the captures' keyframes at 1920×1080 are 0.1 to 0.2 dB better for
+/// 1% fewer bytes in the same time, but a hatch is then in 4×4s, which
+/// are not tried in the diagonal modes, and a picture that churns costs
+/// more at a low dial than the quality walk can bring under a link.
 const SPLIT_4X4_VARIANCE: i64 = 80;
 
 /// The partition context a 4×4 block leaves (libvpx's
@@ -103,11 +107,11 @@ const PARTITION_CONTEXT_4X4: u8 = 15;
 const TRIED_MODES: [IntraMode; 10] = IntraMode::ALL;
 
 /// The intra modes a 4×4 block is coded each way in, pruned as an 8×8's
-/// are: libvpx's realtime encoder masks a 4×4's to these three
-/// (`intra_y_mode_mask[TX_4X4]`, `INTRA_DC_H_V`). All ten, pruned, bought
-/// 0.1 to 0.2 dB on the captures' keyframes at 1920×1080 for 15% of
-/// libvpx's keyframe time, which put them over its time at dial 40.
-const TRIED_MODES_4X4: [IntraMode; 3] = [IntraMode::Dc, IntraMode::V, IntraMode::H];
+/// are: the three libvpx's realtime encoder masks a 4×4's to
+/// (`intra_y_mode_mask[TX_4X4]`, `INTRA_DC_H_V`) and TM, which bought
+/// 0.16 to 0.18 dB on the captures' keyframes at 1920×1080 for 3% of their
+/// time. All ten, pruned, bought 0.4 to 0.5 dB for 20 to 25%.
+const TRIED_MODES_4X4: [IntraMode; 4] = [IntraMode::Dc, IntraMode::V, IntraMode::H, IntraMode::Tm];
 
 /// What an intra neighbour adds to the mode context's counter (libvpx's
 /// `mode_2_counter`); `InterMode::counter` gives the rest.
@@ -1566,13 +1570,11 @@ impl<'a> Tile<'a> {
         above_nz.copy_from_slice(&self.above_nonzero[0][ax..ax + 2]);
         left_nz.copy_from_slice(&self.left_nonzero[0][ly0..ly0 + 2]);
         let mut sub = [IntraMode::Dc; 4];
+        self.eobs[0].clear();
         for b in 0..4 {
             let (x, y) = ((b & 1) * 4, (b >> 1) * 4);
             let (px, py) = (mi_col * 8 + x, mi_row * 8 + y);
             let (lx, ly) = (px - x0, py - y0);
-            if x >= wide4 * 4 || y >= high4 * 4 {
-                continue;
-            }
             let y_probs = *self.y_mode_probs(&sub, b, true, 0, above, left);
             let ctx = usize::from(above_nz[x / 4] != 0) + usize::from(left_nz[y / 4] != 0);
             let (up, beside) = (y > 0 || mi_row > 0, x > 0 || mi_col > self.mi_col_start);
@@ -1608,9 +1610,9 @@ impl<'a> Tile<'a> {
                 }
             }
             sub[b] = best.1;
-            // Reconstructed in its mode, for the 4×4s after it to predict
-            // from.
-            let (mode, eob) = (best.1, best.2);
+            // Coded in its mode as the block is, for the 4×4s after it to
+            // predict from and for `reconstruct` to leave as it is.
+            let mode = best.1;
             let tx_type = mode.tx_type();
             let scan = tokens::scan(0, tx_type);
             {
@@ -1622,13 +1624,16 @@ impl<'a> Tile<'a> {
                 };
                 predict::intra(mode, above, rows, stride, lx, 4, &edges);
             }
+            self.transform(0, px, py, 4, tx_type);
+            let levels = &mut self.levels[0][b * 16..][..16];
+            let (eob, error) = self.quantizer.quantize_with_error(4, scan.inverse, &self.coeffs[..16], levels);
+            let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
+            let (eob, _, _) = worth_coding(self.costs, &mut self.energy, self.quantizer, 4, kind, &self.coeffs[..16], levels, eob, error);
             if eob > 0 {
-                self.transform(0, px, py, 4, tx_type);
-                let levels = &mut self.levels[0][b * 16..][..16];
-                let eob = self.quantizer.quantize(4, scan.inverse, &self.coeffs[..16], levels);
                 self.quantizer.dequantize(4, levels, scan.order, eob, &mut self.coeffs[..16]);
                 transform::inverse_add(4, tx_type, &self.coeffs[..16], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
             }
+            self.eobs[0].push(eob);
             let coded = u8::from(eob > 0);
             above_nz[x / 4] = if x / 4 < wide4 { coded } else { 0 };
             left_nz[y / 4] = if y / 4 < high4 { coded } else { 0 };
@@ -1841,6 +1846,11 @@ impl<'a> Tile<'a> {
                 }
             }
         }
+        // A prediction that is the source leaves nothing to transform.
+        if quantize::nothing(&residual[..area]) {
+            self.coeffs[..area].fill(0);
+            return;
+        }
         transform::forward(tx, tx_type, &residual[..area], &mut self.coeffs[..area]);
     }
 
@@ -1864,8 +1874,12 @@ impl<'a> Tile<'a> {
             return;
         }
         for plane in 0..3 {
+            // Four 4×4s' luma `intra4_trial` left coded and reconstructed.
+            if plane == 0 && matches!(mode, Mode::Intra4 { .. }) {
+                continue;
+            }
             // All but an inter block's luma, which `trial` left.
-            let fresh = matches!(mode, Mode::Intra { .. } | Mode::Intra4 { .. }) || plane > 0;
+            let fresh = matches!(mode, Mode::Intra { .. }) || plane > 0;
             if fresh {
                 self.eobs[plane].clear();
             }

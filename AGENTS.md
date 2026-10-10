@@ -8,8 +8,12 @@
   the codec string or the quality walk changes here and reaches them as a
   pin bump. Nothing about a wire belongs here: how a frame is framed, where a
   link's lag is read from and which picture to encode are each user's own.
-- Nothing a user builds links libvpx. It is a dev-dependency: the decoder in
-  `src/decoder.rs`, which only the tests compile.
+- Nothing a user builds links libvpx. It is a dev-dependency, which only the
+  tests compile: the decoder in `src/decoder.rs`, and in `src/reference.rs` its
+  encoder as `screen-vp9` sets it up, which the `*_against_libvpx` measurements
+  play the captures into beside this one.
+- A measurement is run on an idle machine, alone: no build, test, profile or
+  second measurement beside it.
 - After changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
   Every frame the encoder makes in a test goes through that independent decoder.
 - Do not run `cargo fmt`. Errors are `thiserror`: every caller branches on them.

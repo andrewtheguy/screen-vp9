@@ -29,6 +29,7 @@ impl Quantizer {
     /// Quantize the `n`×`n` `coeffs` into `levels`, both raster order, and
     /// return the end of block: one past the last nonzero level in the scan
     /// whose inverse is `iscan`.
+    #[cfg(test)]
     pub(super) fn quantize(&self, n: usize, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> usize {
         self.quantize_in::<false>(n, iscan, coeffs, levels).0
     }
@@ -52,6 +53,12 @@ impl Quantizer {
     /// `quantize`, with the squared error on the coefficients' own scale
     /// where `ERROR`, otherwise 0.
     fn quantize_in<const ERROR: bool>(&self, n: usize, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {
+        // A block with nothing in it, a flat one predicted exactly, is
+        // nothing quantized.
+        if nothing(&coeffs[..n * n]) {
+            levels[..n * n].fill(0);
+            return (0, 0);
+        }
         let terms = self.terms(n);
         #[cfg(target_arch = "aarch64")]
         return neon::quantize::<ERROR>(&terms, &coeffs[..n * n], iscan, &mut levels[..n * n]);
@@ -100,6 +107,12 @@ impl Quantizer {
             coeffs[rc] = i32::from((if level < 0 { -v } else { v }) as i16);
         }
     }
+}
+
+/// Whether every one of `values`, a multiple of eight of them, is zero,
+/// eight at a time.
+pub(super) fn nothing(values: &[i32]) -> bool {
+    values.as_chunks::<8>().0.iter().all(|eight| eight.iter().fold(0, |any, &v| any | v) == 0)
 }
 
 /// How each coefficient is quantized, `[DC, AC]` each: below `least` it is

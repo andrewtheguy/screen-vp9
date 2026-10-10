@@ -92,12 +92,12 @@ The least VP9 that a decoder accepts and that a desktop is coded well with.
 | Reference frames | The previous frame only: a keyframe refreshes every slot, an inter frame refreshes one and reads it as `LAST` | Golden and altref frames, compound prediction |
 | Segmentation | Every inter frame is in two segments. The inactive one skips (`SEG_LVL_SKIP`) and is not filtered (`SEG_LVL_ALT_LF` at −63); its map is coded whole or against the last frame's, whichever is fewer bits | Segments for anything else |
 | Block sizes | 64×64 down to 8×8, square; an intra 8×8 of text as four 4×4s. An inter block is 32×32 at most | Rectangular partitions; 4×4 inter blocks |
-| Intra modes | All ten. Blocks above 8×8 choose among DC, V, H and TM by line sums; an 8×8 and each 4×4 are coded each way (a 4×4 in DC, V and H) | — |
+| Intra modes | All ten. Blocks above 8×8 choose among DC, V, H and TM by line sums; an 8×8 and each 4×4 are coded each way (a 4×4 in DC, V, H and TM) | — |
 | Inter modes | Zero, nearest, near and new vectors of whole pixels | Vectors between pixels, so no interpolation filter runs; the header names EIGHTTAP |
 | Transforms | A size per block, 4×4 to 32×32, which the block signals; an intra block's luma below 32×32 in the DCT/ADST hybrid its mode pairs | Lossless (the WHT) |
 | Loop filter | libvpx's level from the quantizer, in one and two tile columns; none in four or more | Per-segment or per-mode deltas beyond the inactive segment's |
 | Probabilities | Coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools | Updates to the other probabilities; backward adaptation |
-| Tiles | Tile columns by the width and the threads: one under 1440 wide, two from 1440, four from 2048, eight from 5760, never more than the threads | Tile rows |
+| Tiles | Tile columns by the width and the threads: one under 1440 wide, two from 1440, four from 2048, eight from 5760, never more than the threads. Tile rows, two or four, on a frame whose heaviest tile column recorded enough that its bools are worth a coder each: a tile row splits the bool coder and nothing else | |
 | Frame | — | Resizing, error-resilient mode |
 
 ## How a block is decided
@@ -190,12 +190,14 @@ The rules the encoder keeps to, in the order the users' frames come:
   on a Mac; amd64 here.
 
 The measuring harness is three ignored tests in `src/encoder/mod.rs` that
-read the captures in `tmp/captures/` (or the directory `CAPTURES` names):
-`captures_measured` plays each capture as its session played it,
-`keyframes_measured` codes each capture's first picture at a row of dials,
-and `settles_measured` settles it from one dial to another. Each wants a
-release build. What they read and what they found is in
-[benchmarks.md](benchmarks.md).
+read the captures in `tmp/captures/` (or the directory `CAPTURES` names) and
+code each with this encoder and with libvpx's, set up in `src/reference.rs`
+as `screen-vp9` sets it up, turn about: `captures_against_libvpx` plays each
+capture as its session played it, `keyframes_against_libvpx` codes each
+capture's first picture at a row of dials, and `settles_against_libvpx`
+settles it from one dial to another. Each wants a release build and an idle
+machine; `ALONE` leaves libvpx out. `tools/tables.py` makes the tables of
+[benchmarks.md](benchmarks.md) from their logs.
 
 ## Reuse and licence
 
