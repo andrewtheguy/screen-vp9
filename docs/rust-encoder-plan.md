@@ -666,10 +666,14 @@ the harness reads `tmp/captures/` or the directory `CAPTURES` names, and
 | `video` | busy | a test pattern playing in a 1280×720 window, a keyframe asked at 10 s |
 | `walk` | busy | the video while the client reads late, so the dial walks down to 20 and back, then stopped so the desktop settles |
 
-Sizes: the nine `capture-frames.sh` runs by default, which vp9-wasm's
+Sizes: the ten `capture-frames.sh` runs by default, which vp9-wasm's
 benchmark has samples of: 1280×800, 1440×900, 1600×1000 and 1920×1080 at
 scale 1, and the same four desktops at scale 2, 2560×1600, 2880×1800,
-3200×2000 and 3840×2160, with 2048×1536. Each is measured at quality 90, the
+3200×2000 and 3840×2160, with 2048×1536 and 3456×2168. The set measured
+from phase 8.7 on is the `frame-captures` of 2026-10-09 in the artifacts'
+backup (`/Volumes/dasdata/backup/vp9-artifacts/frame-captures/`, 70
+files), copied to `tmp/captures/`; the 63 files of nine sizes the phases
+before were measured on are archived beside it. Each is measured at quality 90, the
 dial the captures were made at, and at the dials the `walk` reaches, on four
 threads and on five; `terminal` and `flood` once more at 100, the dial the
 first plan measured wlshare at.
