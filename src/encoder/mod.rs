@@ -1029,9 +1029,13 @@ mod tests {
     }
 
     /// A `w`×`h` in RGB of quarters that one intra mode each predicts best:
-    /// stripes down, which V predicts; stripes across, H; stripes down and
-    /// to the right, D135; and a plane sloping both ways, TM. Each `k`
-    /// makes others, none of them in another's picture.
+    /// stripes down, which V predicts; stripes across, H; a hatch two
+    /// pixels wide down and to the right, D135, or with `k` odd down and
+    /// to the left, D45 (a ramp that way TM predicts too, and anything
+    /// coarser makes an 8×8's quarters differ, which codes it as 4×4s in
+    /// DC, V or H); and a plane sloping both ways, TM. Each `k` makes
+    /// others, none of them in another's picture, nor the hatch at its
+    /// previous one's slant.
     fn lines_rgb(w: u16, h: u16, k: usize) -> Vec<u8> {
         let mut rgb = Vec::with_capacity(usize::from(w) * usize::from(h) * 3);
         for y in 0..usize::from(h) {
@@ -1039,7 +1043,7 @@ mod tests {
                 let v = match (x * 4 / usize::from(w) + k) % 4 {
                     0 => (x * (37 + 6 * k)) % 251,
                     1 => (y * (53 + 10 * k)) % 241,
-                    2 => ((x + usize::from(h) - y) * (29 + 8 * k)) % 239,
+                    2 => 100 + 10 * k + ((if k.is_multiple_of(2) { x + usize::from(h) - y } else { x + y }) % 4 / 2) * (60 + 10 * k),
                     _ => (x % 64) * (k + 1) + (2 + k) * (y % 32),
                 } as u8;
                 rgb.extend([v, v / 2 + 40, 255 - v]);
@@ -1054,7 +1058,11 @@ mod tests {
         // before has nothing of; in one tile column and in four, whose
         // blocks along a column's left edge have no column to their left.
         // At `Fastest` the 8×8s are not coded each way, and so take DC, V,
-        // H and TM alone.
+        // H and TM alone. In an inter frame a vector past the picture's
+        // edge predicts a flat block, which ties DC's residual and is
+        // taken before any intra mode is tried; at 72 high every block
+        // can reach past the edge, so the hatch is coded that way there
+        // and only the taller picture's inter frame codes a diagonal.
         for (w, h, threads, speed) in [(203, 141, 1, Speed::Usual), (2048, 72, 4, Speed::Usual), (2048, 72, 4, Speed::Fastest)] {
             let mut stream = Stream::new(w, h, 90, threads);
             stream.encoder.set_speed(speed);
@@ -1069,7 +1077,7 @@ mod tests {
                 }
                 let diagonal: usize = used[3..9].iter().sum();
                 assert!(used[..3].iter().chain(&used[9..]).all(|&n| n > 0), "{w}x{h}, frame {i}: DC, V, H and TM coded {used:?} times");
-                assert_eq!(diagonal > 0, speed == Speed::Usual, "{w}x{h}, frame {i} at {speed:?}: the diagonal modes coded {used:?} times");
+                assert_eq!(diagonal > 0, speed == Speed::Usual && (keyframe || h > 128), "{w}x{h}, frame {i} at {speed:?}: the diagonal modes coded {used:?} times");
             }
         }
     }

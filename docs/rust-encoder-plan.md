@@ -585,11 +585,32 @@ The replan, from here. Each phase is measured on the captures of
       (0.80–1.00× libvpx's; `walk`'s small keyframe 1.09–1.11×). The
       trial on every intra block too was the same bytes and picture at 5%
       more time, so the gain is in the small blocks.
-   Left, in order: `RATE_WEIGHT`, which trades coefficients for bits at a
-   weight fitted to bytes alone and is 13× lighter than libvpx's
-   `rdmult`, refit to the gate's PSNR; the transform size of an 8×8 intra
-   block, which libvpx leaves at 8×8; and every size measured, not
-   1920×1080 alone. `Fastest` skips the trials and the 4×4s.
+   6. **`RATE_WEIGHT` refit to the picture.** First the units put right:
+      libvpx's `rdmult` on a keyframe is 4.35 × dc_quant², and over its
+      `RDDIV` and the error's shift weighs a bit at 0.137 × dc_quant² of
+      coefficient error; this encoder's 140 weighed one at 0.14 ×
+      ac_quant², which is 1.4× libvpx's at dial 90 and 2× at dial 40, not
+      13× lighter as this item said. Swept on the 1920×1080 keyframes at
+      200, 140, 100, 70 and 50, and at 140 on dc_quant² (libvpx's form,
+      which is 70 at dial 40 and 100 at dial 90 and measured as those):
+      each halving buys about 0.3 dB for 1 to 3% of the bytes, and the
+      trade had not turned at 50. Then on every 1920×1080 capture at 140,
+      50, 35 and 25, where the weight also chooses an inter block's
+      transform size and vector: `browser`'s and `drag`'s inter frames got
+      fewer bytes *and* a better picture (browser −0.24 dB at 0.53× to
+      +0.66 dB at 0.54×, drag +0.25 at 0.124× to +1.14 at 0.126×), the
+      rest the keyframes' trade. **At 35**, over every frame: `browser`
+      +0.66 dB at 0.54× libvpx's bytes, `drag` +1.14 at 0.13×, `flood`
+      +0.12 at 0.94×, `video` +0.45 at 1.00×, `uncover` +0.08 at 1.007×,
+      `walk` +0.23 at 1.09× (1.06× at 140), `terminal` −0.09 at 0.90×
+      (its lines of text −0.08 at 0.99×); the time unchanged. 25 goes on
+      the same way (terminal −0.07 at 0.90×, uncover +0.13 at 1.01×, walk
+      +0.31 at 1.11×). The weight stays on the AC step: on the DC step it
+      would be lighter still at the coarse dials `walk` reaches, where its
+      bytes are already over.
+   Left: the transform size of an 8×8 intra block, which libvpx leaves at
+   8×8; and every size measured, not 1920×1080 alone. `Fastest` skips the
+   trials and the 4×4s.
 9. **Whole frames: keyframes, scrolls, settles.** Measured by the other time
    line of the gate on `flood`, `browser`, `video`, `walk` and `uncover`,
    with the rest of the rows of

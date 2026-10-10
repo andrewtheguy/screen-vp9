@@ -51,12 +51,19 @@ const SB_LOG2: u32 = 3;
 const SPLIT_VARIANCE: i64 = 8;
 const SPLIT_NUM: i64 = 1;
 
-/// What a bit is worth in squared error when an inter block's transform size
-/// is chosen, in thousandths of the AC step squared over 64, a step in
-/// pixels being an eighth of one in coefficients. Of 0.07, 0.14 and 0.28 of
-/// a step squared, measured on the plan's captures, 0.14 made the fewest
-/// bytes on five of the six.
-const RATE_WEIGHT: i64 = 140;
+/// What a bit is worth in squared error wherever a block's coding is chosen
+/// by cost (its intra modes, its transform size, its vector), in
+/// thousandths of the AC step squared over 64, a step in pixels being an
+/// eighth of one in coefficients. libvpx weighs a bit at about 0.137 of
+/// the DC step squared (`vp9_compute_rd_mult`, 4.35 × dc² over `RDDIV`
+/// and the error's shift), 0.07 to 0.10 of the AC step squared across the
+/// dials, and 140 here, fitted once to bytes alone, was heavier. Measured
+/// on the captures at 1920×1080 at 140, 50, 35 and 25: each halving buys
+/// about 0.3 dB on a keyframe and 0.2 to 0.5 dB on the inter frames for 1
+/// to 3% of the bytes, and at 35 every capture's picture is libvpx's or
+/// better but `terminal`'s lines of text at −0.1 dB, at its bytes or
+/// fewer but `uncover`'s at 1.01×.
+const RATE_WEIGHT: i64 = 35;
 
 /// A vector the search offers is taken over the vectors a decoder predicts
 /// only where its residual's squares are `1 / NEW_VECTOR_GAIN` less than
