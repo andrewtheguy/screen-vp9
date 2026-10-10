@@ -1419,11 +1419,13 @@ mod tests {
         // The second is no whole number of 8×8s either way: its last
         // superblocks are held exactly as far as the picture holds them.
         for (w, h, threads) in [(320u16, 240u16, 1), (322, 243, 2), (2048, 136, 4)] {
-            // A grey the keyframe's DC lands on at this dial.
-            let flat = vec![235u8; usize::from(w) * usize::from(h) * 3];
+            // A grey the keyframe's DC lands on at this dial, looked for
+            // since which one it is depends on the conversion in front: the
+            // NEON one makes a luma of 217 of the 235 its AVX2 makes 218 of.
+            let exact = |flat: &Vec<u8>| Stream::new(w, h, 40, threads).frame(&picture(w, h, flat), true).2 == 0.0;
+            let flat = (0..=255u8).rev().map(|grey| vec![grey; usize::from(w) * usize::from(h) * 3]).find(exact).expect("a grey a keyframe at this dial holds exactly");
             let mut stream = Stream::new(w, h, 40, threads);
-            let (_, _, mse) = stream.frame(&picture(w, h, &flat), true);
-            assert_eq!(mse, 0.0, "{w}x{h}: a flat keyframe is not exact");
+            stream.frame(&picture(w, h, &flat), true);
             let (bytes, keyframe, mse) = stream.settle(&picture(w, h, &flat), 90, false);
             assert!(!keyframe && mse == 0.0);
             assert!(bytes < 100, "{w}x{h}: a settle of a picture held exactly took {bytes} bytes");
