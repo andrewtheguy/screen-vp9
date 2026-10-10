@@ -1220,16 +1220,18 @@ impl<'a> Tile<'a> {
 
     /// The transform size, as log2 less 2, of a block of `1 << n` 8×8s
     /// coded intra, whose source has `moments` over its `count` pixels: 4×4
-    /// in an 8×8 or 16×16 whose pixels deviate by more than two steps, where
-    /// DC predicted from nearer pixels does better, and otherwise the largest
-    /// that fits up to 16×16 (libvpx's keyframe `ALLOW_16X16`). Measured on
-    /// the plan's captures against a half, an eighth and a sixty-fourth of
-    /// that variance; the 4×4s bought desktop 2 dB and 5% of its bytes.
+    /// in an 8×8 whose pixels deviate by more than two steps, where a mode
+    /// predicted from nearer pixels does better, and otherwise the largest
+    /// that fits up to 16×16 (libvpx's keyframe `ALLOW_16X16`, which keeps
+    /// an 8×8 at 8×8). Measured on the captures' keyframes at 1920×1080:
+    /// at dial 40 the 4×4s are never taken, at dial 90 they save `walk`'s
+    /// keyframe 3% of its bytes and 0.15 dB and `browser`'s a little; the
+    /// same rule on a 16×16 changed nothing.
     fn intra_transform_size(&self, n: u32, moments: &Moments, count: i64) -> usize {
         let ac = i64::from(self.quantizer.ac_step());
         // The variance per pixel and plane against two steps squared, a step
         // in pixels being an eighth of the AC step.
-        if n <= 1 && moments.variance(count) * 16 > ac * ac * 3 * count * count {
+        if n == 0 && moments.variance(count) * 16 > ac * ac * 3 * count * count {
             0
         } else {
             (n as usize + 1).min(2)

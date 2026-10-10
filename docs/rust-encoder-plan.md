@@ -608,8 +608,17 @@ The replan, from here. Each phase is measured on the captures of
       +0.31 at 1.11×). The weight stays on the AC step: on the DC step it
       would be lighter still at the coarse dials `walk` reaches, where its
       bytes are already over.
-   Left: the transform size of an 8×8 intra block, which libvpx leaves at
-   8×8; and every size measured, not 1920×1080 alone. `Fastest` skips the
+   7. **The transform size of an 8×8 intra block**, measured: this
+      encoder codes one with 4×4 transforms where its pixels deviate by
+      more than two steps, libvpx keeps it at 8×8. On the 1920×1080
+      keyframes at dial 40 the 4×4s are never taken; at dial 90 they save
+      `walk`'s keyframe 3% of its bytes and 0.15 dB and `browser`'s 0.3%
+      and 0.04 dB, the rest a few bytes. Kept. The same rule on a 16×16
+      block changed nothing in any row and is gone. With 4 to 7 the
+      keyframes at 1920×1080 stand at 0.96–1.01× libvpx's bytes and −0.14
+      to −0.37 dB (`walk` +0.2 to +0.3 at 0.64–0.78×), 0.79–1.07× its time
+      (`walk`'s small keyframe 1.13×).
+   Left: every size measured, not 1920×1080 alone. `Fastest` skips the
    trials and the 4×4s.
 9. **Whole frames: keyframes, scrolls, settles.** Measured by the other time
    line of the gate on `flood`, `browser`, `video`, `walk` and `uncover`,
