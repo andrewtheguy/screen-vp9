@@ -53,6 +53,8 @@ use pool::Pool;
 /// cost proxmox and mac-hp 7% of their time, one in 32 cost 2–3%.
 const SEARCH_PAYS: f64 = 1.0 / 16.0;
 const SEARCH_PROBE: usize = 32;
+/// Whether the search between pixels runs at all.
+const REFINE: bool = true;
 
 /// The widest a tile column may be, in superblocks.
 const MAX_TILE_WIDTH_B64: usize = 64;
@@ -330,7 +332,7 @@ impl Encoder {
             started: false,
             last_inter: false,
             segmented: false,
-            search_every: 1,
+            search_every: if REFINE { 1 } else { usize::MAX },
             searched: [0.0; 2],
             geometry,
         })
@@ -419,7 +421,7 @@ impl Encoder {
         self.searched = self.contexts.iter().fold(self.searched.map(|v| v / 2.0), |[c, s], contexts| [c + contexts.searched[0], s + contexts.searched[1]]);
         let [came, saved] = self.searched;
         if came > 0.0 {
-            self.search_every = if saved < came * SEARCH_PAYS { SEARCH_PROBE } else { 1 };
+            self.search_every = if !REFINE { usize::MAX } else if saved < came * SEARCH_PAYS { SEARCH_PROBE } else { 1 };
         }
         let filter_level = if self.filtered { loopfilter::level(quantizer.ac_step(), keyframe) } else { 0 };
         let table = probs.table();

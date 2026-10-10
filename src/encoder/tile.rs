@@ -55,6 +55,13 @@ const SPLIT_NUM: i64 = 1;
 /// predicted from the previous frame is split, in eighths of the AC step.
 const INTER_SPLIT: i64 = 1;
 
+/// What an intra block's modes cost beyond a vector a decoder predicts, in
+/// bits: a block is coded intra where its residual's variance beats the
+/// inter residual's by more than these bits are worth at `RATE_WEIGHT`.
+/// By variance alone, `walk`'s frames at dials 20 to 30 coded some seven
+/// hundred intra 8×8s each for 1.5–1.9× libvpx's bytes at the same picture.
+const INTRA_BITS: i64 = 24;
+
 /// What a bit is worth in squared error wherever a block's coding is chosen
 /// by cost (its intra modes, its transform size, its vector), in
 /// thousandths of the AC step squared over 64, a step in pixels being an
@@ -1026,6 +1033,10 @@ impl<'a> Tile<'a> {
             }
         }
         let dc = total.source.variance(count);
+        // An intra block's modes, weighed as the variances are: per pixel
+        // squared over the count, times the count again.
+        let ac = i64::from(self.quantizer.ac_step());
+        let intra_bits = RATE_WEIGHT * ac * ac * INTRA_BITS * count / 64_000;
         let (mode, variance, moments) = match &self.previous {
             // A square whose source is the previous frame's throughout, at
             // another dial, settles: the previous frame where it is and the
@@ -1036,7 +1047,7 @@ impl<'a> Tile<'a> {
             Some(_) if self.still(mi_row, mi_col, n) => {
                 let residual = total.residual.variance(count);
                 let (intra, variance, moments) = if dc < residual { self.intra_mode(mi_row, mi_col, n, &total.source, count) } else { (IntraMode::Dc, dc, total.source) };
-                if residual <= variance { (Mode::Inter(Mv::ZERO), residual, total.residual) } else { (Mode::Intra { luma: intra, chroma: intra }, variance, moments) }
+                if residual <= variance + intra_bits { (Mode::Inter(Mv::ZERO), residual, total.residual) } else { (Mode::Intra { luma: intra, chroma: intra }, variance, moments) }
             }
             Some(previous) => {
                 // Zero first, then the vectors a decoder predicts, then the
@@ -1064,7 +1075,7 @@ impl<'a> Tile<'a> {
                 // frame cannot code the square whole, or DC does better.
                 let (intra, variance, moments) =
                     if best.1 > self.split_variance * count * count || dc < best.1 { self.intra_mode(mi_row, mi_col, n, &total.source, count) } else { (IntraMode::Dc, dc, total.source) };
-                if best.1 <= variance { (Mode::Inter(best.0), best.1, best.2) } else { (Mode::Intra { luma: intra, chroma: intra }, variance, moments) }
+                if best.1 <= variance + intra_bits { (Mode::Inter(best.0), best.1, best.2) } else { (Mode::Intra { luma: intra, chroma: intra }, variance, moments) }
             }
             None => {
                 let (intra, variance, moments) = self.intra_mode(mi_row, mi_col, n, &total.source, count);

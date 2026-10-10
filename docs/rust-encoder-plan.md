@@ -659,6 +659,18 @@ The replan, from here. Each phase is measured on the captures of
         it took `browser` and `drag` a decibel under for 3% of their
         bytes; at `RATE_WEIGHT` it costs them nothing and takes the
         settles from 80 to level bytes and picture.
+      - **An intra block charged its modes against a vector**
+        (`INTRA_BITS`): in an inter frame a square was coded intra
+        wherever an intra mode's residual varied less than the inter
+        residual, by a hair or not, though its modes cost several bits
+        more than a vector a decoder predicts. Now the inter residual may
+        vary by what `INTRA_BITS` bits are worth at `RATE_WEIGHT` more.
+        Swept at 6, 12, 24 and 48 on the 1920×1080 captures: `walk`'s
+        frames at dial 20 went from 1.68× libvpx's bytes to 1.52, 1.41,
+        1.34 and 1.31 at a picture +0.2 dB throughout, its frames at 23
+        from 1.86× at −0.23 dB to 1.46× at −0.13, the capture whole from
+        1.087× to 1.054× at 24; `drag` gained a quarter of a decibel and
+        `browser` lost nothing up to 24 and 0.15 dB at 48. 24 kept.
       With the three, settles at 1920×1080 against libvpx: from 20 to 90,
       0.86–1.03× the bytes at +0.1 to +0.5 dB and 1.0–1.2× the time; from
       65, 1.03–1.10× at +0.8 to +1.4 dB and 1.7–2.1×; from 80, 1.0–1.25×
@@ -681,7 +693,16 @@ The replan, from here. Each phase is measured on the captures of
       with its kernels (`convolve`, the search in `tile::refine`, the
       one-filter header field back to its default).
    3. The 32×32 cap on inter blocks, retried on real scrolls, where one
-      vector for a 64×64 should be cheapest.
+      vector for a 64×64 should be cheapest. **Measured, kept.** With a
+      64×64 predicted whole, on the 1920×1080 captures `browser` went from
+      0.277× libvpx's bytes to 0.259× but from +0.73 dB to +0.11, `drag`
+      from 0.119× to 0.106× but from +0.93 dB to −0.09, `walk` from 1.054×
+      to 1.043× at the same picture, `video` the same; the settles from 65
+      to 90 from 1.04–1.09× to 1.01–1.07× at half a decibel less, and
+      `walk`'s one quiet settle from 393 bytes to 278 (libvpx 167). A
+      64×64 with one vector is cheapest where nothing in it differs, and
+      that is the quiet settle alone; on a scroll the quarters it gets
+      wrong cost the picture. Not worth the half decibel.
    4. The golden frame, only if `uncover` or `drag` shows it paying.
 10. **Switch over.** The libvpx encoder and `Chroma::Subsampled` removed
     behind the same API, `Speed` kept, `AGENTS.md` reworded, a release tagged;
