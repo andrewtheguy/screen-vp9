@@ -214,118 +214,102 @@ ADST, and every kernel in NEON and AVX2.
 
 ## Where it stands on real captures
 
-Every capture of 2026-10-09 at the nine sizes, played into both encoders on four
-threads on an Apple M2 Max by `captures_against_libvpx`, this encoder against
-libvpx. Each cell is the Rust encoder's bytes over libvpx's, the median of the
-per-frame time ratios, and its luma PSNR less libvpx's, over the whole
-capture. The log is the harness's; the tables are made from it.
+Every capture of the 2026-10-09 `frame-captures` set at its ten sizes, played
+into both encoders on four threads on an Apple M2 Max by
+`captures_against_libvpx` after phase 8, this encoder against libvpx. Each
+cell is the Rust encoder's bytes over libvpx's, the median of the per-frame
+time ratios, and its luma PSNR less libvpx's, over the whole capture. The
+log is the harness's; the tables are made from it by `tools/gate_tables.py`.
+The tables the phases before were measured by, on the earlier set of nine
+sizes, are in this file's history.
 
 The captures at scale 1, over every frame:
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 |
 |---|---|---|---|---|
-| `terminal` | 0.89 / 1.56 / −0.4 | 0.95 / 1.51 / −0.5 | 0.93 / 1.61 / −0.6 | 0.93 / 1.50 / −0.7 |
-| `uncover` | 1.04 / 0.57 / −0.6 | 1.06 / 0.64 / −0.6 | 1.02 / 0.74 / −0.6 | 1.03 / 0.67 / −0.6 |
-| `flood` | 0.90 / 0.57 / −0.4 | 0.80 / 0.49 / −0.3 | 0.86 / 0.53 / −0.4 | 0.94 / 0.55 / −0.4 |
-| `browser` | 0.20 / 0.60 / −0.1 | 0.39 / 0.67 / −0.3 | 0.50 / 0.69 / −0.3 | 0.54 / 0.72 / −0.3 |
-| `drag` | 0.15 / 0.72 / 0.0 | 0.16 / 0.82 / 0.0 | 0.17 / 0.84 / −0.1 | 0.13 / 0.87 / +0.4 |
-| `video` | 1.01 / 0.73 / −0.1 | 1.01 / 0.75 / −0.2 | 1.00 / 0.79 / −0.2 | 0.98 / 0.93 / −0.1 |
-| `walk` | 1.08 / 0.78 / −0.4 | 1.08 / 0.81 / −0.5 | 1.08 / 0.86 / −0.4 | 1.06 / 0.97 / −0.3 |
+| `terminal` | 0.86 / 0.52 / 0.0 | 0.80 / 0.47 / 0.0 | 0.83 / 0.42 / 0.0 | 0.83 / 0.38 / -0.1 |
+| `uncover` | 0.97 / 0.29 / +0.1 | 0.99 / 0.35 / +0.1 | 0.94 / 0.34 / 0.0 | 1.03 / 0.35 / -0.3 |
+| `flood` | 0.84 / 0.57 / +0.2 | 0.80 / 0.57 / +0.3 | 0.74 / 0.53 / +0.3 | 0.76 / 0.54 / +0.2 |
+| `browser` | 0.21 / 0.58 / +1.0 | 0.18 / 0.65 / +1.1 | 0.29 / 0.66 / +0.8 | 0.29 / 0.67 / +0.8 |
+| `drag` | 0.15 / 0.63 / +1.3 | 0.15 / 0.67 / +1.3 | 0.17 / 0.67 / +0.9 | 0.12 / 0.66 / +1.1 |
+| `video` | 1.02 / 0.72 / +0.4 | 1.02 / 0.74 / +0.3 | 1.01 / 0.77 / +0.4 | 1.00 / 0.89 / +0.4 |
+| `walk` | 1.11 / 0.75 / +0.1 | 1.12 / 0.78 / +0.2 | 1.12 / 0.76 / +0.4 | 1.09 / 0.87 / +0.3 |
 
 The captures at scale 2, over every frame:
 
-| Capture | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3840×2160@2 |
-|---|---|---|---|---|---|
-| `terminal` | 0.83 / 1.14 / −0.4 | 0.84 / 0.99 / −0.5 | 0.82 / 1.00 / −0.6 | 0.92 / 0.91 / −0.3 | 0.88 / 0.90 / −0.5 |
-| `uncover` | 1.07 / 0.58 / −0.3 | 1.08 / 0.53 / −0.4 | 1.09 / 0.58 / −0.5 | 1.07 / 0.51 / −0.5 | 1.07 / 0.52 / −0.6 |
-| `flood` | 0.94 / 0.48 / −0.5 | 0.97 / 0.47 / −0.6 | 0.98 / 0.47 / −0.6 | 0.98 / 0.46 / −0.6 | 0.99 / 0.45 / −0.6 |
-| `browser` | 0.37 / 0.68 / −0.3 | 0.17 / 0.62 / −0.1 | 0.18 / 0.67 / 0.0 | 0.20 / 0.66 / 0.0 | 0.16 / 0.68 / −0.1 |
-| `drag` | 0.27 / 0.93 / −0.7 | 0.35 / 0.86 / −0.7 | 0.43 / 0.92 / −0.8 | 0.48 / 0.90 / −0.7 | 0.15 / 0.98 / +0.4 |
-| `video` | 0.93 / 0.78 / 0.0 | 0.89 / 0.70 / 0.0 | 0.88 / 0.73 / 0.0 | 0.84 / 0.69 / 0.0 | 0.87 / 0.73 / 0.0 |
-| `walk` | 0.99 / 0.83 / −0.1 | 0.93 / 0.72 / −0.1 | 0.95 / 0.78 / −0.1 | 0.94 / 0.75 / 0.0 | 0.92 / 0.76 / +0.1 |
+| Capture | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
+|---|---|---|---|---|---|---|
+| `terminal` | 0.75 / 0.36 / +0.3 | 0.77 / 0.30 / +0.3 | 0.79 / 0.29 / +0.2 | 0.87 / 0.30 / +0.3 | 0.86 / 0.25 / +0.2 | 0.84 / 0.28 / +0.2 |
+| `uncover` | 1.01 / 0.35 / +0.2 | 1.01 / 0.36 / +0.1 | 1.05 / 0.41 / +0.1 | 1.04 / 0.37 / +0.2 | 0.97 / 0.37 / +0.1 | 1.04 / 0.40 / 0.0 |
+| `flood` | 0.96 / 0.61 / +0.4 | 0.97 / 0.60 / +0.4 | 0.97 / 0.60 / +0.4 | 0.97 / 0.60 / +0.4 | 0.97 / 0.60 / +0.4 | 0.97 / 0.59 / +0.4 |
+| `browser` | 0.24 / 0.65 / +1.4 | 0.15 / 0.59 / +1.4 | 0.18 / 0.63 / +1.2 | 0.20 / 0.61 / +0.9 | 0.22 / 0.59 / +1.0 | 0.25 / 0.64 / +1.2 |
+| `drag` | 0.24 / 0.86 / +0.1 | 0.35 / 0.84 / +0.1 | 0.38 / 0.86 / +0.1 | 0.32 / 0.76 / -0.3 | 0.32 / 0.74 / +0.4 | 0.12 / 0.77 / +1.2 |
+| `video` | 0.99 / 0.87 / +0.5 | 0.97 / 0.81 / +0.5 | 0.99 / 0.85 / +0.6 | 1.01 / 0.79 / +0.5 | 1.04 / 0.78 / +0.6 | 0.93 / 0.83 / +0.6 |
+| `walk` | 1.06 / 0.89 / +0.6 | 1.01 / 0.83 / +0.8 | 1.01 / 0.87 / +0.8 | 0.98 / 0.83 / +0.9 | 1.09 / 0.81 / +0.8 | 1.06 / 0.79 / +1.0 |
 
 The frames apart, libvpx → this encoder, as the median time per frame, the
 mean bytes per frame, and the PSNR difference:
 
 | Frames, scale 1 | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 |
 |---|---|---|---|---|
-| `terminal`, a line of text (≈ 260 a capture) | 0.63 → 0.99 ms, 119 → 152 B, −0.4 dB | 0.89 → 1.34 ms, 126 → 205 B, −0.5 dB | 0.91 → 1.46 ms, 121 → 179 B, −0.6 dB | 1.22 → 1.84 ms, 135 → 188 B, −0.7 dB |
-| `terminal`, a scroll (7 or 8) | 5.1 → 4.7 ms, 40 → 34 kB, −0.2 dB | 5.2 → 4.4 ms, 46 → 41 kB, −0.3 dB | 5.6 → 5.0 ms, 65 → 58 kB, −0.6 dB | 6.2 → 4.5 ms, 62 → 55 kB, −0.4 dB |
-| `drag`, a quarter of the picture (≈ 390) | 4.1 → 3.0 ms, 5750 → 635 B, 0.0 dB | 3.9 → 3.2 ms, 6469 → 752 B, 0.0 dB | 4.0 → 3.3 ms, 6209 → 769 B, −0.1 dB | 4.2 → 3.6 ms, 8944 → 812 B, +0.4 dB |
-| `walk`, the settle (1) | 1.65 → 3.63 ms, 205 → 213 B, +0.1 dB | 2.16 → 4.53 ms, 252 → 433 B, 0.0 dB | 2.12 → 4.89 ms, 340 → 405 B, 0.0 dB | 2.31 → 4.68 ms, 200 → 398 B, 0.0 dB |
+| `terminal`, a line of text (≈ 260 a capture) | 0.54 → 0.29 ms, 120 → 127 B, 0.0 dB | 0.70 → 0.34 ms, 120 → 149 B, 0.0 dB | 0.86 → 0.36 ms, 122 → 126 B, 0.0 dB | 1.09 → 0.42 ms, 135 → 134 B, -0.1 dB |
+| `terminal`, a scroll (7 or 8) | 4.97 → 4.11 ms, 40 → 34 kB, +0.1 dB | 5.90 → 4.21 ms, 48 → 36 kB, 0.0 dB | 5.60 → 4.20 ms, 62 → 51 kB, -0.2 dB | 5.89 → 4.32 ms, 68 → 56 kB, -0.1 dB |
+| `drag`, a quarter of the picture (≈ 390) | 4.08 → 2.59 ms, 5750 → 615 B, +1.3 dB | 3.85 → 2.54 ms, 6438 → 690 B, +1.3 dB | 3.98 → 2.66 ms, 6212 → 712 B, +0.9 dB | 4.19 → 2.76 ms, 8533 → 759 B, +1.2 dB |
 
-| Frames, scale 2 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3840×2160@2 |
-|---|---|---|---|---|---|
-| `terminal`, a line of text (≈ 260 a capture) | 1.57 → 1.80 ms, 203 → 265 B, −0.4 dB | 2.19 → 2.17 ms, 196 → 290 B, −0.5 dB | 2.68 → 2.70 ms, 191 → 392 B, −0.6 dB | 3.4 → 3.1 ms, 214 → 398 B, −0.3 dB | 4.1 → 3.7 ms, 222 → 431 B, −0.5 dB |
-| `terminal`, a scroll (7 or 8) | 10.9 → 8.2 ms, 109 → 86 kB, −0.3 dB | 12.4 → 9.0 ms, 123 → 99 kB, −0.2 dB | 17.6 → 11.1 ms, 120 → 91 kB, −0.4 dB | 13.9 → 9.0 ms, 122 → 105 kB, −0.2 dB | 16.4 → 12.5 ms, 171 → 143 kB, −0.3 dB |
-| `drag`, a quarter of the picture (≈ 390) | 8.5 → 7.9 ms, 7259 → 1609 B, −0.7 dB | 9.1 → 7.8 ms, 6985 → 2003 B, −0.7 dB | 9.3 → 8.6 ms, 6179 → 2272 B, −0.8 dB | 10.4 → 9.4 ms, 6064 → 2362 B, −0.7 dB | 10.1 → 10.0 ms, 26625 → 3080 B, +0.4 dB |
-| `walk`, the settle (1) | 2.61 → 7.83 ms, 354 → 825 B, 0.0 dB | — | 4.5 → 13.2 ms, 492 → 1420 B, 0.0 dB | 5.6 → 13.0 ms, 504 → 1424 B, 0.0 dB | — |
+| Frames, scale 2 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
+|---|---|---|---|---|---|---|
+| `terminal`, a line of text (≈ 260 a capture) | 1.52 → 0.55 ms, 204 → 187 B, +0.3 dB | 2.16 → 0.65 ms, 196 → 190 B, +0.3 dB | 2.55 → 0.73 ms, 191 → 229 B, +0.2 dB | 3.25 → 0.97 ms, 213 → 219 B, +0.3 dB | 3.74 → 0.92 ms, 216 → 212 B, +0.2 dB | 4.05 → 1.12 ms, 222 → 222 B, +0.2 dB |
+| `terminal`, a scroll (7 or 8) | 11.1 → 8.4 ms, 103 → 76 kB, +0.3 dB | 26.5 → 11.2 ms, 117 → 88 kB, +0.5 dB | 17.2 → 9.3 ms, 122 → 94 kB, +0.2 dB | 14.4 → 7.7 ms, 122 → 105 kB, +0.2 dB | 15.9 → 10.5 ms, 169 → 145 kB, +0.2 dB | 22.7 → 17.7 ms, 201 → 169 kB, +0.2 dB |
+| `drag`, a quarter of the picture (≈ 390) | 8.54 → 7.33 ms, 9368 → 1831 B, +0.1 dB | 9.11 → 7.68 ms, 7145 → 2071 B, +0.1 dB | 9.57 → 8.22 ms, 7149 → 2337 B, +0.1 dB | 10.7 → 8.2 ms, 12 → 3 kB, -0.3 dB | 11.0 → 8.2 ms, 11 → 3 kB, +0.4 dB | 11.0 → 8.4 ms, 31 → 3 kB, +1.3 dB |
+
+The keyframes inside the captures (the first picture and the one the
+scenario asks for), the time ratio being the median of the frame pairs:
 
 | Keyframes of, scale 1 | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 |
 |---|---|---|---|---|
-| `uncover`, a page under a terminal | 25 → 14 ms, 1.05×, −0.8 dB | 21 → 13 ms, 1.04×, −0.8 dB | 25 → 16 ms, 1.04×, −0.8 dB | 32 → 20 ms, 1.04×, −0.8 dB |
-| `drag`, a terminal of text | 17 → 9 ms, 1.04×, −0.7 dB | 14 → 9 ms, 1.03×, −0.7 dB | 15 → 9 ms, 1.03×, −0.7 dB | 21 → 12 ms, 1.00×, −0.7 dB |
-| `flood` | 15 → 9 ms, 1.03×, −0.8 dB | 12 → 9 ms, 1.03×, −0.7 dB | 16 → 11 ms, 1.04×, −0.7 dB | 21 → 13 ms, 1.04×, −0.7 dB |
-| `video` | 8 → 6 ms, 0.97×, −1.0 dB | 8 → 6 ms, 0.94×, −0.9 dB | 8 → 7 ms, 0.93×, −0.9 dB | 8 → 8 ms, 0.92×, −0.8 dB |
+| `uncover`, a page under a terminal | 24 → 19 ms, 1.01×, -0.2 dB | 19 → 16 ms, 1.01×, -0.2 dB | 25 → 20 ms, 1.01×, -0.2 dB | 34 → 24 ms, 1.01×, -0.2 dB |
+| `drag`, a terminal of text | 15 → 12 ms, 1.00×, -0.2 dB | 14 → 11 ms, 0.99×, -0.2 dB | 17 → 14 ms, 0.99×, -0.1 dB | 19 → 13 ms, 0.98×, -0.1 dB |
+| `flood` | 14 → 11 ms, 0.99×, -0.1 dB | 12 → 10 ms, 0.99×, -0.1 dB | 15 → 15 ms, 0.99×, -0.1 dB | 19 → 15 ms, 0.99×, -0.1 dB |
+| `video` | 8 → 8 ms, 0.92×, -0.0 dB | 8 → 7 ms, 0.91×, -0.1 dB | 8 → 8 ms, 0.91×, -0.1 dB | 8 → 9 ms, 0.91×, -0.0 dB |
 
-| Keyframes of, scale 2 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3840×2160@2 |
-|---|---|---|---|---|---|
-| `uncover`, a page under a terminal | 31 → 20 ms, 1.08×, −0.8 dB | 39 → 25 ms, 1.08×, −0.8 dB | 45 → 31 ms, 1.08×, −0.7 dB | 48 → 33 ms, 1.08×, −0.7 dB | 76 → 46 ms, 1.07×, −0.7 dB |
-| `drag`, a terminal of text | 21 → 17 ms, 1.06×, −0.8 dB | 31 → 16 ms, 1.06×, −0.7 dB | 29 → 18 ms, 1.06×, −0.8 dB | 40 → 25 ms, 1.07×, −0.8 dB | 60 → 27 ms, 1.05×, −0.7 dB |
-| `flood` | 19 → 13 ms, 1.08×, −0.8 dB | 30 → 16 ms, 1.06×, −0.8 dB | 24 → 18 ms, 1.06×, −0.8 dB | 34 → 25 ms, 1.07×, −0.8 dB | 70 → 30 ms, 1.07×, −0.8 dB |
-| `video` | 10 → 10 ms, 0.95×, −0.7 dB | 13 → 12 ms, 0.93×, −0.6 dB | 15 → 14 ms, 0.92×, −0.7 dB | 18 → 17 ms, 0.89×, −0.6 dB | 20 → 20 ms, 0.91×, −0.7 dB |
+| Keyframes of, scale 2 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
+|---|---|---|---|---|---|---|
+| `uncover`, a page under a terminal | 36 → 26 ms, 1.01×, -0.1 dB | 45 → 33 ms, 1.02×, -0.1 dB | 52 → 39 ms, 1.01×, -0.1 dB | 56 → 43 ms, 1.02×, -0.1 dB | 74 → 55 ms, 1.01×, -0.1 dB | 77 → 57 ms, 1.01×, -0.1 dB |
+| `drag`, a terminal of text | 23 → 15 ms, 0.99×, -0.1 dB | 30 → 20 ms, 0.99×, -0.1 dB | 33 → 22 ms, 0.98×, -0.1 dB | 45 → 32 ms, 1.00×, -0.1 dB | 51 → 31 ms, 0.98×, -0.1 dB | 64 → 35 ms, 0.99×, -0.1 dB |
+| `flood` | 24 → 17 ms, 1.01×, -0.1 dB | 30 → 20 ms, 0.99×, -0.1 dB | 62 → 23 ms, 0.99×, -0.1 dB | 50 → 31 ms, 1.00×, -0.1 dB | 86 → 35 ms, 1.00×, -0.1 dB | 95 → 36 ms, 1.00×, -0.1 dB |
+| `video` | 11 → 12 ms, 0.94×, -0.1 dB | 14 → 15 ms, 0.91×, -0.1 dB | 17 → 18 ms, 0.91×, +0.0 dB | 19 → 21 ms, 0.91×, -0.1 dB | 21 → 23 ms, 0.89×, +0.0 dB | 19 → 21 ms, 0.90×, -0.0 dB |
 
-After phase 7.1, the frames of a line of text and the drags again, the
-rest of the tables unchanged:
+What the captures say after phase 8:
 
-| After 7.1, scale 1 | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 |
-|---|---|---|---|---|
-| `terminal`, a line of text | 0.59 → 0.75 ms, 119 → 126 B, −0.4 dB | 0.80 → 1.00 ms, 126 → 155 B, −0.5 dB | 0.93 → 1.08 ms, 121 → 126 B, −0.6 dB | 1.12 → 1.28 ms, 135 → 138 B, −0.7 dB |
-| `drag`, a quarter of the picture | 4.0 → 2.8 ms, 5750 → 622 B, −0.1 dB | 3.7 → 2.8 ms, 6469 → 695 B, −0.1 dB | 3.9 → 3.0 ms, 6209 → 709 B, −0.2 dB | 4.1 → 3.2 ms, 8944 → 767 B, +0.4 dB |
-
-| After 7.1, scale 2 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3840×2160@2 |
-|---|---|---|---|---|---|
-| `terminal`, a line of text | 1.51 → 1.76 ms, 203 → 190 B, −0.4 dB | 2.08 → 2.11 ms, 196 → 191 B, −0.5 dB | 2.53 → 2.60 ms, 191 → 230 B, −0.6 dB | 3.2 → 3.0 ms, 214 → 221 B, −0.3 dB | 4.1 → 3.7 ms, 222 → 224 B, −0.5 dB |
-| `drag`, a quarter of the picture | 8.2 → 7.8 ms, 7259 → 1669 B, −0.7 dB | 8.9 → 7.7 ms, 6985 → 2042 B, −0.7 dB | 9.4 → 8.6 ms, 6179 → 2243 B, −0.8 dB | 10.6 → 9.4 ms, 5970 → 2325 B, −0.7 dB | 10.1 → 10.0 ms, 26625 → 3008 B, +0.4 dB |
-
-What the real captures say, which the decoded samples could not:
-
-- **Where the picture arrives exact and the compositor damages the whole
-  surface — a page scrolled, a window dragged — this encoder makes a sixth
-  to a third of libvpx's bytes at the same picture**, in two thirds of the
-  time. libvpx is told by the active map that everything may have changed
-  and searches for a scroll it finds poorly; the exact 8×8 comparison and
-  the hash search find it whole. On a stream a slow link carries, and on
-  what vp9-wasm has to parse, this is the largest thing the encoder has.
-- **A frame of a line of text, the common frame, is where it loses.** In
-  one and two tile columns, where the stream is loop filtered, it takes
-  half as long again as libvpx (1.5 to 1.6× at 1280 to 1920 wide); in four,
-  where neither filters, it is level to a tenth slower. At every size it spends more bytes
-  on such a frame, from a quarter more at 1280×800 to nearly double at
-  3840×2160: about a bit for each of the 2040 superblocks outside the
-  rectangles, which each cost a partition, a skip, an intra-or-inter, a
-  reference and a mode symbol, where libvpx's inactive segment costs its
-  segment symbol. Profiled at 1280×800, the encoder's own time on these
-  frames is a quarter spawning and joining threads, a quarter rebuilding
-  the motion index, a quarter loop filtering the whole frame, and the rest
-  the frame, with every unchanged block copied reference to reconstruction.
-- **The picture is 0.4 to 0.8 dB under libvpx's at the same dial** on every
-  capture of text or new content, and 0.7 to 1.0 dB on keyframes, where the
-  bytes are level or fewer: the encoder is trading picture for bytes
-  everywhere it is not finding motion. Where it finds motion (`browser`,
-  `drag`, `video`) the picture is libvpx's or better.
-- **Busy whole frames pass.** `flood`, the slowest content there is, codes
-  in 0.45 to 0.57 of libvpx's time at 0.90 to 0.99 of its bytes; `video` at
-  0.7 to 0.9 of the time and 0.87 to 1.0 of the bytes; keyframes in half
-  libvpx's time from 1920 wide up. The whole-frame half of the first gate
-  was the right half to have passed; it was passed at a coarser picture.
-- **A settle costs twice libvpx's time and up to three times its bytes**,
-  on a frame that should be nearly free: the blocks are unchanged and only the
-  dial moved.
-- **Nothing of what phase 5 added for soft pictures shows here yet**: the
-  numbers above are with the sub-pixel search, EIGHTTAP_SMOOTH, the
-  projection search and the 32×32 cap all in. Whether each pays on exact
-  pixels is phase 9's question, not answered by this table.
+- **The picture is libvpx's or better at the same dial on every capture at
+  every size**, over all frames: `browser` +0.8 to +1.4 dB at a sixth to a
+  third of its bytes, `drag` +0.1 to +1.3 at 0.12–0.38×, `flood` +0.2 to
+  +0.4 at 0.74–0.97×, `video` +0.3 to +0.6 at 0.93–1.04×, `walk` +0.1 to
+  +1.0 at 0.98–1.12×, `terminal` 0.0 to +0.3 at 0.75–0.87×, `uncover` 0.0
+  to +0.2 at 0.94–1.05×; the three cells under are `terminal` and `uncover`
+  at 1920×1080 (−0.1, −0.3) and `drag` at 3200×2000 (−0.3). Where the
+  picture arrives exact and the compositor damages the whole surface it
+  still makes a sixth to a third of libvpx's bytes, now at a better
+  picture.
+- **A frame of a line of text, the common frame, takes 0.25 to 0.52 of
+  libvpx's time at every size** (0.29 ms at 1280×800, 1.12 ms at
+  3840×2160), at level bytes (0.95–1.24×, the worst 1440×900 and
+  2880×1800, which are two tile columns) and level or better picture. The
+  rectangle half of the gate is met.
+- **Whole frames take 0.3 to 0.9 of libvpx's time**: `flood` 0.53–0.61,
+  `uncover` 0.29–0.41, `browser` 0.58–0.67, `drag` 0.63–0.86, `video`
+  0.72–0.89, `walk` 0.75–0.89.
+- **Keyframes take 0.9 to 1.0 of libvpx's time** inside the captures at
+  −0.0 to −0.2 dB and 0.98–1.02× the bytes, `video`'s 0.9–1.1×. On the
+  captures' first pictures coded alone at dials 40 and 90
+  (`keyframes_against_libvpx`), `drag`, `flood` and `uncover` take
+  0.79–1.06× libvpx's time at −0.1 to −0.4 dB and 0.97–1.02× the bytes,
+  `video` 0.89–1.10× at −0.4 to +0.1, `walk` 0.84–1.21× at 0.65–0.82× the
+  bytes; `terminal`'s and `browser`'s first pictures in this set are the
+  desktop before the resize, a few hundred bytes, and say nothing.
+- **What is over the line**: `walk`'s bytes at 0.98–1.12× (the dial's walk
+  down to 20 and the settle, phase 9's), `uncover`'s at 0.94–1.05×, and
+  the smallest keyframes' time (`video`'s, `walk`'s) at up to 1.2×.
 
 ## Bitstream subset
 
@@ -618,8 +602,13 @@ The replan, from here. Each phase is measured on the captures of
       keyframes at 1920×1080 stand at 0.96–1.01× libvpx's bytes and −0.14
       to −0.37 dB (`walk` +0.2 to +0.3 at 0.64–0.78×), 0.79–1.07× its time
       (`walk`'s small keyframe 1.13×).
-   Left: every size measured, not 1920×1080 alone. `Fastest` skips the
-   trials and the 4×4s.
+   **Done**, measured on every size of the `frame-captures` set, the
+   tables in [Where it stands](#where-it-stands-on-real-captures): the
+   picture is libvpx's or better at the same dial on every capture at
+   every size over all frames but three cells a tenth to three tenths of
+   a decibel under, the keyframes inside the captures at 0.9–1.0× its
+   time and −0.0 to −0.2 dB, the frames of a line of text at 0.25–0.52×
+   its time. `Fastest` skips the trials and the 4×4s.
 9. **Whole frames: keyframes, scrolls, settles.** Measured by the other time
    line of the gate on `flood`, `browser`, `video`, `walk` and `uncover`,
    with the rest of the rows of
