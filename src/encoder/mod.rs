@@ -332,7 +332,8 @@ impl Encoder {
     /// caller's: how many cores a machine can spare is a question about what
     /// else it runs. It also bounds the tile columns, and so decides with the
     /// width whether a stream is loop filtered: from 2048 wide on four
-    /// threads or more it is not.
+    /// threads or more it is not, nor past 8192 wide on any, where the
+    /// format asks for four columns itself.
     pub fn new(width: u16, height: u16, quality: u8, threads: usize) -> Result<Self, Error> {
         if width == 0 || height == 0 {
             return Err(Error::Empty(width, height));
@@ -345,7 +346,7 @@ impl Encoder {
         let pixels = usize::from(width) * usize::from(height);
         Ok(Self {
             tile_cols_log2,
-            filtered: loop_filtered(width, threads),
+            filtered: loop_filtered(tile_cols_log2),
             threads,
             pool: Pool::new(threads),
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
@@ -914,9 +915,13 @@ mod tests {
     /// header says so.
     #[test]
     fn the_loop_filter_is_left_out_of_four_tile_columns() {
-        for (w, threads, filtered) in [(2047, 4, true), (2048, 4, false), (2048, 2, true)] {
+        // Past 8192 wide the format asks for four columns on one thread too,
+        // and it is the columns a frame is in that the filter follows.
+        assert_eq!(Encoder::new(8256, 64, 50, 1).expect("an encoder").tile_cols_log2, 2);
+        for (w, threads, filtered) in [(2047, 4, true), (2048, 4, false), (2048, 2, true), (8256, 1, false)] {
             let rgb = desktop_rgb(w, 64);
             let mut stream = Stream::new(w, 64, 50, threads);
+            assert_eq!(stream.encoder.filtered, filtered);
             for (n, rgb) in [scroll(&rgb, w, 5), rgb].iter().enumerate() {
                 stream.frame(&picture(w, 64, rgb), false);
                 assert_eq!(crate::tests::filter_level(&stream.last) > 0, filtered, "frame {n} of {w} wide on {threads} threads");
@@ -952,15 +957,14 @@ mod tests {
         let rgb = desktop_rgb(w, h);
         let frames = [rgb.clone(), scroll(&rgb, w, 5), drag(&rgb, w, (1900, 8, 400, 40), (300, 3)), edit(rgb, w, (2000, 30, 300, 30), 7)];
         let [one, two, three] = [1, 2, 3].map(|threads| {
-            let mut encoder = Encoder::new(w, h, 90, threads).expect("an encoder");
-            assert_eq!(encoder.tile_cols_log2, 1);
-            let mut out = Vec::new();
-            for rgb in &frames {
-                encoder.encode(&picture(w, h, rgb), false, None, &mut out).expect("a frame");
-            }
-            out
+            let mut stream = Stream::new(w, h, 90, threads);
+            assert_eq!(stream.encoder.tile_cols_log2, 1);
+            frames.iter().map(|rgb| {
+                stream.frame(&picture(w, h, rgb), false);
+                stream.last.clone()
+            }).collect::<Vec<_>>()
         });
-        assert!(one == two && one == three, "{} bytes on one thread, {} on two, {} on three", one.len(), two.len(), three.len());
+        assert!(one == two && one == three, "{} frames on one thread, {} on two, {} on three", one.len(), two.len(), three.len());
     }
 
     #[test]
@@ -1821,13 +1825,14 @@ mod tests {
             for &dial in &dials {
                 let mut encoder = Encoder::new(w, h, dial, threads).expect("an encoder");
                 let (mut frame, mut least) = (Vec::new(), f64::INFINITY);
+                let mut decoder = Decoder::new(1).expect("a decoder");
                 for _ in 0..passes {
                     frame.clear();
                     let started = std::time::Instant::now();
                     encoder.encode(&picture, true, None, &mut frame).expect("a keyframe");
                     least = least.min(started.elapsed().as_secs_f64() * 1000.0);
+                    decoder.decode(&frame).expect("a frame libvpx decodes");
                 }
-                let mut decoder = Decoder::new(1).expect("a decoder");
                 let decoded = decoder.decode(&frame).expect("a frame libvpx decodes");
                 println!("  q{dial:<3} | {:>8} B {least:>6.2} ms {:>5.2} dB all {:>5.2} dB", frame.len(), psnr(luma_mse(&picture, &decoded).max(1e-3)), psnr(mse(&picture, &decoded).max(1e-3)));
                 if let Some(dir) = std::env::var_os("IVF") {

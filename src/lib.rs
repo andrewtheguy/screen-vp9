@@ -121,7 +121,8 @@ fn tile_columns_log2(width: u16, threads: usize) -> u32 {
 }
 
 /// Whether a stream's frames are loop filtered: all but those in four tile
-/// columns or more. The filter's level is taken from the quantizer, as libvpx's
+/// columns or more, `tile_cols_log2` being the log2 of the columns the frames
+/// are in, the ones the format forces on a very wide picture among them. The filter's level is taken from the quantizer, as libvpx's
 /// encoder takes it, 7 to 9 at the fine end of the dial, a light filter that
 /// still visits every block edge of every frame, and it is a quarter to two
 /// fifths of what vp9-wasm spends on a frame. Measured on vp9-wasm 0.0.5 with
@@ -143,8 +144,8 @@ fn tile_columns_log2(width: u16, threads: usize) -> u32 {
 /// columns have left it as what a
 /// decoder's threads wait on, which is also where a frame is slowest to decode,
 /// and stays where it would be bytes and picture given for no time.
-fn loop_filtered(width: u16, threads: usize) -> bool {
-    tile_columns_log2(width, threads) < 2
+fn loop_filtered(tile_cols_log2: u32) -> bool {
+    tile_cols_log2 < 2
 }
 
 /// Why a picture could not be encoded.
@@ -693,10 +694,39 @@ mod tests {
         picture
     }
 
-    /// Encode `picture` and return the frame with its keyframe bit.
-    fn encode(encoder: &mut Encoder, picture: &Picture, keyframe: bool) -> (Vec<u8>, bool) {
+    /// An encoder and the libvpx decoder following its stream, so that no
+    /// frame of it goes undecoded whatever a test does with it after.
+    struct Followed {
+        encoder: Encoder,
+        decoder: Decoder,
+    }
+
+    impl Followed {
+        fn new(width: u16, height: u16, quality: u8, threads: usize) -> Self {
+            Self { encoder: Encoder::new(width, height, quality, threads).expect("an encoder"), decoder: Decoder::new(1).expect("a decoder") }
+        }
+    }
+
+    impl std::ops::Deref for Followed {
+        type Target = Encoder;
+        fn deref(&self) -> &Encoder {
+            &self.encoder
+        }
+    }
+
+    impl std::ops::DerefMut for Followed {
+        fn deref_mut(&mut self) -> &mut Encoder {
+            &mut self.encoder
+        }
+    }
+
+    /// Encode `picture`, decode the frame, and return it with its keyframe
+    /// bit.
+    fn encode(encoder: &mut Followed, picture: &Picture, keyframe: bool) -> (Vec<u8>, bool) {
         let mut out = Vec::new();
-        let key = encoder.encode(picture, keyframe, None, &mut out).expect("a frame");
+        let key = encoder.encoder.encode(picture, keyframe, None, &mut out).expect("a frame");
+        let (w, h) = picture.size();
+        assert_eq!(encoder.decoder.decode(&out).expect("a frame libvpx decodes").size(), (u32::from(w), u32::from(h)));
         (out, key)
     }
 
@@ -984,13 +1014,13 @@ mod tests {
     /// not says so in every frame's header and decodes as any other.
     #[test]
     fn the_loop_filter_is_left_out_in_four_tile_columns() {
-        assert!(loop_filtered(2047, 8));
-        assert!(!loop_filtered(2048, 8));
-        assert!(!loop_filtered(3840, 4));
-        assert!(loop_filtered(3840, 3));
+        assert!(loop_filtered(tile_columns_log2(2047, 8)));
+        assert!(!loop_filtered(tile_columns_log2(2048, 8)));
+        assert!(!loop_filtered(tile_columns_log2(3840, 4)));
+        assert!(loop_filtered(tile_columns_log2(3840, 3)));
 
         for (w, threads, filtered) in [(1440, 4, true), (2048, 4, false), (2048, 2, true)] {
-            let mut encoder = Encoder::new(w, 64, 50, threads).expect("an encoder");
+            let mut encoder = Followed::new(w, 64, 50, threads);
             let frames: Vec<Vec<u8>> = [[30, 60, 90], [200, 30, 30], [40, 180, 70]].iter().map(|colour| encode(&mut encoder, &picture(w, 64, &flat(w, 64, *colour)), false).0).collect();
             for (n, frame) in frames.iter().enumerate() {
                 assert_eq!(filter_level(frame) > 0, filtered, "frame {n} of {w} wide, {threads} threads");
@@ -1074,7 +1104,7 @@ mod tests {
         picture.read_bgrx(&pixels, width * 4).expect("a picture that fits");
         assert!(picture.planes()[0].iter().all(|&y| (16..=235).contains(&y)), "luma stays in studio range");
 
-        let mut encoder = Encoder::new(width as u16, height as u16, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Followed::new(width as u16, height as u16, QUALITY_MAX, 1);
         let (frame, _) = encode(&mut encoder, &picture, false);
         let back = decode_chain(&[frame], width, height);
         for (i, (want, got)) in pixels.as_chunks::<4>().0.iter().zip(back.as_chunks::<4>().0).enumerate() {
@@ -1101,7 +1131,7 @@ mod tests {
         }
         let mut picture = Picture::new(width as u16, height as u16, 1).expect("a picture");
         picture.read_bgrx(&pixels, stride).expect("a picture that fits");
-        let mut encoder = Encoder::new(width as u16, height as u16, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Followed::new(width as u16, height as u16, QUALITY_MAX, 1);
         let (frame, _) = encode(&mut encoder, &picture, false);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let mut back = vec![0xAA; (height - 1) * stride + width * 4];
@@ -1133,7 +1163,7 @@ mod tests {
     #[test]
     fn a_lower_quality_makes_a_smaller_stream() {
         let bytes = |quality| {
-            let mut encoder = Encoder::new(320, 240, quality, 2).expect("an encoder");
+            let mut encoder = Followed::new(320, 240, quality, 2);
             (0..5u16).map(|step| encode(&mut encoder, &picture(320, 240, &moving(step)), false).0.len()).sum::<usize>()
         };
         let (coarse, fine) = (bytes(5), bytes(90));
@@ -1142,7 +1172,7 @@ mod tests {
 
     #[test]
     fn the_first_frame_is_a_keyframe_and_another_can_be_asked_for() {
-        let mut encoder = Encoder::new(320, 240, 60, 2).expect("an encoder");
+        let mut encoder = Followed::new(320, 240, 60, 2);
         let mut frame = |step, keyframe| encode(&mut encoder, &picture(320, 240, &moving(step)), keyframe);
         let first = frame(0, false);
         assert!(first.1, "a decoder has to be able to start somewhere");
@@ -1162,7 +1192,7 @@ mod tests {
     #[test]
     fn no_keyframe_comes_unasked() {
         let (w, h) = (64u16, 48u16);
-        let mut encoder = Encoder::new(w, h, 60, 1).expect("an encoder");
+        let mut encoder = Followed::new(w, h, 60, 1);
         let mut rgb = flat(w, h, [80, 40, 20]);
         for step in 0..300u32 {
             let x = (step * 3) as usize % 48;
@@ -1230,6 +1260,7 @@ mod tests {
             let mut moved = Vec::new();
             stream.read_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }])).expect("a read");
             stream.encode(false, &mut moved).expect("a frame");
+            frames.push(moved);
             walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
             assert_eq!((stream.coarsest(), walk.settle_at().is_some()), (QUALITY_MIN, true), "a coarse frame after the settle owes none");
 
@@ -1239,10 +1270,12 @@ mod tests {
             // the corner coarse, and a finer one of the corner leaves nothing.
             stream.set_quality(90);
             stream.read_rgb(&rgb, Some(&[Rect { x: 64, y: 64, width: 16, height: 16 }])).expect("a read");
-            stream.encode(false, &mut Vec::new()).expect("a frame");
+            frames.push(Vec::new());
+            stream.encode(false, frames.last_mut().expect("pushed above")).expect("a frame");
             assert_eq!(stream.coarsest(), QUALITY_MIN, "a frame coded what was read for the one before it");
             stream.read_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }])).expect("a read");
-            stream.encode(false, &mut Vec::new()).expect("a frame");
+            frames.push(Vec::new());
+            stream.encode(false, frames.last_mut().expect("pushed above")).expect("a frame");
             assert_eq!(stream.coarsest(), 90, "a frame of one corner coded more than it");
             stream.set_quality(QUALITY_MIN);
 
@@ -1250,6 +1283,9 @@ mod tests {
             let mut key = Vec::new();
             assert!(stream.settle(90, true, &mut key).expect("a settle"));
             assert_eq!((stream.quality(), stream.coarsest(), frame_header(&key).map(|header| header.keyframe)), (QUALITY_MIN, 90, Some(true)));
+            // Every frame of the stream decodes, in the order it was made.
+            frames.push(key);
+            decode_chain(&frames, wu, hu);
 
             assert_eq!(stream.quality(), QUALITY_MIN);
         }
@@ -1259,9 +1295,9 @@ mod tests {
     /// mid-stream without spending a keyframe to do it.
     #[test]
     fn the_quality_moves_on_a_live_encoder_without_a_keyframe() {
-        let mut encoder = Encoder::new(320, 240, 90, 2).expect("an encoder");
+        let mut encoder = Followed::new(320, 240, 90, 2);
         assert_eq!(encoder.quality(), 90);
-        let frame = |encoder: &mut Encoder, step| encode(encoder, &picture(320, 240, &moving(step)), false);
+        let frame = |encoder: &mut Followed, step| encode(encoder, &picture(320, 240, &moving(step)), false);
         frame(&mut encoder, 0);
         let fine: usize = (1..5).map(|step| frame(&mut encoder, step).0.len()).sum();
 
@@ -1279,9 +1315,9 @@ mod tests {
     /// across the change still decodes to its picture.
     #[test]
     fn the_speed_moves_on_a_live_encoder_without_a_keyframe() {
-        let mut encoder = Encoder::new(320, 240, 90, 2).expect("an encoder");
+        let mut encoder = Followed::new(320, 240, 90, 2);
         assert_eq!(encoder.speed(), Speed::Usual);
-        let frame = |encoder: &mut Encoder, step| encode(encoder, &picture(320, 240, &moving(step)), false);
+        let frame = |encoder: &mut Followed, step| encode(encoder, &picture(320, 240, &moving(step)), false);
         let mut frames = vec![frame(&mut encoder, 0).0];
         for speed in [Speed::Fastest, Speed::Usual] {
             encoder.set_speed(speed);
@@ -1313,7 +1349,7 @@ mod tests {
     fn an_odd_sized_picture_encodes_and_decodes_at_its_own_size() {
         let (w, h) = (33u16, 17u16);
         let source = picture(w, h, &flat(w, h, [40, 180, 90]));
-        let mut encoder = Encoder::new(w, h, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Followed::new(w, h, QUALITY_MAX, 1);
         let (frame, _) = encode(&mut encoder, &source, false);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let decoded = decoder.decode(&frame).expect("a decode");
@@ -1330,7 +1366,7 @@ mod tests {
         decoded.write_bgrx(&mut out, 33 * 4);
         // 1919×1079 as a desktop is, at the size the gateway once padded.
         let source = picture(1919, 1079, &flat(1919, 1079, [90, 90, 90]));
-        let mut encoder = Encoder::new(1919, 1079, 60, 2).expect("an encoder");
+        let mut encoder = Followed::new(1919, 1079, 60, 2);
         let (frame, _) = encode(&mut encoder, &source, false);
         assert_eq!(Decoder::new(1).expect("a decoder").decode(&frame).expect("a decode").size(), (1919, 1079));
     }
@@ -1340,7 +1376,7 @@ mod tests {
     #[test]
     fn keyframes_come_when_asked_and_the_frames_between_decode() {
         let (w, h) = (64u16, 32u16);
-        let mut encoder = Encoder::new(w, h, 60, 1).expect("an encoder");
+        let mut encoder = Followed::new(w, h, 60, 1);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let mut out = vec![0; 64 * 32 * 4];
         for step in 0..5usize {
@@ -1408,7 +1444,7 @@ mod tests {
     #[test]
     fn a_one_pixel_stem_keeps_its_colour() {
         let (rgb, at) = stems(64, 64);
-        let mut encoder = Encoder::new(64, 64, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Followed::new(64, 64, QUALITY_MAX, 1);
         let (frame, _) = encode(&mut encoder, &picture(64, 64, &rgb), false);
         let decoded = decode_chain(&[frame], 64, 64);
         let worst = at.iter().map(|&(x, y)| rgb_at(&decoded, 64, x, y).iter().zip([255u8, 121, 198]).map(|(a, b)| a.abs_diff(b)).max().unwrap()).max().unwrap();
@@ -1420,7 +1456,7 @@ mod tests {
     /// which is not what the conversion did.
     #[test]
     fn the_bitstream_declares_bt601_studio_swing() {
-        let mut encoder = Encoder::new(64, 64, 60, 1).expect("an encoder");
+        let mut encoder = Followed::new(64, 64, 60, 1);
         let (frame, _) = encode(&mut encoder, &picture(64, 64, &flat(64, 64, [200, 30, 30])), false);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let decoded = decoder.decode(&frame).expect("a decode");
@@ -1430,7 +1466,7 @@ mod tests {
 
     #[test]
     fn a_wrong_picture_is_an_error_rather_than_a_read_past_the_end() {
-        let mut encoder = Encoder::new(32, 16, 60, 1).expect("an encoder");
+        let mut encoder = Followed::new(32, 16, 60, 1);
         let other = picture(16, 16, &flat(16, 16, [0, 0, 0]));
         assert!(matches!(encoder.encode(&other, false, None, &mut Vec::new()), Err(Error::Mismatch(32, 16, 16, 16))));
         assert!(matches!(Encoder::new(0, 16, 60, 1), Err(Error::Empty(0, 16))));
@@ -1489,7 +1525,7 @@ mod tests {
         }
 
         struct Session {
-            encoder: Encoder,
+            encoder: Followed,
             decoder: Decoder,
             walk: QualityWalk,
             now: Instant,
@@ -1544,7 +1580,7 @@ mod tests {
 
         // A second of delta frames at `quality`, on an encoder of its own.
         let per_second = |quality| {
-            let mut encoder = Encoder::new(W, H, quality, 2).expect("an encoder");
+            let mut encoder = Followed::new(W, H, quality, 2);
             (0..31).map(|step| encode(&mut encoder, &churning(step), false).0.len()).skip(1).sum::<usize>() as f64
         };
         let (ceiling, floor) = (per_second(CEILING), per_second(QUALITY_FLOOR));
@@ -1553,7 +1589,7 @@ mod tests {
 
         let start = Instant::now();
         let mut session = Session {
-            encoder: Encoder::new(W, H, CEILING, 2).expect("an encoder"),
+            encoder: Followed::new(W, H, CEILING, 2),
             decoder: Decoder::new(1).expect("a decoder"),
             walk: QualityWalk::new(CEILING, FRAME, true),
             now: start,
