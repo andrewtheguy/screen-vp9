@@ -33,7 +33,7 @@
 //! stopped. The walk is told what each frame left the client holding
 //! ([`QualityWalk::sent`]) and says when that is owed a settle
 //! ([`QualityWalk::settle_at`]), [`SETTLE_IDLE`] of quiet on; the frame is
-//! [`crate::Stream::settle_bgrx`]'s, and [`QualityWalk::settle`] is told as it
+//! [`crate::Stream::settle`]'s, and [`QualityWalk::settle`] is told as it
 //! goes. What quiet is stays the caller's: that nothing has changed since,
 //! that no frame is still on its way, and whatever else it waits for.
 //!

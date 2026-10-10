@@ -21,11 +21,13 @@
 //! the rectangle that changed, and [`Encoder::encode`] told where the picture changed
 //! skips every block outside it, which a caller that knows its damage says and
 //! one that does not leaves unsaid. [`Stream`] is the two together, and what a
-//! user holds: it is handed a packed picture and its damage, and keeps the
-//! rules a frame of damage needs — when a frame is the whole picture anyway,
-//! and how coarse the blocks no frame has touched since still are — and the
-//! frame that settles them, the whole picture once at the ceiling with the
-//! dial left where the link had it ([`Stream::settle_bgrx`]).
+//! user holds: it reads a packed picture where that changed
+//! ([`Stream::read_bgrx`]), straight from wherever the pixels are, and codes
+//! what it read ([`Stream::encode`]). It keeps the rules a frame of damage
+//! needs — when a frame is the whole picture anyway, and how coarse the blocks
+//! no frame has touched since still are — and the frame that settles them, the
+//! whole picture once at the ceiling with the dial left where the link had it
+//! ([`Stream::settle`]).
 //!
 //! Frame metadata is handled here too: [`frame_header`] reads the profile and
 //! keyframe bit of a frame this process did not encode, and [`codec_string`]
@@ -252,6 +254,8 @@ pub enum Error {
     Buffer { width: usize, height: usize, stride: usize, bytes: usize },
     #[error("a {0}x{1} {2} encoder was handed a {3}x{4} {5} picture")]
     Mismatch(u16, u16, &'static str, u16, u16, &'static str),
+    #[error("a stream was asked for a frame before any picture was read into it")]
+    Unread,
     #[error("the frame decoded to no picture")]
     NoPicture,
     #[error("the frame is not 8-bit 4:2:0 or 4:4:4 (format {0}, {1} bits)")]
@@ -376,11 +380,27 @@ impl Picture {
     /// [`Self::read_rgb`] takes it, and leave every other pixel as the last
     /// conversion made it, as [`Self::read_bgrx_rect`] does.
     pub fn read_rgb_rect(&mut self, rgb: &[u8], rect: Rect) -> Result<(), Error> {
+        self.holds_rgb(rgb)?;
+        self.convert(rgb, usize::from(self.size.0) * 3, rect, Packed::Rgb);
+        Ok(())
+    }
+
+    /// Whether `rgb` is this picture, packed and tight.
+    fn holds_rgb(&self, rgb: &[u8]) -> Result<(), Error> {
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         if rgb.len() != w * h * 3 {
             return Err(Error::Crop(rgb.len(), w, h));
         }
-        self.convert(rgb, w * 3, rect, Packed::Rgb);
+        Ok(())
+    }
+
+    /// Whether `pixels` hold this picture as `B, G, R, X`, rows `stride`
+    /// bytes apart.
+    fn holds_bgrx(&self, pixels: &[u8], stride: usize) -> Result<(), Error> {
+        let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
+        if !fits(w, h, stride, pixels.len()) {
+            return Err(Error::Buffer { width: w, height: h, stride, bytes: pixels.len() });
+        }
         Ok(())
     }
 
@@ -401,10 +421,7 @@ impl Picture {
     /// the pixels that share a group with a pixel of `rect` must hold the
     /// picture too, though they are not named. No other pixel is read.
     pub fn read_bgrx_rect(&mut self, pixels: &[u8], stride: usize, rect: Rect) -> Result<(), Error> {
-        let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
-        if !fits(w, h, stride, pixels.len()) {
-            return Err(Error::Buffer { width: w, height: h, stride, bytes: pixels.len() });
-        }
+        self.holds_bgrx(pixels, stride)?;
         self.convert(pixels, stride, rect, Packed::Bgrx);
         Ok(())
     }
@@ -1019,27 +1036,55 @@ impl Drop for Encoder {
 }
 
 /// A desktop's stream from the pixels it is shown as: an [`Encoder`] and the
-/// [`Picture`] in front of it, fed a packed picture and where it changed. What
-/// both users of this crate would otherwise each keep: the rectangles that changed
-/// converted and the blocks they touch coded, and the whole picture read and
-/// coded where there is nothing for it to be a change to.
+/// [`Picture`] in front of it, which is read from a packed picture where that
+/// changed and then coded. What both users of this crate would otherwise each
+/// keep: the rectangles that changed converted and the blocks they touch coded,
+/// and the whole picture read and coded where there is nothing for it to be a
+/// change to.
+///
+/// Reading and coding are two calls because they are not one moment to every
+/// user: the pixels may be behind a lock the compositor waits on, which a
+/// conversion is held for and an encode is not, and read straight from there
+/// they are copied nowhere on the way.
 pub struct Stream {
     encoder: Encoder,
     picture: Picture,
-    /// The planes hold the picture the last frame carried, which a frame of
-    /// changes alone is read over. Not so before the first frame, nor after
-    /// one the encoder produced nothing for: its rows were read and reached
-    /// no decoder, so the next frame is the whole picture's.
-    carried: bool,
+    /// The planes hold a picture: one was read whole. Until then there is
+    /// nothing for rectangles to be read over, nor anything to code.
+    filled: bool,
+    /// What of the planes no decoder holds, which the next frame codes.
+    owed: Owed,
+    /// The rectangles read since the last frame, while that is all that is
+    /// owed.
+    changed: Vec<Rect>,
     /// A frame was coded that no decoder was handed, so the frames after it
     /// are coded against a picture none holds: the next is a keyframe.
     lost: bool,
 }
 
+/// What of a [`Stream`]'s planes its decoder is yet to be sent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owed {
+    /// Nothing: the last frame carried the planes as they stand.
+    Nothing,
+    /// The rectangles read since the last frame.
+    Changed,
+    /// All of it: the picture was read whole, or a frame of it came to
+    /// nothing.
+    Whole,
+}
+
 impl Stream {
     /// A stream of `width`×`height` pictures, as [`Encoder::new`] takes them.
     pub fn new(width: u16, height: u16, chroma: Chroma, quality: u8, threads: usize) -> Result<Self, Error> {
-        Ok(Self { encoder: Encoder::new(width, height, chroma, quality, threads)?, picture: Picture::new(width, height, chroma, threads)?, carried: false, lost: false })
+        Ok(Self {
+            encoder: Encoder::new(width, height, chroma, quality, threads)?,
+            picture: Picture::new(width, height, chroma, threads)?,
+            filled: false,
+            owed: Owed::Whole,
+            changed: Vec::new(),
+            lost: false,
+        })
     }
 
     /// The picture size this stream codes.
@@ -1068,57 +1113,122 @@ impl Stream {
         self.encoder.coarsest()
     }
 
-    /// Encode `pixels` — `B, G, R, X`, this stream's size, rows `stride` bytes
-    /// apart — and append the frame to `out`, returning what
-    /// [`Encoder::encode`] does.
+    /// Read `pixels` — `B, G, R, X`, this stream's size, rows `stride` bytes
+    /// apart — as the picture the next frame carries ([`Self::encode`]).
     ///
-    /// `changed` is where the picture differs from the one the last frame
-    /// carried, or `None` for one that may differ anywhere. With it only the
-    /// rectangles are read, and only the blocks the rectangles touch are
-    /// coded. At 4:4:4 the rest of `pixels` may be whatever it is. At 4:2:0
-    /// a rectangle is read out to whole 2×2 groups, an even row and column
-    /// with the odd ones after them ([`Picture::read_bgrx_rect`]), so a pixel
-    /// sharing a group with a changed one must hold the picture as well: it
-    /// is in a block this frame codes, and what it holds reaches the decoder.
-    /// A keyframe, the stream's first frame and the frame after one the
-    /// encoder produced nothing for are the whole picture whatever `changed`
-    /// says, and read all of `pixels`.
-    pub fn encode_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
-        let changed = changed.filter(|_| self.carried && !keyframe);
-        match changed {
+    /// `changed` is where the picture differs from the one read before it, or
+    /// `None` for one that may differ anywhere, a keyframe's included: the
+    /// caller's word and not checked. With it only the rectangles are read,
+    /// and the next frame codes only the blocks they touch, and those of the
+    /// reads before it that no frame has carried. At 4:4:4 the rest of
+    /// `pixels` may be whatever it is. At 4:2:0 a rectangle is read out to
+    /// whole 2×2 groups, an even row and column with the odd ones after them
+    /// ([`Picture::read_bgrx_rect`]), so a pixel sharing a group with a
+    /// changed one must hold the picture as well: it is in a block the frame
+    /// codes, and what it holds reaches the decoder. The stream's first read
+    /// is the whole picture whatever `changed` says, and reads all of
+    /// `pixels`.
+    ///
+    /// Nothing of `pixels` is kept: it is the planes that are coded, so the
+    /// frame may be a while after the read, and the pixels changed by then.
+    pub fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), Error> {
+        match changed.filter(|_| self.filled) {
             Some(rects) => {
+                // Refused whole or not at all, a read of no rectangle too.
+                self.picture.holds_bgrx(pixels, stride)?;
                 for rect in rects {
                     self.picture.read_bgrx_rect(pixels, stride, *rect)?;
                 }
+                self.read(rects);
             }
-            None => self.picture.read_bgrx(pixels, stride)?,
+            None => {
+                self.picture.read_bgrx(pixels, stride)?;
+                self.read_whole();
+            }
         }
-        self.encode(changed, keyframe, out)
+        Ok(())
     }
 
-    /// Encode `rgb` — packed RGB888, tight, for exactly this stream's picture
-    /// — as [`Self::encode_bgrx`] does `B, G, R, X`.
-    pub fn encode_rgb(&mut self, rgb: &[u8], changed: Option<&[Rect]>, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
-        let changed = changed.filter(|_| self.carried && !keyframe);
-        match changed {
+    /// Read `rgb` — packed RGB888, tight, for exactly this stream's picture —
+    /// as [`Self::read_bgrx`] does `B, G, R, X`.
+    pub fn read_rgb(&mut self, rgb: &[u8], changed: Option<&[Rect]>) -> Result<(), Error> {
+        match changed.filter(|_| self.filled) {
             Some(rects) => {
+                self.picture.holds_rgb(rgb)?;
                 for rect in rects {
                     self.picture.read_rgb_rect(rgb, *rect)?;
                 }
+                self.read(rects);
             }
-            None => self.picture.read_rgb(rgb)?,
+            None => {
+                self.picture.read_rgb(rgb)?;
+                self.read_whole();
+            }
         }
-        self.encode(changed, keyframe, out)
+        Ok(())
     }
 
-    /// Settle the picture at `quality`: encode `pixels`, as
-    /// [`Self::encode_bgrx`] takes them, whole and at that dial, and leave
-    /// the dial where it was. What a desktop that went quiet while the link
-    /// had it coarse is owed ([`walk::QualityWalk::settle_at`]): as an inter
-    /// frame the unchanged picture costs no keyframe and sharpens every block,
-    /// so [`Self::coarsest`] is `quality` after it, and the frames of the
-    /// motion that follows are at what the link bears again. `keyframe` makes
-    /// it one a decoder can start from, at `quality` all the same.
+    /// The planes were read at `rects`, which the next frame owes with what
+    /// it owed already.
+    fn read(&mut self, rects: &[Rect]) {
+        match self.owed {
+            Owed::Whole => {}
+            Owed::Changed => self.changed.extend_from_slice(rects),
+            Owed::Nothing => {
+                self.changed.clear();
+                self.changed.extend_from_slice(rects);
+                self.owed = Owed::Changed;
+            }
+        }
+    }
+
+    /// The planes were read whole, and the next frame owes all of them.
+    fn read_whole(&mut self) {
+        self.filled = true;
+        self.owed = Owed::Whole;
+    }
+
+    /// Encode the picture as it was last read and append the frame to `out`,
+    /// returning what [`Encoder::encode`] does. The frame codes what was read
+    /// since the frame before it: the blocks those rectangles touch, the whole
+    /// picture if any read was whole, and no block at all if nothing was
+    /// read, which is a frame all the same. `keyframe` makes it one a decoder
+    /// can start from, which codes everything; the stream's first frame is
+    /// one either way.
+    ///
+    /// A frame the encoder produced nothing for, or failed at, leaves the
+    /// whole picture owed to the next, since no decoder was handed what this
+    /// one coded. A stream nothing was ever read into has no picture to code,
+    /// and says so ([`Error::Unread`]).
+    pub fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        if !self.filled {
+            return Err(Error::Unread);
+        }
+        let changed = match self.owed {
+            Owed::Nothing => Some(&[][..]),
+            Owed::Changed => Some(&self.changed[..]),
+            Owed::Whole => None,
+        };
+        // Until a frame comes out the planes are ahead of every decoder.
+        self.owed = Owed::Whole;
+        let encoded = self.encoder.encode(&self.picture, keyframe || self.lost, changed, out)?;
+        if encoded.is_some() {
+            self.owed = Owed::Nothing;
+            self.lost = false;
+        }
+        Ok(encoded)
+    }
+
+    /// Settle the picture at `quality`: encode it as it was last read, whole
+    /// and at that dial, and leave the dial where it was. What a desktop that
+    /// went quiet while the link had it coarse is owed
+    /// ([`walk::QualityWalk::settle_at`]): as an inter frame the unchanged
+    /// picture costs no keyframe and sharpens every block, so
+    /// [`Self::coarsest`] is `quality` after it, and the frames of the motion
+    /// that follows are at what the link bears again. `keyframe` makes it one
+    /// a decoder can start from, at `quality` all the same. Nothing need be
+    /// read for it: a quiet desktop is the picture the planes hold, and one
+    /// that changed since is read where it did ([`Self::read_bgrx`]) first.
     ///
     /// Returns what [`Encoder::encode`] does. A dial the encoder would not
     /// move to `quality` is an error before anything is coded. One it would
@@ -1129,48 +1239,25 @@ impl Stream {
     /// be coded against. The walk is told where the encoder stayed
     /// ([`walk::QualityWalk::stays_at`]) so that its next verdict starts from
     /// the quality in force.
-    pub fn settle_bgrx(&mut self, pixels: &[u8], stride: usize, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
-        self.picture.read_bgrx(pixels, stride)?;
-        self.settle(quality, keyframe, out)
-    }
-
-    /// Settle the picture at `quality` from `rgb` — packed RGB888, tight, for
-    /// exactly this stream's picture — as [`Self::settle_bgrx`] does from
-    /// `B, G, R, X`.
-    pub fn settle_rgb(&mut self, rgb: &[u8], quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
-        self.picture.read_rgb(rgb)?;
-        self.settle(quality, keyframe, out)
-    }
-
-    /// Encode the planes as they stand, whole, at `quality`, and put the dial
-    /// back.
-    fn settle(&mut self, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
-        // The planes are the whole picture now, which no decoder has yet.
-        self.carried = false;
+    pub fn settle(&mut self, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+        if !self.filled {
+            return Err(Error::Unread);
+        }
         let walked = self.encoder.quality();
         self.encoder.set_quality(quality)?;
+        self.owed = Owed::Whole;
         let from = out.len();
-        let encoded = self.encode(None, keyframe, out);
+        let encoded = self.encode(keyframe, out);
         // Back whatever the encode came to: the dial is the walk's again.
         if let Err(stuck) = self.encoder.set_quality(walked) {
             if out.len() > from {
                 out.truncate(from);
-                self.carried = false;
+                self.owed = Owed::Whole;
                 self.lost = true;
             }
             return encoded.and(Err(stuck));
         }
         encoded
-    }
-
-    /// Encode the planes as they stand.
-    fn encode(&mut self, changed: Option<&[Rect]>, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
-        // Until a frame comes out the planes are ahead of every decoder.
-        self.carried = false;
-        let encoded = self.encoder.encode(&self.picture, keyframe || self.lost, changed, out)?;
-        self.carried = encoded.is_some();
-        self.lost &= encoded.is_none();
-        Ok(encoded)
     }
 }
 
@@ -1647,8 +1734,9 @@ mod tests {
 
     /// A stream reads the rectangles a frame's changes are and nothing else of
     /// the buffer, and leaves the rest of the decoder's picture as it was. Its
-    /// first frame and a keyframe have no picture to be changes to, and are
-    /// read whole whatever they are told.
+    /// first read has no picture to be changes to, and is the whole buffer
+    /// whatever it is told. A frame codes what was read since the one before
+    /// it, in however many reads, and a keyframe all of the planes.
     #[test]
     fn a_stream_reads_and_codes_only_what_a_frame_names() {
         let (w, h) = (96u16, 80u16);
@@ -1676,11 +1764,16 @@ mod tests {
             let mut step = |stream: &mut Stream, rgb: &[u8], changed: Option<&[Rect]>, keyframe: bool| {
                 let pixels = packed(rgb, bgrx);
                 let mut out = Vec::new();
-                let key = if bgrx { stream.encode_bgrx(&pixels, wu * 4, changed, keyframe, &mut out) } else { stream.encode_rgb(&pixels, changed, keyframe, &mut out) };
+                if bgrx { stream.read_bgrx(&pixels, wu * 4, changed) } else { stream.read_rgb(&pixels, changed) }.expect("a read");
+                let key = stream.encode(keyframe, &mut out);
                 frames.push(out);
                 (key.expect("an encode").expect("a frame"), decode_chain(&frames, wu, hu))
             };
             let whole = flat(w, h, BACK);
+
+            // Nothing was read, so there is nothing to code or to settle.
+            assert!(matches!(stream.encode(false, &mut Vec::new()), Err(Error::Unread)));
+            assert!(matches!(stream.settle(90, false, &mut Vec::new()), Err(Error::Unread)));
 
             // The first frame is told of changes it cannot be changes to.
             let (key, back) = step(&mut stream, &whole, Some(&[named]), false);
@@ -1700,14 +1793,58 @@ mod tests {
                 assert!(near(rgb_at(&back, wu, x, y), BACK), "{chroma:?}: ({x}, {y}), outside the change, came back {:?}", rgb_at(&back, wu, x, y));
             }
 
-            // A keyframe is the whole buffer, whatever it is told.
-            let mut all = whole.clone();
-            paint(&mut all, Rect { x: 0, y: 64, width: w, height: 16 }, LIT);
-            let (key, back) = step(&mut stream, &all, Some(&[named]), true);
-            assert!(key && near(rgb_at(&back, wu, 48, 24), BACK) && near(rgb_at(&back, wu, 48, 70), LIT), "{chroma:?}: the keyframe was not the whole picture");
+            // Two reads before a frame, which carries both: the rectangle put
+            // back, and a band lit under it. Read from buffers that hold
+            // nothing else, and are gone by the time the frame is coded.
+            let band = Rect { x: 0, y: 64, width: w, height: 16 };
+            for (rect, colour) in [(held, BACK), (band, LIT)] {
+                let mut rows = flat(w, h, JUNK);
+                paint(&mut rows, rect, colour);
+                let pixels = packed(&rows, bgrx);
+                if bgrx { stream.read_bgrx(&pixels, wu * 4, Some(&[rect])) } else { stream.read_rgb(&pixels, Some(&[rect])) }.expect("a read");
+            }
+            let mut out = Vec::new();
+            assert_eq!(stream.encode(false, &mut out).expect("an encode"), Some(false));
+            frames.push(out);
+            let back = decode_chain(&frames, wu, hu);
+            assert!(near(rgb_at(&back, wu, 48, 24), BACK) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "{chroma:?}: a frame did not carry both of its reads");
 
-            assert!(matches!(stream.encode_rgb(&[0; 9], None, false, &mut Vec::new()), Err(Error::Crop(..))));
-            assert!(matches!(stream.encode_bgrx(&[0; 9], 4, None, false, &mut Vec::new()), Err(Error::Buffer { .. })));
+            // A frame of nothing read is a frame, and changes nothing.
+            let mut out = Vec::new();
+            assert_eq!(stream.encode(false, &mut out).expect("an encode"), Some(false));
+            frames.push(out);
+            assert_eq!(decode_chain(&frames, wu, hu), back, "{chroma:?}: a frame of nothing read changed the picture");
+
+            // A settle carries what was read and no frame has: the rectangle
+            // lit again, with the rest as the planes hold it.
+            let mut rows = flat(w, h, JUNK);
+            paint(&mut rows, held, BACK);
+            paint(&mut rows, named, LIT);
+            let pixels = packed(&rows, bgrx);
+            if bgrx { stream.read_bgrx(&pixels, wu * 4, Some(&[named])) } else { stream.read_rgb(&pixels, Some(&[named])) }.expect("a read");
+            let mut out = Vec::new();
+            assert_eq!(stream.settle(90, false, &mut out).expect("a settle"), Some(false));
+            frames.push(out);
+            let back = decode_chain(&frames, wu, hu);
+            assert!(near(rgb_at(&back, wu, 48, 24), LIT) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "{chroma:?}: a settle did not carry what was read for it");
+
+            // A keyframe is the whole picture, of which it was read one
+            // rectangle: the planes hold the rest.
+            let mut rows = flat(w, h, JUNK);
+            paint(&mut rows, held, LIT);
+            let pixels = packed(&rows, bgrx);
+            if bgrx { stream.read_bgrx(&pixels, wu * 4, Some(&[held])) } else { stream.read_rgb(&pixels, Some(&[held])) }.expect("a read");
+            let mut out = Vec::new();
+            assert_eq!(stream.encode(true, &mut out).expect("an encode"), Some(true));
+            let back = decode_chain(&[out], wu, hu);
+            assert!(near(rgb_at(&back, wu, 48, 24), LIT) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "{chroma:?}: the keyframe was not the whole picture");
+
+            // A buffer that is not the picture is refused whatever is to be
+            // read of it, nothing included.
+            for changed in [None, Some(&[named][..]), Some(&[][..])] {
+                assert!(matches!(stream.read_rgb(&[0; 9], changed), Err(Error::Crop(..))));
+                assert!(matches!(stream.read_bgrx(&[0; 9], 4, changed), Err(Error::Buffer { .. })));
+            }
         }
     }
 
@@ -2084,15 +2221,16 @@ mod tests {
             let mut stream = Stream::new(w, h, Chroma::Full, 90, 2).expect("a stream");
             stream.set_quality(QUALITY_MIN).expect("a live encoder takes a new quality");
             let mut frames = vec![Vec::new()];
-            stream.encode_rgb(&rgb, None, false, &mut frames[0]).expect("an encode").expect("a frame");
+            if packed_rgb { stream.read_rgb(&rgb, None) } else { stream.read_bgrx(&bgrx, wu * 4, None) }.expect("a read");
+            stream.encode(false, &mut frames[0]).expect("an encode").expect("a frame");
             walk.sent(stream.coarsest(), start);
             assert_eq!((stream.coarsest(), walk.settle_at()), (QUALITY_MIN, Some(start + walk::SETTLE_IDLE)));
             let coarse = error(&decode_chain(&frames, wu, hu));
 
             walk.settle(start + walk::SETTLE_IDLE);
             let mut settle = Vec::new();
-            let key = if packed_rgb { stream.settle_rgb(&rgb, walk.ceiling(), false, &mut settle) } else { stream.settle_bgrx(&bgrx, wu * 4, walk.ceiling(), false, &mut settle) };
-            assert_eq!(key.expect("a settle"), Some(false), "the settle cost a keyframe");
+            // Nothing is read for it: the planes are the quiet desktop.
+            assert_eq!(stream.settle(walk.ceiling(), false, &mut settle).expect("a settle"), Some(false), "the settle cost a keyframe");
             frames.push(settle);
             walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
             assert_eq!((stream.quality(), stream.coarsest(), walk.settle_at()), (QUALITY_MIN, 90, None), "the settle left the dial or the picture where it was not");
@@ -2101,18 +2239,29 @@ mod tests {
 
             // The motion after it is at what the link bears, and where it is.
             let mut moved = Vec::new();
-            stream.encode_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }]), false, &mut moved).expect("an encode").expect("a frame");
+            stream.read_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }])).expect("a read");
+            stream.encode(false, &mut moved).expect("an encode").expect("a frame");
             walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
             assert_eq!((stream.coarsest(), walk.settle_at().is_some()), (QUALITY_MIN, true), "a coarse frame after the settle owes none");
 
+            // That frame coded its corner and left the rest as the settle
+            // had it, and a frame codes what was read for it and not what
+            // was read for the one before: a finer frame elsewhere leaves
+            // the corner coarse, and a finer one of the corner leaves nothing.
+            stream.set_quality(90).expect("a live encoder takes a new quality");
+            stream.read_rgb(&rgb, Some(&[Rect { x: 64, y: 64, width: 16, height: 16 }])).expect("a read");
+            stream.encode(false, &mut Vec::new()).expect("an encode").expect("a frame");
+            assert_eq!(stream.coarsest(), QUALITY_MIN, "a frame coded what was read for the one before it");
+            stream.read_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }])).expect("a read");
+            stream.encode(false, &mut Vec::new()).expect("an encode").expect("a frame");
+            assert_eq!(stream.coarsest(), 90, "a frame of one corner coded more than it");
+            stream.set_quality(QUALITY_MIN).expect("a live encoder takes a new quality");
+
             // A settle that is to be a keyframe is one, at the settle's quality.
             let mut key = Vec::new();
-            assert_eq!(stream.settle_rgb(&rgb, 90, true, &mut key).expect("a settle"), Some(true));
+            assert_eq!(stream.settle(90, true, &mut key).expect("a settle"), Some(true));
             assert_eq!((stream.quality(), stream.coarsest(), frame_header(&key).map(|header| header.keyframe)), (QUALITY_MIN, 90, Some(true)));
 
-            // A picture that is not the stream's moves nothing.
-            assert!(matches!(stream.settle_rgb(&[0; 9], 90, false, &mut Vec::new()), Err(Error::Crop(..))));
-            assert!(matches!(stream.settle_bgrx(&[0; 9], 4, 90, false, &mut Vec::new()), Err(Error::Buffer { .. })));
             assert_eq!(stream.quality(), QUALITY_MIN);
         }
     }
