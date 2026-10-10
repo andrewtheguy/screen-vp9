@@ -1705,7 +1705,7 @@ mod tests {
                     libvpx.set_speed(crate::Speed::Fastest).expect("the speed");
                 }
                 let mut rust = Encoder::new(w, h, dial, threads).expect("an encoder");
-                let mut result = [(0usize, f64::INFINITY, 0.0f64); 2];
+                let mut result = [(0usize, f64::INFINITY, 0.0f64, 0.0f64); 2];
                 for (c, r) in result.iter_mut().enumerate() {
                     let mut frame = Vec::new();
                     for _ in 0..passes {
@@ -1722,16 +1722,19 @@ mod tests {
                     let decoded = decoder.decode(&frame).expect("a frame libvpx decodes");
                     r.0 = frame.len();
                     r.2 = psnr(luma_mse(&picture, &decoded).max(1e-3));
+                    r.3 = psnr(mse(&picture, &decoded).max(1e-3));
                     // With `IVF` set to a directory, each keyframe is written
                     // there as `<capture>-q<dial>-<encoder>.ivf`.
                     if let Some(dir) = std::env::var_os("IVF") {
                         write_ivf(&std::path::Path::new(&dir).join(format!("{}-q{dial}-{}.ivf", capture_name(&path), ["libvpx", "rust"][c])), (w, h), std::slice::from_ref(&frame));
                     }
                 }
+                // The PSNR is luma's, the gate's; the second is over all
+                // three planes, for what the chroma does.
                 println!(
-                    "  q{dial:<3} | libvpx {:>8} B {:>6.2} ms {:>5.2} dB | rust {:>8} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time {:.3} dB {:+.2}",
+                    "  q{dial:<3} | libvpx {:>8} B {:>6.2} ms {:>5.2} dB | rust {:>8} B {:>6.2} ms {:>5.2} dB | bytes {:.3} time {:.3} dB {:+.2} all {:+.2}",
                     result[0].0, result[0].1, result[0].2, result[1].0, result[1].1, result[1].2,
-                    result[1].0 as f64 / result[0].0 as f64, result[1].1 / result[0].1, result[1].2 - result[0].2,
+                    result[1].0 as f64 / result[0].0 as f64, result[1].1 / result[0].1, result[1].2 - result[0].2, result[1].3 - result[0].3,
                 );
             }
         }

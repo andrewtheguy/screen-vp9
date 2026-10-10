@@ -569,14 +569,27 @@ The replan, from here. Each phase is measured on the captures of
       at dial 40, and are the first thing to retry if the rest of this
       phase leaves time; DC, V, H and TM on the 4×4s is between (0.83–1.07×,
       −0.59 to −0.82).
-   Left, in order: the chroma mode, coded as luma's where libvpx codes a
-   keyframe's as DC (`intra_uv_mode_mask`) and chooses it by cost
-   elsewhere, which in 4:4:4 is two planes of three; `RATE_WEIGHT`, which
-   trades coefficients for bits at a weight fitted to bytes alone and is
-   13× lighter than libvpx's `rdmult`, refit to the gate's PSNR; the
-   transform size of an 8×8 intra block, which libvpx leaves at 8×8; and
-   every size measured, not 1920×1080 alone. `Fastest` skips the trials
-   and the 4×4s.
+   5. **The chroma mode by cost, DC or the luma's** (`chroma_trial`), on
+      the 8×8s and 4×4s the luma trial runs on, each coded over both
+      chroma planes as the luma trial codes a mode; larger blocks' chroma
+      follows the luma. libvpx's realtime encoder codes a keyframe's
+      chroma as DC alone (`intra_uv_mode_mask`); this encoder coded it in
+      the luma's mode; and the keyframe harness, now printing the PSNR
+      over all three planes beside luma's, showed each end wrong
+      somewhere: DC alone took `walk`'s keyframe from 0.62× libvpx's bytes
+      to 0.97×, the luma's mode left `uncover`'s chroma a decibel under
+      (−1.85 dB over all planes at dial 90 against −0.89 in luma). By cost
+      the keyframes at 1920×1080 are 0.90–0.99× libvpx's bytes at each
+      dial (from 0.91–1.00×), `walk` 0.61×, `uncover` −0.89 dB over all
+      planes, the luma PSNR unchanged, for 3 to 8% of the keyframe's time
+      (0.80–1.00× libvpx's; `walk`'s small keyframe 1.09–1.11×). The
+      trial on every intra block too was the same bytes and picture at 5%
+      more time, so the gain is in the small blocks.
+   Left, in order: `RATE_WEIGHT`, which trades coefficients for bits at a
+   weight fitted to bytes alone and is 13× lighter than libvpx's
+   `rdmult`, refit to the gate's PSNR; the transform size of an 8×8 intra
+   block, which libvpx leaves at 8×8; and every size measured, not
+   1920×1080 alone. `Fastest` skips the trials and the 4×4s.
 9. **Whole frames: keyframes, scrolls, settles.** Measured by the other time
    line of the gate on `flood`, `browser`, `video`, `walk` and `uncover`,
    with the rest of the rows of
