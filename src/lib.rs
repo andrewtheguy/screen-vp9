@@ -46,6 +46,8 @@
 #[cfg(test)]
 mod decoder;
 mod encoder;
+#[cfg(test)]
+mod reference;
 pub mod walk;
 
 pub use encoder::Encoder;

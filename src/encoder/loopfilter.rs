@@ -517,6 +517,15 @@ fn filter_lines(t: &mut Taps, width: Width, l: Limits) {
 /// lanes.
 fn vertical_edge(px: &mut [u8], at: usize, stride: usize, width: Width, l: Limits) {
     let reach = width.reach();
+    // Lines that are one value across the edge are what the filter leaves
+    // them, and a desktop is mostly those: looked for before any is turned.
+    let even = |r: usize| {
+        let line = &px[at + r * stride - reach..][..2 * reach];
+        line.as_chunks::<8>().0.iter().all(|eight| u64::from_le_bytes(*eight) == u64::from(line[0]) * 0x0101_0101_0101_0101)
+    };
+    if (0..8).all(even) {
+        return;
+    }
     let mut t: Taps = [V::splat(0); 16];
     // The 8×8s from `reach` before the edge.
     for x in (8 - reach..8 + reach).step_by(8) {
@@ -532,6 +541,12 @@ fn vertical_edge(px: &mut [u8], at: usize, stride: usize, width: Width, l: Limit
 /// columns from it, its rows `stride` apart.
 fn horizontal_edge(px: &mut [u8], at: usize, stride: usize, width: Width, l: Limits) {
     let reach = width.reach();
+    // As `vertical_edge`: columns that are one value across the edge.
+    let row = |j: usize| u64::from_le_bytes(px[at + j * stride - 8 * stride..][..8].try_into().expect("eight pixels"));
+    let first = row(8 - reach);
+    if (9 - reach..8 + reach).all(|j| row(j) == first) {
+        return;
+    }
     let mut t: Taps = [V::splat(0); 16];
     for j in 8 - reach..8 + reach {
         t[j] = V::from_u64(u64::from_le_bytes(px[at + j * stride - 8 * stride..][..8].try_into().expect("eight pixels")));

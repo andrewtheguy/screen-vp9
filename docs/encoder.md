@@ -190,12 +190,14 @@ The rules the encoder keeps to, in the order the users' frames come:
   on a Mac; amd64 here.
 
 The measuring harness is three ignored tests in `src/encoder/mod.rs` that
-read the captures in `tmp/captures/` (or the directory `CAPTURES` names):
-`captures_measured` plays each capture as its session played it,
-`keyframes_measured` codes each capture's first picture at a row of dials,
-and `settles_measured` settles it from one dial to another. Each wants a
-release build. What they read and what they found is in
-[benchmarks.md](benchmarks.md).
+read the captures in `tmp/captures/` (or the directory `CAPTURES` names) and
+code each with this encoder and with libvpx's, set up in `src/reference.rs`
+as `screen-vp9` sets it up, turn about: `captures_against_libvpx` plays each
+capture as its session played it, `keyframes_against_libvpx` codes each
+capture's first picture at a row of dials, and `settles_against_libvpx`
+settles it from one dial to another. Each wants a release build and an idle
+machine; `ALONE` leaves libvpx out. `tools/tables.py` makes the tables of
+[benchmarks.md](benchmarks.md) from their logs.
 
 ## Reuse and licence
 

@@ -29,7 +29,7 @@ use super::mv::{self, Mv};
 use super::pool::Pool;
 use super::predict::{self, Edges, IntraMode};
 use super::probs::{skip_slot, tx_slot};
-use super::quantize::Quantizer;
+use super::quantize::{self, Quantizer};
 use super::tape::Tape;
 use super::transform::TxType;
 use super::tables::{
@@ -1840,6 +1840,11 @@ impl<'a> Tile<'a> {
                     residual[r * tx + c] = i32::from(srow[(px + c).min(src.width - 1)]) - i32::from(prow[c]);
                 }
             }
+        }
+        // A prediction that is the source leaves nothing to transform.
+        if quantize::nothing(&residual[..area]) {
+            self.coeffs[..area].fill(0);
+            return;
         }
         transform::forward(tx, tx_type, &residual[..area], &mut self.coeffs[..area]);
     }
