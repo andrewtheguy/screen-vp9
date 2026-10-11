@@ -86,8 +86,7 @@ desktop as drawn:
   rectangles first. Luma PSNR is read before bytes and time: a stream
   coarser at the same dial is not at the same dial.
 - **The machine the tables are made on is the six-core AVX2 one**, an
-  i5-8500T, which is x86-64-v3 and has no AVX-512: a floor above v3 has
-  nothing here to be measured on, or to run its tests. The Mac
+  i5-8500T, which is x86-64-v3, the floor. The Mac
   runs the tests, for the NEON kernels; its own tables, in
   [benchmarks-m2-max.md](benchmarks-m2-max.md), are each line's median of
   three runs (`tools/median_of_runs.py`), its times moving by up to three
@@ -242,15 +241,13 @@ read from the two before it, and the bool coder, each bool's range from
 the last. They are chains, and were made shorter by tile rows and by tables, not
 by a wider register.
 
-**Not raised further, to x86-64-v4.** AVX-512 would give the 16×16 and
-32×32 transforms sixteen `i32` or thirty-two `i16` a register, masks for
-the quantizer's dead zone and `vpcompressd` for nothing the token chain
-can use. It is not measured, because the machine the tables are made on
-cannot run it, and a floor is raised on a measurement. It also leaves out every Intel desktop
-processor from Alder Lake on and every AMD one before Zen 4. It is taken
-up when a host that has it is one this is deployed on. Between the two
-levels there is no feature a codec reads: the `skylake` build above, which
-adds the machine's own tuning, ADX, AES and CLMUL, measures the same.
+**The floor stays at x86-64-v3, and AVX-512 is dropped** (2026-10-11):
+x86-64-v4 is not an open item. It leaves out every Intel desktop and
+laptop processor from Alder Lake on and every AMD one before Zen 4, and
+the machine the tables are made on cannot run it, so nothing written for
+it could be measured or tested here. Between the two levels there is no
+feature a codec reads: the `skylake` build above, which adds the
+machine's own tuning, ADX, AES and CLMUL, measures the same.
 
 **arm64's floor is where it was**, NEON. Its ceiling is gone the same way:
 the dot product (`sdot`, `udot`, Armv8.2's, in every Apple M) is what the moments and the search's
@@ -391,13 +388,10 @@ Then, as before:
     it can be one; its lines are not decided, and a time on this machine
     moves by a tenth from run to run.
 12. **`Speed::Fastest` was not measured in this replan.**
-13. **x86-64-v4**, when a host with AVX-512 is one of the users': the
-    measurement of the floor above, on it, with the 32×32 transforms
-    written for it first.
 
 Of a very busy picture alone, and last:
 
-14. **A settle of a busy picture takes 1.1 to 1.8 of libvpx's time** from
+13. **A settle of a busy picture takes 1.1 to 1.8 of libvpx's time** from
    65 and from 80, more from 2048 wide than under it. libvpx's settle
    time read at two levels because the measurement made a fresh encoder a
    pass and its second frame paid page faults, or did not; on encoders
@@ -407,7 +401,7 @@ Of a very busy picture alone, and last:
    0.2 dB. Untried: the smaller sizes only where the largest leaves more
    than some error, and what a settle from 80 or 89 needs of them at all.
    The forward half of that time is taken above, with the picture kept.
-15. **The frames of `video` and `walk`**, 0.64 to 0.83 of libvpx's time, the
+14. **The frames of `video` and `walk`**, 0.64 to 0.83 of libvpx's time, the
     nearest the line of the whole captures. Profiled: the token estimate,
     the block walk, the intra mode and the transforms 5 to 11% each, and
     the search 9 to 12%, now gone over: its projections, its hashing and
@@ -416,7 +410,7 @@ Of a very busy picture alone, and last:
     an 8×8 row taken once and not twice, the projections' sums in sixteen
     bits, a table of its own in place of the standard one; a hundredth of
     a frame each, and item 3 takes the first two with it.
-16. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
+15. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
     four (27 ms of wall time for 86 of processor time at 1920×1080). No
     thread was found waiting; what is left is memory, and not looked into.
 
