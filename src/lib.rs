@@ -1,14 +1,20 @@
 //! VP9 for a desktop picture, as wlshare and the remotex gateway both code it.
 //!
-//! One libvpx encoder configuration, written once: a quantizer pinned to a 1–100
-//! quality dial rather than a bitrate, screen-content tuning, no lag, no dropped
-//! frames, no keyframe that was not asked for, and the colour matrix and range
-//! declared in the bitstream so a decoder does not guess. In front of it a
-//! [`Picture`] holds the planes libvpx reads — 8-bit 4:4:4, VP9 profile 1
-//! ([`PROFILE`]), BT.601 at studio swing — converted from the packed RGB the
-//! gateway's mirror holds or the `B, G, R, X` a framebuffer does. Behind it a
-//! [`Decoder`] gives the planes back, for every test here and in a user, which
-//! reads what the encoder made with the other half of the same archive.
+//! One [`Encoder`], written for a desktop and nothing else: 8-bit 4:4:4, VP9
+//! profile 1 ([`PROFILE`]), a quantizer pinned to a 1–100 quality dial rather
+//! than a bitrate, no lag, no dropped frames, no keyframe that was not asked
+//! for, and the colour matrix and range declared in the bitstream so a decoder
+//! does not guess. It is coded by one of two coders, which its maker names
+//! ([`Coder`]): libvpx set up that way, or the encoder written here in Rust,
+//! which is EXPERIMENTAL and built only with the `native` feature, since its
+//! kernels need NEON or AVX2 and a build without it is for any machine
+//! libvpx is. The stream is the same kind either way, and nothing
+//! else a user calls differs. In front of it a [`Picture`] holds the planes it
+//! reads — BT.601 at studio swing, a sample per pixel in each — converted from
+//! the packed RGB the gateway's mirror holds or the `B, G, R, X` a framebuffer
+//! does. Behind it a [`Decoder`], libvpx's, gives the planes back, for every
+//! test here and in a user: the independent decoder every frame the Rust coder
+//! makes in a test is held to.
 //!
 //! The stream's shape is chosen for whoever decodes it. Tile columns follow the
 //! picture's width, one under 1440, two from 1440, four from 2048 and eight
@@ -41,31 +47,24 @@
 //! walk for a stream wlshare codes and one the gateway does. What is not here is
 //! the rest of *when*: which picture to encode, where the link's lag is read
 //! from, how a frame is framed on a wire. Each user keeps its own.
-//!
-//! Two things about libvpx's shape are worth knowing before reading:
-//!
-//! - **It returns error codes rather than asserting.** Every fallible call that
-//!   returns a status code goes through `check`, which turns a bad code into an
-//!   [`enum@Error`] carrying libvpx's own explanation, so a failure ends one
-//!   stream instead of the process.
-//! - **Its C API is entirely `unsafe` and largely out-parameters.** The
-//!   invariants are stated at each call. Two are easy to get wrong and neither
-//!   announces itself: the image built by `vpx_img_wrap` borrows the caller's
-//!   planes and must never reach `vpx_img_free`, and `vpx_codec_control_` is
-//!   variadic, so passing the wrong argument type for a control id compiles and
-//!   corrupts the stack.
 
+mod libvpx;
+#[cfg(feature = "native")]
+mod native;
 pub mod walk;
 
-use std::os::raw::{c_int, c_uint, c_ulong};
+pub use libvpx::{Decoded, Decoder};
 
 use thiserror::Error;
-use vpx_sys as vpx;
 
 /// The coarsest end of the quality dial.
 pub const QUALITY_MIN: u8 = 1;
 /// The finest end of the quality dial.
 pub const QUALITY_MAX: u8 = 100;
+
+/// The VP9 profile of every stream here: eight-bit 4:4:4, a colour sample per
+/// pixel, which is what [`FrameHeader::profile`] says of one of its frames.
+pub const PROFILE: u8 = 1;
 
 /// The finest quantizer the dial reaches. VP9's range is 0–63, coarsest last;
 /// below about 8 a VP9 desktop is visually lossless and costs several times the
@@ -75,34 +74,42 @@ const Q_FINEST: u32 = 8;
 /// VP9's coarsest quantizer.
 const Q_COARSEST: u32 = 63;
 
-/// How much of libvpx's search an encoder spends on a frame: its speed setting,
-/// 0–9, higher being faster and worse. An encoder starts at [`Speed::Usual`] and
-/// is moved on the fly ([`Encoder::set_speed`]).
+/// Which encoder codes a stream. Both make VP9 of the same kind from the same
+/// calls, so a user that holds one holds the other by naming it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Speed {
-    /// Speed 7: inside the 5–8 band libvpx's own live-encoding guidance names,
-    /// and where the one other real-time desktop encoder to consult sits.
-    /// Measured rather than inherited. For a picture that is the stream.
+pub enum Coder {
+    /// libvpx, set up for a desktop.
+    #[default]
+    Libvpx,
+    /// The encoder written here in Rust. EXPERIMENTAL, and there only in a
+    /// build with the `native` feature, which needs NEON or AVX2 of the
+    /// machine it is built for.
+    #[cfg(feature = "native")]
+    Native,
+}
+
+/// How much of its search a coder spends on a frame. Each starts at
+/// [`Speed::Usual`], which is what every stream of a user's is coded at: the
+/// speed is moved only by the tests and the measurements here, on a coder
+/// itself. Not a leftover: the Rust coder's `Fastest` is work in progress,
+/// kept for an optimization it may yet become, and not public until it is
+/// one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Speed {
+    /// Every decision the Rust coder has: an intra 8×8 coded each way where
+    /// that pays, and text as four 4×4s. libvpx's speed 7. For a picture that
+    /// is the stream.
     #[default]
     Usual,
-    /// Speed 9, the fastest libvpx's real-time VP9 has: more bytes and a rougher
-    /// picture for the least time in the encoder. For a picture that stands in
-    /// for another one for a while, where the time is worth more than either.
+    /// The decisions by their proxies alone, and libvpx's speed 9: more bytes
+    /// and a rougher picture for the least time in the encoder. Nothing names
+    /// it in a build that is libvpx alone and no test.
+    #[cfg_attr(not(any(test, feature = "native")), expect(dead_code))]
     Fastest,
 }
 
-impl Speed {
-    /// libvpx's `cpu_used` for this speed.
-    fn cpu_used(self) -> c_int {
-        match self {
-            Self::Usual => 7,
-            Self::Fastest => 9,
-        }
-    }
-}
-
 /// The widths from which a picture is coded in two tile columns, in four and
-/// in eight, so libvpx's `tile_columns` is the log2 of that: one column under
+/// in eight, so the frame header's tile columns are the log2 of that: one column under
 /// 1440 pixels, two from 1440 through 1080p, four from 2048 and at 4K. The
 /// width rather than the thread count decides it because a tile is a cost as
 /// well as a split — the columns are coded apart, which costs bytes, and at
@@ -117,18 +124,15 @@ impl Speed {
 /// 2880 were measured on the gateway's own Mac captures at 2048×1536 and
 /// 2560×1600, at quality 90 on four threads, on the 300 quietest frames of each
 /// and the 300 busiest: four columns cost 0.1% more bytes than two on the quiet
-/// frames and 1.4% and 1.0% on the busy, under 0.1 dB, this encoder coded them
-/// 9% to 14% faster, and libvpx's four decoding threads, with a column each,
+/// frames and 1.4% and 1.0% on the busy, under 0.1 dB, libvpx's encoder coded
+/// them 9% to 14% faster, and libvpx's four decoding threads, with a column each,
 /// took 30.4 ms a busy frame for 51.9 and 30.9 for 54.3. Not from 1920: the
 /// busy frames of a 1920×1080 Windows capture cost 15% more bytes in four.
 /// Never more than the
 /// threads can fill, since a tile no thread is free for is bytes for nothing.
 const TILE_WIDTHS: [u16; 3] = [1440, 2048, 5760];
 
-/// The side of a block of libvpx's active map, in pixels.
-const ACTIVE_BLOCK: usize = 16;
-
-/// The most threads libvpx takes for one encoder.
+/// The most threads an encoder takes.
 const MAX_THREADS: usize = 64;
 
 /// The 1–100 quality dial as a VP9 quantizer: [`QUALITY_MIN`] is the coarsest
@@ -140,14 +144,15 @@ fn quality_to_q(quality: u8) -> u32 {
     Q_COARSEST - (quality - 1) * (Q_COARSEST - Q_FINEST) / 99
 }
 
-/// libvpx's `tile_columns` for a `width`-wide picture coded by `threads`.
+/// The log2 of the tile columns a `width`-wide picture is coded in by `threads`.
 fn tile_columns_log2(width: u16, threads: usize) -> u32 {
     (TILE_WIDTHS.iter().filter(|&&from| width >= from).count() as u32).min(threads.max(1).ilog2())
 }
 
-/// Whether libvpx is left to loop filter a stream's frames: all but those in
-/// four tile columns or more. libvpx at these speeds takes the filter's level
-/// from the quantizer, 7 to 9 at the fine end of the dial, a light filter that
+/// Whether a stream's frames are loop filtered: all but those in four tile
+/// columns or more, `tile_cols_log2` being the log2 of the columns the frames
+/// are in, the ones the format forces on a very wide picture among them. The filter's level is taken from the quantizer, as libvpx's
+/// encoder takes it, 7 to 9 at the fine end of the dial, a light filter that
 /// still visits every block edge of every frame, and it is a quarter to two
 /// fifths of what vp9-wasm spends on a frame. Measured on vp9-wasm 0.0.5 with
 /// what the remotex gateway wrote of one four-pane desktop at eight sizes,
@@ -168,17 +173,9 @@ fn tile_columns_log2(width: u16, threads: usize) -> u32 {
 /// columns have left it as what a
 /// decoder's threads wait on, which is also where a frame is slowest to decode,
 /// and stays where it would be bytes and picture given for no time.
-fn loop_filtered(width: u16, threads: usize) -> bool {
-    tile_columns_log2(width, threads) < 2
+fn loop_filtered(tile_cols_log2: u32) -> bool {
+    tile_cols_log2 < 2
 }
-
-/// The VP9 profile of every stream here: eight-bit 4:4:4, a colour sample per
-/// pixel. On a desktop the chroma, not the quantizer, is where the visible
-/// loss would be: a one-pixel coloured glyph stem on a dark terminal would
-/// share a 4:2:0 colour sample with three pixels of background and come back
-/// at a fraction of its saturation, at any quality. No browser's hardware VP9
-/// path takes profile 1, so a browser decodes it in software.
-pub const PROFILE: u8 = 1;
 
 /// Why a picture could not be encoded or a frame decoded.
 #[derive(Debug, Error)]
@@ -194,7 +191,7 @@ pub enum Error {
     NoFrame,
     #[error("a {0}x{1} picture has no pixels")]
     Empty(u16, u16),
-    #[error("an encoder for {0} threads: libvpx takes 1 to {MAX_THREADS}")]
+    #[error("an encoder for {0} threads: it takes 1 to {MAX_THREADS}")]
     Threads(usize),
     #[error("a crop of {0} bytes is not a {1}x{2} picture")]
     Crop(usize, usize, usize),
@@ -208,17 +205,6 @@ pub enum Error {
     NoPicture,
     #[error("the frame is not 8-bit 4:4:4 (format {0}, {1} bits)")]
     Format(u32, u32),
-}
-
-/// Turn a libvpx return code into an [`Error`] naming the call.
-fn check(err: vpx::vpx_codec_err_t, call: &'static str) -> Result<(), Error> {
-    if err == vpx::vpx_codec_err_t_VPX_CODEC_OK {
-        return Ok(());
-    }
-    // SAFETY: `vpx_codec_err_to_string` takes a code, any code, and returns a
-    // pointer to a static string compiled into the archive.
-    let detail = unsafe { std::ffi::CStr::from_ptr(vpx::vpx_codec_err_to_string(err)) };
-    Err(Error::Codec { call, detail: detail.to_string_lossy().into_owned() })
 }
 
 /// Whether `bytes` hold a `width`×`height` picture of 4-byte pixels whose rows
@@ -242,15 +228,22 @@ pub struct Rect {
     pub height: u16,
 }
 
-/// One picture as the planes libvpx reads: 8-bit Y, U and V, a sample of each
-/// per pixel, BT.601 at studio swing. Reused across frames, so a 1080p
+/// One picture as the planes the encoder reads: 8-bit Y, U and V, BT.601 at
+/// studio swing, a sample per pixel in each. Reused across frames, so a 1080p
 /// conversion is not a 6 MB allocation apiece.
 pub struct Picture {
     size: (u16, u16),
-    /// Each plane tight, a row of the picture's width to a row of it.
+    /// Each plane with a row of nothing after its last: the conversion writes a
+    /// row as a whole stride from where it starts, and a rectangle's rows start
+    /// at its left edge, so its last row's stride ends up to a row past the
+    /// plane.
     y: Vec<u8>,
     u: Vec<u8>,
     v: Vec<u8>,
+    /// A tight copy of the last row of a packed picture where it is not
+    /// followed by a whole stride, made only for that: the conversion reads a
+    /// row as a whole stride too.
+    tight: Vec<u8>,
     /// How many threads a conversion is split across.
     threads: usize,
 }
@@ -266,14 +259,14 @@ const CONVERT_THREADS: usize = 4;
 
 impl Picture {
     /// A buffer for a `width`×`height` picture, converted on up to `threads`
-    /// threads, which are the encoder's: it is idle while its picture is read.
-    /// An odd side is carried as it is.
+    /// threads, which are the encoder's: it is idle while its picture is
+    /// read.
     pub fn new(width: u16, height: u16, threads: usize) -> Result<Self, Error> {
         if width == 0 || height == 0 {
             return Err(Error::Empty(width, height));
         }
-        let pixels = usize::from(width) * usize::from(height);
-        Ok(Self { size: (width, height), y: vec![0; pixels], u: vec![0; pixels], v: vec![0; pixels], threads })
+        let (w, h) = (usize::from(width), usize::from(height));
+        Ok(Self { size: (width, height), y: vec![0; w * (h + 1)], u: vec![0; w * (h + 1)], v: vec![0; w * (h + 1)], tight: Vec::new(), threads })
     }
 
     /// The picture's size.
@@ -281,14 +274,15 @@ impl Picture {
         self.size
     }
 
-    /// Y, U and V, each tight at [`Self::stride`].
+    /// Y, U and V, each tight at the picture's width.
     pub fn planes(&self) -> [&[u8]; 3] {
-        [&self.y, &self.u, &self.v]
+        let len = usize::from(self.size.0) * usize::from(self.size.1);
+        [&self.y[..len], &self.u[..len], &self.v[..len]]
     }
 
-    /// The width of a row of every plane: the picture's.
-    pub fn stride(&self) -> usize {
-        usize::from(self.size.0)
+    /// The width of a row of each plane.
+    pub fn strides(&self) -> [usize; 3] {
+        [usize::from(self.size.0); 3]
     }
 
     /// The whole picture as a rectangle.
@@ -342,8 +336,7 @@ impl Picture {
     /// [`Self::read_bgrx`] takes it, and leave every other pixel as the last
     /// conversion made it: what a picture that changed in one place costs is
     /// that place and not the screen, nor the rows across it. What of `rect`
-    /// lies past the picture's edge is not part of it, and no pixel outside
-    /// `rect` is read.
+    /// lies past the picture's edge is not part of it.
     pub fn read_bgrx_rect(&mut self, pixels: &[u8], stride: usize, rect: Rect) -> Result<(), Error> {
         self.holds_bgrx(pixels, stride)?;
         self.convert(pixels, stride, rect, Packed::Bgrx);
@@ -359,27 +352,29 @@ impl Picture {
         if left >= right || top >= bottom {
             return;
         }
-        // The crate takes a row as a whole stride from its first pixel, which
-        // here is the rectangle's left edge, in the pixels and in the planes
-        // alike, and leaves out a last row short of one. The rows above the
-        // rectangle's last have the rows under them to make up their stride;
-        // the last may be the picture's, in a buffer and planes that end with
-        // it, so it is converted alone at strides of its own width, read and
-        // written where it is.
+        // The crate reads a row as a whole stride from its first pixel, which
+        // here is the rectangle's left edge. The picture's last row has only
+        // what is left of its own after that, and in a buffer that ends with
+        // the picture not always that much, so the row that ends the
+        // rectangle is copied tight first where the buffer does not go on a
+        // stride past it. The rows above have those under them to read into.
         let bytes = packed.bytes();
         let at = |row: usize| row * stride + left * bytes;
-        let last = bottom - 1;
-        self.convert_rows(&pixels[at(top)..at(last)], stride, left..right, top..last, packed);
-        let (width, row) = (right - left, (right - left) * bytes);
-        let plane = last * w + left..last * w + right;
-        let planes = [&mut self.y[plane.clone()], &mut self.u[plane.clone()], &mut self.v[plane]];
-        convert_band(&pixels[at(last)..][..row], row, packed, planes, width, (width, 1));
+        let borrowed = if at(bottom) <= pixels.len() { bottom } else { bottom - 1 };
+        self.convert_rows(&pixels[at(top)..at(borrowed)], stride, left..right, top..borrowed, packed);
+        if borrowed < bottom {
+            let row = (right - left) * bytes;
+            let mut tight = std::mem::take(&mut self.tight);
+            tight.clear();
+            tight.extend_from_slice(&pixels[at(borrowed)..][..row]);
+            self.convert_rows(&tight, row, left..right, borrowed..bottom, packed);
+            self.tight = tight;
+        }
     }
 
     /// Convert `cols` of `rows` from `pixels`, which begin at the first of
     /// them and give every row a whole `stride`, on as many threads as the
-    /// pixels are worth. The planes give every row a whole stride too: `rows`
-    /// end before the picture's last.
+    /// pixels are worth.
     fn convert_rows(&mut self, pixels: &[u8], stride: usize, cols: std::ops::Range<usize>, rows: std::ops::Range<usize>, packed: Packed) {
         if rows.is_empty() {
             return;
@@ -454,278 +449,78 @@ impl Packed {
     }
 }
 
-/// One VP9 stream at one picture size: a libvpx encoder whose quantizer is
-/// pinned to the dial. A picture of another size needs
-/// another encoder, whose first frame is a keyframe by construction. Within one
-/// encoder, every inter frame is expressed as a change from earlier frames,
-/// which is what makes an inter-frame stream mean anything.
-pub struct Encoder {
-    /// Boxed so that its address never changes: libvpx is handed a pointer to
-    /// it at init and every call after.
-    ctx: Box<vpx::vpx_codec_ctx_t>,
-    /// The configuration libvpx is running on, kept so [`Self::follow`]
-    /// can hand back the same struct with two fields changed rather than
-    /// rebuild one and risk disagreeing with the encoder about a field it never
-    /// meant to touch.
-    cfg: vpx::vpx_codec_enc_cfg_t,
-    /// An image that *borrows* a picture's planes. Built once, its pointers
-    /// replaced on every frame. Never freed: `vpx_img_wrap` allocated nothing.
-    img: vpx::vpx_image_t,
-    size: (u16, u16),
-    /// The dial the next frame is coded at, which [`Self::set_quality`] moves.
-    quality: u8,
-    /// The speed the next frame is searched at, which [`Self::set_speed`] moves.
-    speed: Speed,
-    /// The dial and the speed libvpx is running at, which a frame brings to
-    /// the two above before it is coded ([`Self::follow`]).
-    running: (u8, Speed),
-    /// Where timestamps are measured from. Real elapsed time rather than a
-    /// frame counter, so a pts is a millisecond on the timebase set below: the
-    /// desktop decides when a frame happens, and a counter would tell the
-    /// encoder they all arrived on schedule.
-    started: std::time::Instant,
-    /// The last timestamp given, which the next must pass.
-    pts: i64,
-    /// libvpx's active map, a byte per 16×16 block in rows: which blocks the
-    /// frame being encoded may code, the others being skipped as they stand.
-    /// Kept so a frame does not allocate one.
-    active: Vec<u8>,
-    /// The encoder is holding a map, which it keeps until told otherwise.
-    mapped: bool,
-    /// The dial each of the map's blocks was last coded at.
-    coded_at: Vec<u8>,
-    /// A frame has come out, so the next is not the stream's first.
-    begun: bool,
+/// One VP9 stream at one picture size, coded by the [`Coder`] it was made
+/// with. A picture of another size, or another coder, needs another encoder,
+/// whose first frame is a keyframe by construction. Within one encoder, every
+/// inter frame is expressed as a change from earlier frames, which is what
+/// makes an inter-frame stream mean anything.
+pub struct Encoder(Coded);
+
+/// An [`Encoder`]'s coder.
+enum Coded {
+    /// Boxed, each of them: libvpx's holds its configuration and image in
+    /// itself and the Rust coder its tables, hundreds of bytes and thousands,
+    /// and a user moves an encoder to a worker and back for every frame.
+    Libvpx(Box<libvpx::Encoder>),
+    #[cfg(feature = "native")]
+    Native(Box<native::Encoder>),
 }
 
 impl Encoder {
-    /// An encoder for a `width`×`height` picture, starting at
-    /// `quality` (1–100, clamped), coded by `threads` threads. The thread count
-    /// is the caller's: how many cores a machine can spare is a question about
-    /// what else it runs. It also bounds the tile columns, and so decides with
-    /// the width whether the stream is loop filtered: from 2048 wide on four
-    /// threads or more it is not.
-    pub fn new(width: u16, height: u16, quality: u8, threads: usize) -> Result<Self, Error> {
-        if width == 0 || height == 0 {
-            return Err(Error::Empty(width, height));
+    /// An encoder for a `width`×`height` picture, starting at `quality`
+    /// (1–100, clamped), coded by `coder` on `threads` threads. The thread
+    /// count is the caller's: how many cores a machine can spare is a question
+    /// about what else it runs. It also bounds the tile columns, and so
+    /// decides with the width whether the stream is loop filtered: from 2048
+    /// wide on four threads or more it is not.
+    pub fn new(width: u16, height: u16, quality: u8, threads: usize, coder: Coder) -> Result<Self, Error> {
+        Ok(Self(match coder {
+            Coder::Libvpx => Coded::Libvpx(Box::new(libvpx::Encoder::new(width, height, quality, threads)?)),
+            #[cfg(feature = "native")]
+            Coder::Native => Coded::Native(Box::new(native::Encoder::new(width, height, quality, threads)?)),
+        }))
+    }
+
+    /// The coder this encoder was made with.
+    pub fn coder(&self) -> Coder {
+        match &self.0 {
+            Coded::Libvpx(_) => Coder::Libvpx,
+            #[cfg(feature = "native")]
+            Coded::Native(_) => Coder::Native,
         }
-        if !(1..=MAX_THREADS).contains(&threads) {
-            return Err(Error::Threads(threads));
-        }
-        let quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
-        let q = quality_to_q(quality);
-
-        // SAFETY: takes nothing and returns a pointer to a static interface
-        // descriptor compiled into the archive.
-        let iface = unsafe { vpx::vpx_codec_vp9_cx() };
-        if iface.is_null() {
-            return Err(Error::Codec { call: "vp9_cx", detail: "this libvpx has no VP9 encoder".to_owned() });
-        }
-        // SAFETY: zeroed before libvpx is given a pointer to it, and
-        // `config_default` writes through that pointer rather than reading it. A
-        // failure is returned before anything reads a half-initialised config.
-        let mut cfg: vpx::vpx_codec_enc_cfg_t = unsafe { std::mem::zeroed() };
-        check(unsafe { vpx::vpx_codec_enc_config_default(iface, &mut cfg, 0) }, "config_default")?;
-
-        cfg.g_w = u32::from(width);
-        cfg.g_h = u32::from(height);
-        // 4:4:4 at eight bits, and nothing else. It
-        // has to match the image format wrapped below, and `codec_string` tells
-        // a decoder the same number.
-        cfg.g_profile = u32::from(PROFILE);
-        cfg.g_threads = threads as u32;
-        // Milliseconds, so a pts is elapsed wall-clock rather than a frame index.
-        cfg.g_timebase.num = 1;
-        cfg.g_timebase.den = 1000;
-        // **0, not libvpx's default of 25.** The default holds 25 frames inside
-        // the encoder before emitting anything, which on a desktop is most of a
-        // second of latency. RustDesk works around the default by flushing after
-        // every frame; zero is the same thing without the second code path, and
-        // it is what makes one encode mean one packet.
-        cfg.g_lag_in_frames = 0;
-        cfg.g_pass = vpx::vpx_enc_pass_VPX_RC_ONE_PASS;
-        // No error resilience. Nothing here is ever lost in transit — the link
-        // is TCP — so it would cost compression to protect against loss that
-        // cannot happen. The same argument removes the periodic keyframe below.
-        cfg.g_error_resilient = 0;
-        // No fixed keyframe interval; every keyframe is one somebody asked for —
-        // a repaint, a resize, a client coming back.
-        cfg.kf_mode = vpx::vpx_kf_mode_VPX_KF_DISABLED;
-        // Disabling them is not enough: libvpx 1.16's one-pass rate control still
-        // counts down `kf_max_dist`, 128 by default, and codes a keyframe when it
-        // runs out. Measured, at frames 128 and 256 of a changing picture. Out of
-        // reach instead.
-        cfg.kf_max_dist = i32::MAX as u32;
-        // Constant quality with the quantizer pinned top and bottom. `VPX_Q` plus
-        // the `CQ_LEVEL` control below is what decides it; min == max is what
-        // makes that a guarantee rather than a preference, and it is why nothing
-        // here sets a bitrate — the quantizer *is* the dial and the bytes land
-        // wherever the picture puts them.
-        cfg.rc_end_usage = vpx::vpx_rc_mode_VPX_Q;
-        cfg.rc_min_quantizer = q;
-        cfg.rc_max_quantizer = q;
-        // Zero, explicitly, and load-bearing rather than tidy: both users record
-        // source pixels as delivered the moment they are captured, so a frame
-        // libvpx decided to drop would be permanently wrong pixels that nothing
-        // re-sends. It is also libvpx's default, and a default is a thing that
-        // can change.
-        cfg.rc_dropframe_thresh = 0;
-        // Likewise: an encoder that resized itself would change the picture size
-        // mid-stream, while a stream has one picture size for its whole life.
-        cfg.rc_resize_allowed = 0;
-
-        // SAFETY: `ctx` is zeroed and written through by `enc_init_ver`, `cfg` is
-        // the struct libvpx just filled in and this function then edited by
-        // name, and the ABI version is the one the linked archive's headers
-        // declared — which is what makes a Rust-side layout disagreement a named
-        // error here rather than memory corruption later.
-        let mut ctx: Box<vpx::vpx_codec_ctx_t> = Box::new(unsafe { std::mem::zeroed() });
-        check(
-            unsafe { vpx::vpx_codec_enc_init_ver(&mut *ctx, iface, &cfg, 0, vpx::VPX_ENCODER_ABI_VERSION as c_int) },
-            "enc_init_ver",
-        )?;
-
-        // Everything from here on has a context to destroy, so the error paths
-        // go through a constructed `Self` rather than returning: `Drop` is what
-        // releases the encoder, and an early `?` before the struct would leak it.
-        let mut encoder = Self {
-            ctx,
-            cfg,
-            // SAFETY: zeroed, then filled in by `vpx_img_wrap` below.
-            img: unsafe { std::mem::zeroed() },
-            size: (width, height),
-            quality,
-            speed: Speed::default(),
-            running: (quality, Speed::default()),
-            started: std::time::Instant::now(),
-            pts: -1,
-            active: vec![0; usize::from(width).div_ceil(ACTIVE_BLOCK) * usize::from(height).div_ceil(ACTIVE_BLOCK)],
-            mapped: false,
-            coded_at: vec![quality; usize::from(width).div_ceil(ACTIVE_BLOCK) * usize::from(height).div_ceil(ACTIVE_BLOCK)],
-            begun: false,
-        };
-
-        // SAFETY: the context is live and each control's argument really is an
-        // `int` — the one thing `vpx_codec_control_`'s variadic signature cannot
-        // check.
-        unsafe {
-            // In `VPX_Q` mode this is the value that actually decides the
-            // quantizer. A *control*, not a config field, which is the easiest
-            // thing about libvpx's rate control to get wrong: setting only
-            // `rc_min/max_quantizer` leaves `cq_level` at its default and the
-            // dial half-connected.
-            encoder.control(vpx::vp8e_enc_control_id_VP8E_SET_CQ_LEVEL, q as c_int, "cq_level")?;
-            // What this encoder is actually looking at. Screen content is mostly
-            // flat colour, hard edges and text, none of which a camera preset
-            // expects.
-            encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_TUNE_CONTENT, vpx::vp9e_tune_content_VP9E_CONTENT_SCREEN as c_int, "tune_content")?;
-            encoder.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, encoder.speed.cpu_used(), "cpuused")?;
-            // Say in the bitstream what the conversion did: BT.601 matrix,
-            // studio swing. libvpx writes *unknown* unless told, and a decoder
-            // given unknown guesses — Chromium picks BT.709 for anything HD — so
-            // without these two controls a 1080p desktop is converted with one
-            // matrix and displayed with another, and every saturated colour
-            // lands a little off. The decoder reads this off the keyframe
-            // header; nothing on the wire has to carry it.
-            encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_COLOR_SPACE, vpx::vpx_color_space_VPX_CS_BT_601 as c_int, "color_space")?;
-            encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_COLOR_RANGE, vpx::vpx_color_range_VPX_CR_STUDIO_RANGE as c_int, "color_range")?;
-            // Off: adaptive quantization would move the quantizer off the dial
-            // that was just pinned.
-            encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_AQ_MODE, 0, "aq_mode")?;
-            // Tile columns for the threads to have separate work — as many as
-            // the width is wide enough for and the threads can fill. Set whatever
-            // the thread count: libvpx's default is 6, every column the width
-            // allows, which one thread would code one after another for the
-            // bytes and nothing else.
-            encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_TILE_COLUMNS, tile_columns_log2(width, threads) as c_int, "tile_columns")?;
-            // libvpx's 2 is no loop filter on any frame, 0 its own choice of level
-            // on every one.
-            encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_DISABLE_LOOPFILTER, if loop_filtered(width, threads) { 0 } else { 2 }, "disable_loopfilter")?;
-            if threads > 1 {
-                // What turns `g_threads` into actual parallelism inside a tile:
-                // row-based multithreading. Inert at one thread.
-                encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_ROW_MT, 1, "row_mt")?;
-            }
-            // An image that *wraps* a picture's planes rather than owning any. A
-            // non-null pointer that is never dereferenced is libvpx's own idiom
-            // for "compute the layout, allocate nothing" — ffmpeg passes a
-            // literal `1` — and it is why `vpx_img_free` must never be called on
-            // this image.
-            let wrapped = vpx::vpx_img_wrap(&mut encoder.img, vpx::vpx_img_fmt_VPX_IMG_FMT_I444, cfg.g_w, cfg.g_h, 1, std::ptr::dangling_mut::<u8>());
-            if wrapped.is_null() {
-                return Err(Error::Codec { call: "img_wrap", detail: format!("refused a {width}x{height} picture") });
-            }
-        }
-        Ok(encoder)
     }
 
     /// The picture size this encoder codes.
     pub fn size(&self) -> (u16, u16) {
-        self.size
+        match &self.0 {
+            Coded::Libvpx(encoder) => encoder.size(),
+            #[cfg(feature = "native")]
+            Coded::Native(encoder) => encoder.size(),
+        }
     }
 
     /// The dial this encoder is coding at.
     pub fn quality(&self) -> u8 {
-        self.quality
+        match &self.0 {
+            Coded::Libvpx(encoder) => encoder.quality(),
+            #[cfg(feature = "native")]
+            Coded::Native(encoder) => encoder.quality(),
+        }
     }
 
-    /// Move the dial, without a keyframe: the next frame is
-    /// coded at the new quantizer against the frames before it. This is how a
-    /// link that is behind gives quality up, and "without a keyframe" is the
-    /// whole reason it is written this way rather than by rebuilding the encoder,
-    /// which would force a keyframe — the most bytes a frame can be — at the
-    /// exact moment the link has run out of room.
-    ///
-    /// Nothing is asked of libvpx here: the frame that is coded at the dial
-    /// takes libvpx to it first, and a libvpx that refuses is that frame's
-    /// error ([`Self::encode`]).
+    /// Move the dial, without a keyframe: the next frame is coded at the new
+    /// quantizer against the frames before it. This is how a link that is
+    /// behind gives quality up, and "without a keyframe" is the whole reason
+    /// it is written this way rather than by rebuilding the encoder, which
+    /// would force a keyframe — the most bytes a frame can be — at the exact
+    /// moment the link has run out of room. It cannot fail: a libvpx that
+    /// refuses the dial is the error of the frame that was to be coded at it.
     pub fn set_quality(&mut self, quality: u8) {
-        self.quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
-    }
-
-    /// Bring libvpx to the dial and the speed the next frame is to be coded
-    /// at, where it is not there already.
-    ///
-    /// `vpx_codec_enc_config_set` is libvpx's own mechanism for the dial, and
-    /// both halves are needed: the config carries the quantizer bounds and the
-    /// control carries the value `VPX_Q` mode actually reads. A refusal leaves
-    /// libvpx where it was, to be asked again by the next frame.
-    fn follow(&mut self) -> Result<(), Error> {
-        if self.speed != self.running.1 {
-            // SAFETY: the context is live and the control's argument is an `int`.
-            unsafe { self.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, self.speed.cpu_used(), "cpuused")? };
-            self.running.1 = self.speed;
+        match &mut self.0 {
+            Coded::Libvpx(encoder) => encoder.set_quality(quality),
+            #[cfg(feature = "native")]
+            Coded::Native(encoder) => encoder.set_quality(quality),
         }
-        let q = quality_to_q(self.quality);
-        if q == quality_to_q(self.running.0) {
-            self.running.0 = self.quality;
-            return Ok(());
-        }
-        // Edited on a copy and kept only once libvpx has accepted it, so a
-        // refusal leaves `cfg` describing the encoder as it still is.
-        let mut cfg = self.cfg;
-        cfg.rc_min_quantizer = q;
-        cfg.rc_max_quantizer = q;
-        // SAFETY: `cfg` is the struct libvpx validated at init with two fields
-        // changed, and the context is live. libvpx re-validates it and returns a
-        // code rather than accepting nonsense.
-        unsafe {
-            check(vpx::vpx_codec_enc_config_set(&mut *self.ctx, &cfg), "enc_config_set")?;
-            if let Err(refused) = self.control(vpx::vp8e_enc_control_id_VP8E_SET_CQ_LEVEL, q as c_int, "cq_level") {
-                // The bounds go back, so a refusal leaves libvpx wholly where
-                // it was. Should it refuse the config it was running on a
-                // moment ago, the bounds pinned at `q` are what it codes at,
-                // whatever `cq_level` says: it is at the new dial.
-                if check(vpx::vpx_codec_enc_config_set(&mut *self.ctx, &self.cfg), "enc_config_set").is_err() {
-                    self.cfg = cfg;
-                    self.running.0 = self.quality;
-                }
-                return Err(refused);
-            }
-            self.cfg = cfg;
-        }
-        self.running.0 = self.quality;
-        Ok(())
     }
 
     /// The coarsest dial any block of the picture a decoder now holds was last
@@ -736,33 +531,22 @@ impl Encoder {
     /// frame does at once — what a caller that settles a quiet picture asks
     /// before deciding it owes one. Before the first frame, the dial.
     pub fn coarsest(&self) -> u8 {
-        if !self.begun {
-            return self.quality;
+        match &self.0 {
+            Coded::Libvpx(encoder) => encoder.coarsest(),
+            #[cfg(feature = "native")]
+            Coded::Native(encoder) => encoder.coarsest(),
         }
-        self.coded_at.iter().copied().min().unwrap_or(self.quality)
-    }
-
-    /// The speed this encoder is coding at.
-    pub fn speed(&self) -> Speed {
-        self.speed
-    }
-
-    /// Move the speed, without a keyframe, as [`Self::set_quality`] moves
-    /// the dial: the next frame is searched at the new speed against the
-    /// frames before it.
-    pub fn set_speed(&mut self, speed: Speed) {
-        self.speed = speed;
     }
 
     /// Settle `picture` at `quality`: encode it whole and at that dial, and
     /// leave the dial where it was, for the frames after it. Returns whether
     /// the frame is a keyframe, as [`Self::encode`] does.
     pub fn settle(&mut self, picture: &Picture, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
-        let walked = self.quality;
-        self.set_quality(quality);
-        let encoded = self.encode(picture, keyframe, None, out);
-        self.quality = walked;
-        encoded
+        match &mut self.0 {
+            Coded::Libvpx(encoder) => encoder.settle(picture, quality, keyframe, out),
+            #[cfg(feature = "native")]
+            Coded::Native(encoder) => encoder.settle(picture, quality, keyframe, out),
+        }
     }
 
     /// Encode `picture` and append the frame to `out`. `keyframe` makes it one a
@@ -772,174 +556,21 @@ impl Encoder {
     /// or `None` for a picture that may differ anywhere. Blocks outside every
     /// rectangle are skipped — not searched, and left in the decoder's picture
     /// as they are — which is most of what a frame costs to encode when little
-    /// moved: a 4K frame with one small change took 26 ms whole and 11 told
-    /// where. It is the caller's word and not checked: a change outside the
+    /// moved. It is the caller's word and not checked: a change outside the
     /// rectangles is not coded, by this frame or by a later one that does not
     /// name it. A skipped block also keeps the quantizer it was last coded at,
     /// so the frame that is to sharpen an unchanged picture after
     /// [`Self::set_quality`] passes `None`. A keyframe codes everything
     /// whatever `changed` says.
     ///
-    /// Returns whether the frame is a keyframe. A libvpx that would not be
-    /// brought to the dial or the speed is an error before anything is coded,
-    /// and one that made no frame of the picture is [`Error::NoFrame`]:
-    /// nothing is appended either way.
+    /// Returns whether the frame is a keyframe. On an error nothing is
+    /// appended; libvpx making no frame of the picture is one
+    /// ([`Error::NoFrame`]).
     pub fn encode(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>, out: &mut Vec<u8>) -> Result<bool, Error> {
-        if picture.size() != self.size {
-            let (w, h) = self.size;
-            let (pw, ph) = picture.size();
-            return Err(Error::Mismatch(w, h, pw, ph));
-        }
-        self.follow()?;
-        // Strictly increasing, which two encodes inside one millisecond would
-        // otherwise not be.
-        self.pts = (self.started.elapsed().as_millis() as i64).max(self.pts + 1);
-        // `vpx_enc_frame_flags_t` is a C `long`: 64 bits on Linux and macOS, 32 on
-        // Windows. A cast rather than `From`, because no `From<u32>` exists for
-        // the 32-bit case.
-        let flags: vpx::vpx_enc_frame_flags_t = if keyframe { vpx::VPX_EFLAG_FORCE_KF as vpx::vpx_enc_frame_flags_t } else { 0 };
-        let (planes, stride) = (picture.planes(), picture.stride());
-        // An encoder's first frame is a keyframe whether asked or not, and a
-        // keyframe has no blocks to skip.
-        self.map(changed.filter(|_| !keyframe && self.begun))?;
-
-        // SAFETY: the three planes outlive this call — they belong to `picture`,
-        // which is borrowed for it — and the stride is the one the picture
-        // reports for exactly this size. Casting away const is what the C API
-        // requires; libvpx does not write to an input image. The packets drained
-        // below point into the encoder and are copied out before it is called
-        // again, which is the lifetime libvpx documents for them.
-        unsafe {
-            for (to, plane) in self.img.planes.iter_mut().zip(planes) {
-                *to = plane.as_ptr().cast_mut();
-            }
-            self.img.stride[..3].fill(stride as c_int);
-            check(
-                vpx::vpx_codec_encode(
-                    &mut *self.ctx,
-                    &self.img,
-                    self.pts,
-                    // Duration: one tick of the timebase, deliberately a constant
-                    // rather than the gap since the last frame. libvpx reads it
-                    // for rate control, and there is no rate control here to read
-                    // it: the quantizer is pinned, no bitrate is set, and no frame
-                    // may be dropped. What must stay true is `pts`, which is real
-                    // elapsed time — a decoder's timestamps read that, not this.
-                    1,
-                    flags,
-                    vpx::VPX_DL_REALTIME as c_ulong,
-                ),
-                "encode",
-            )?;
-            let from = out.len();
-            let mut keyframe = false;
-            let mut packets = 0usize;
-            let mut iter: vpx::vpx_codec_iter_t = std::ptr::null();
-            loop {
-                let packet = vpx::vpx_codec_get_cx_data(&mut *self.ctx, &mut iter);
-                if packet.is_null() {
-                    break;
-                }
-                if (*packet).kind != vpx::vpx_codec_cx_pkt_kind_VPX_CODEC_CX_FRAME_PKT {
-                    continue;
-                }
-                let frame = &(*packet).data.frame;
-                out.extend_from_slice(std::slice::from_raw_parts(frame.buf.cast::<u8>(), frame.sz));
-                keyframe |= frame.flags & vpx::VPX_FRAME_IS_KEY != 0;
-                packets += 1;
-            }
-            // More than one packet is a superframe, which is a legal thing to
-            // concatenate and hand to a decoder as one frame — but it also means
-            // no lag is not doing what this module assumes, so it is said rather
-            // than silently absorbed.
-            if packets > 1 {
-                log::warn!("vp9: one encode produced {packets} packets; expected one");
-            }
-            if out.len() == from {
-                return Err(Error::NoFrame);
-            }
-            // What this frame coded is at this dial now: the blocks its map
-            // names, or all of them.
-            if self.mapped && !keyframe {
-                for (at, _) in self.coded_at.iter_mut().zip(&self.active).filter(|(_, active)| **active != 0) {
-                    *at = self.quality;
-                }
-            } else {
-                self.coded_at.fill(self.quality);
-            }
-            self.begun = true;
-            Ok(keyframe)
-        }
-    }
-
-    /// Tell libvpx which blocks the next frame may code: those `changed`
-    /// touches, or with `None` all of them. libvpx keeps a map until it is
-    /// given another, so one is handed over for every frame that has
-    /// rectangles and taken back by the first that has none.
-    fn map(&mut self, changed: Option<&[Rect]>) -> Result<(), Error> {
-        let (cols, rows) = (usize::from(self.size.0).div_ceil(ACTIVE_BLOCK), usize::from(self.size.1).div_ceil(ACTIVE_BLOCK));
-        let active_map = match changed {
-            Some(rects) => {
-                self.active.fill(0);
-                for rect in rects {
-                    let (x, y) = (usize::from(rect.x), usize::from(rect.y));
-                    let right = (x + usize::from(rect.width)).min(usize::from(self.size.0));
-                    let bottom = (y + usize::from(rect.height)).min(usize::from(self.size.1));
-                    if x >= right || y >= bottom {
-                        continue;
-                    }
-                    let (first, last) = (x / ACTIVE_BLOCK, (right - 1) / ACTIVE_BLOCK);
-                    for row in y / ACTIVE_BLOCK..=(bottom - 1) / ACTIVE_BLOCK {
-                        self.active[row * cols + first..=row * cols + last].fill(1);
-                    }
-                }
-                self.active.as_mut_ptr()
-            }
-            None if self.mapped => std::ptr::null_mut(),
-            None => return Ok(()),
-        };
-        let mut map = vpx::vpx_active_map { active_map, rows: rows as u32, cols: cols as u32 };
-        // SAFETY: the context is live, the control's argument is a pointer to
-        // a `vpx_active_map`, and the map it names is a byte for each of the
-        // `rows`×`cols` blocks libvpx counts for this size — it refuses any
-        // other count. libvpx copies the map out before the call returns, and
-        // a null one is how a map is taken back.
-        check(unsafe { vpx::vpx_codec_control_(&mut *self.ctx, vpx::vp8e_enc_control_id_VP8E_SET_ACTIVEMAP as c_int, &mut map as *mut vpx::vpx_active_map) }, "active_map")?;
-        self.mapped = changed.is_some();
-        Ok(())
-    }
-
-    /// One `vpx_codec_control_` call with an `int` argument, checked.
-    ///
-    /// # Safety
-    ///
-    /// `id` must be a control whose argument really is an `int`. The call is
-    /// variadic, so passing the wrong type compiles and corrupts the stack.
-    unsafe fn control(&mut self, id: vpx::vp8e_enc_control_id, value: c_int, call: &'static str) -> Result<(), Error> {
-        check(unsafe { vpx::vpx_codec_control_(&mut *self.ctx, id as c_int, value) }, call)
-    }
-}
-
-// SAFETY: an `Encoder` owns its context exclusively — it is not `Clone`, and
-// `encode`, `set_quality` and `set_speed` take `&mut self` — and libvpx keeps no thread-local
-// state for an encoder instance, so moving one between threads is sound. The
-// gateway carries one onto a blocking worker for the encode and back.
-//
-// Deliberately **not** `Sync`. Two threads calling `vpx_codec_encode` on one
-// context concurrently is undefined behaviour, and nothing needs to.
-//
-// `img`'s plane pointers borrow whatever picture was last encoded; they are
-// overwritten at the top of every `encode` before libvpx reads them, so a stale
-// pointer is never dereferenced.
-unsafe impl Send for Encoder {}
-
-impl Drop for Encoder {
-    fn drop(&mut self) {
-        // SAFETY: destroyed exactly once — `Encoder` is not `Clone` and holds the
-        // only handle. The wrapped image is deliberately *not* freed:
-        // `vpx_img_wrap` allocated nothing.
-        unsafe {
-            vpx::vpx_codec_destroy(&mut *self.ctx);
+        match &mut self.0 {
+            Coded::Libvpx(encoder) => encoder.encode(picture, keyframe, changed, out),
+            #[cfg(feature = "native")]
+            Coded::Native(encoder) => encoder.encode(picture, keyframe, changed, out),
         }
     }
 }
@@ -982,14 +613,13 @@ enum Owed {
 
 impl Stream {
     /// A stream of `width`×`height` pictures, as [`Encoder::new`] takes them.
-    pub fn new(width: u16, height: u16, quality: u8, threads: usize) -> Result<Self, Error> {
-        Ok(Self {
-            encoder: Encoder::new(width, height, quality, threads)?,
-            picture: Picture::new(width, height, threads)?,
-            filled: false,
-            owed: Owed::Whole,
-            changed: Vec::new(),
-        })
+    pub fn new(width: u16, height: u16, quality: u8, threads: usize, coder: Coder) -> Result<Self, Error> {
+        Ok(Self { encoder: Encoder::new(width, height, quality, threads, coder)?, picture: Picture::new(width, height, threads)?, filled: false, owed: Owed::Whole, changed: Vec::new() })
+    }
+
+    /// The coder this stream was made with.
+    pub fn coder(&self) -> Coder {
+        self.encoder.coder()
     }
 
     /// The picture size this stream codes.
@@ -1020,7 +650,7 @@ impl Stream {
     /// `None` for one that may differ anywhere, a keyframe's included: the
     /// caller's word and not checked. With it only the rectangles are read,
     /// and the next frame codes only the blocks they touch, and those of the
-    /// reads before it that no frame has carried. The rest of `pixels` may be
+    /// reads before it that no frame has carried: the rest of `pixels` may be
     /// whatever it is. The stream's first read is the whole picture whatever
     /// `changed` says, and reads all of `pixels`.
     ///
@@ -1084,17 +714,17 @@ impl Stream {
     }
 
     /// Encode the picture as it was last read and append the frame to `out`,
-    /// returning whether it is a keyframe. The frame codes what was read
+    /// returning what [`Encoder::encode`] does. The frame codes what was read
     /// since the frame before it: the blocks those rectangles touch, the whole
     /// picture if any read was whole, and no block at all if nothing was
     /// read, which is a frame all the same. `keyframe` makes it one a decoder
     /// can start from, which codes everything; the stream's first frame is
     /// one either way.
     ///
-    /// A frame libvpx made nothing of ([`Error::NoFrame`]), or failed at,
-    /// leaves the whole picture owed to the next, since no decoder was handed
-    /// what this one coded. A stream nothing was ever read into has no
-    /// picture to code, and says so ([`Error::Unread`]).
+    /// A frame that failed, libvpx making nothing of it among them
+    /// ([`Error::NoFrame`]), leaves the whole picture owed to the next, since
+    /// no decoder was handed what this one coded. A stream nothing was ever
+    /// read into has no picture to code, and says so ([`Error::Unread`]).
     pub fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
         if !self.filled {
             return Err(Error::Unread);
@@ -1106,169 +736,37 @@ impl Stream {
         };
         // Until a frame comes out the planes are ahead of every decoder.
         self.owed = Owed::Whole;
-        let keyframe = self.encoder.encode(&self.picture, keyframe, changed, out)?;
+        let key = self.encoder.encode(&self.picture, keyframe, changed, out)?;
         self.owed = Owed::Nothing;
-        Ok(keyframe)
+        Ok(key)
     }
 
     /// Settle the picture at `quality`: encode it as it was last read, whole
-    /// and at that dial, and leave the dial where it was. What a desktop that
-    /// went quiet while the link had it coarse is owed
-    /// ([`walk::QualityWalk::settle_at`]): as an inter frame the unchanged
-    /// picture costs no keyframe and sharpens every block, so
-    /// [`Self::coarsest`] is `quality` after it, and the frames of the motion
-    /// that follows are at what the link bears again. `keyframe` makes it one
-    /// a decoder can start from, at `quality` all the same. Nothing need be
-    /// read for it: a quiet desktop is the picture the planes hold, and one
-    /// that changed since is read where it did ([`Self::read_bgrx`]) first.
-    ///
-    /// Returns whether the frame is a keyframe, and fails as
-    /// [`Self::encode`] does.
+    /// and at that dial, and leave the dial where it was
+    /// ([`Encoder::settle`]). What a desktop that went quiet while the link
+    /// had it coarse is owed ([`walk::QualityWalk::settle_at`]): as an inter
+    /// frame the unchanged picture costs no keyframe and sharpens every block,
+    /// so [`Self::coarsest`] is `quality` after it, and the frames of the
+    /// motion that follows are at what the link bears again. `keyframe` makes
+    /// it one a decoder can start from, at `quality` all the same. Nothing
+    /// need be read for it: a quiet desktop is the picture the planes hold,
+    /// and one that changed since is read where it did ([`Self::read_bgrx`])
+    /// first.
     pub fn settle(&mut self, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
         if !self.filled {
             return Err(Error::Unread);
         }
         self.owed = Owed::Whole;
-        let keyframe = self.encoder.settle(&self.picture, quality, keyframe, out)?;
+        let key = self.encoder.settle(&self.picture, quality, keyframe, out)?;
         self.owed = Owed::Nothing;
-        Ok(keyframe)
-    }
-}
-
-/// One VP9 stream's decoder: every frame through the same one, in the order
-/// they came, since each is coded against the ones before it.
-pub struct Decoder {
-    /// Boxed for the same reason as the encoder's.
-    ctx: Box<vpx::vpx_codec_ctx_t>,
-}
-
-impl Decoder {
-    /// A decoder on `threads` threads. A decode gains nothing past the stream's
-    /// tile columns, and the caller knows what else its machine is doing.
-    pub fn new(threads: usize) -> Result<Self, Error> {
-        if !(1..=MAX_THREADS).contains(&threads) {
-            return Err(Error::Threads(threads));
-        }
-        // SAFETY: a static interface, a zeroed context written through by
-        // `dec_init_ver`, and the ABI version of the linked archive's headers.
-        unsafe {
-            let iface = vpx::vpx_codec_vp9_dx();
-            if iface.is_null() {
-                return Err(Error::Codec { call: "vp9_dx", detail: "this libvpx has no VP9 decoder".to_owned() });
-            }
-            let cfg = vpx::vpx_codec_dec_cfg_t { threads: threads as c_uint, w: 0, h: 0 };
-            let mut ctx: Box<vpx::vpx_codec_ctx_t> = Box::new(std::mem::zeroed());
-            check(vpx::vpx_codec_dec_init_ver(&mut *ctx, iface, &cfg, 0, vpx::VPX_DECODER_ABI_VERSION as c_int), "dec_init_ver")?;
-            Ok(Self { ctx })
-        }
-    }
-
-    /// Decode one `frame` and return the picture it leaves on screen, which
-    /// borrows the decoder until the next call.
-    pub fn decode(&mut self, frame: &[u8]) -> Result<Decoded<'_>, Error> {
-        // SAFETY: `frame` outlives the call. The image libvpx hands back belongs
-        // to the decoder and is valid until it is called again, which the
-        // returned borrow forbids.
-        unsafe {
-            check(vpx::vpx_codec_decode(&mut *self.ctx, frame.as_ptr(), frame.len() as c_uint, std::ptr::null_mut(), 0), "decode")?;
-            let mut iter: vpx::vpx_codec_iter_t = std::ptr::null();
-            let img = vpx::vpx_codec_get_frame(&mut *self.ctx, &mut iter);
-            if img.is_null() {
-                return Err(Error::NoPicture);
-            }
-            let img = &*img;
-            if img.fmt != vpx::vpx_img_fmt_VPX_IMG_FMT_I444 || img.bit_depth != 8 {
-                return Err(Error::Format(img.fmt as u32, img.bit_depth));
-            }
-            Ok(Decoded { img })
-        }
-    }
-}
-
-// SAFETY: as the encoder's — one owner, `&mut self` for every call.
-unsafe impl Send for Decoder {}
-
-impl Drop for Decoder {
-    fn drop(&mut self) {
-        // SAFETY: the only handle, destroyed once.
-        unsafe {
-            vpx::vpx_codec_destroy(&mut *self.ctx);
-        }
-    }
-}
-
-/// The picture a decoded frame leaves on screen: libvpx's own image, borrowed
-/// from the decoder.
-pub struct Decoded<'a> {
-    /// Eight-bit 4:4:4, which the decode held it to.
-    img: &'a vpx::vpx_image_t,
-}
-
-impl Decoded<'_> {
-    /// The picture's size.
-    pub fn size(&self) -> (u32, u32) {
-        (self.img.d_w, self.img.d_h)
-    }
-
-    /// Whether the stream declares its pixels BT.601 at studio swing, which is
-    /// what every encoder here writes and what [`Self::write_bgrx`] assumes.
-    pub fn declares_bt601_studio_swing(&self) -> bool {
-        self.img.cs == vpx::vpx_color_space_VPX_CS_BT_601 && self.img.range == vpx::vpx_color_range_VPX_CR_STUDIO_RANGE
-    }
-
-    /// Y, U and V, each at its own stride from [`Self::strides`].
-    pub fn planes(&self) -> [&[u8]; 3] {
-        let (w, h) = (self.img.d_w as usize, self.img.d_h as usize);
-        let plane = |i: usize| {
-            let stride = self.img.stride[i] as usize;
-            // SAFETY: the plane is the decoder's, laid out at the stride it
-            // reports, and read only inside the size it reports, which is
-            // every plane's at 4:4:4.
-            unsafe { std::slice::from_raw_parts(self.img.planes[i], (h - 1) * stride + w) }
-        };
-        [plane(0), plane(1), plane(2)]
-    }
-
-    /// The width of a row of each plane, in bytes.
-    pub fn strides(&self) -> [usize; 3] {
-        [self.img.stride[0] as usize, self.img.stride[1] as usize, self.img.stride[2] as usize]
-    }
-
-    /// Write the picture into `out` as `B, G, R, X`, rows `stride` bytes apart,
-    /// the X byte zero. BT.601 at studio swing, as the encoders here declare.
-    pub fn write_bgrx(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
-        use yuv::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
-        let (w, h) = (self.img.d_w as usize, self.img.d_h as usize);
-        if !fits(w, h, stride, out.len()) {
-            return Err(Error::Buffer { width: w, height: h, stride, bytes: out.len() });
-        }
-        let [y_plane, u_plane, v_plane] = self.planes();
-        let [ys, us, vs] = self.strides();
-        let image = YuvPlanarImage {
-            y_plane,
-            y_stride: ys as u32,
-            u_plane,
-            u_stride: us as u32,
-            v_plane,
-            v_stride: vs as u32,
-            width: w as u32,
-            height: h as u32,
-        };
-        yuv::yuv444_to_bgra(&image, out, stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601).expect("the picture fits its buffer, which was checked");
-        // It writes an opaque alpha where the X byte goes.
-        for row in 0..h {
-            for pixel in out[row * stride..row * stride + w * 4].as_chunks_mut::<4>().0 {
-                pixel[3] = 0;
-            }
-        }
-        Ok(())
+        Ok(key)
     }
 }
 
 /// What the opening bits of a VP9 frame say about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameHeader {
-    /// The VP9 profile, 0–3. Streams encoded here are [`PROFILE`].
+    /// The VP9 profile, 0–3. Streams encoded here are 1, 8-bit 4:4:4.
     pub profile: u8,
     /// Whether a decoder that has seen nothing before this frame can start here.
     pub keyframe: bool,
@@ -1334,11 +832,11 @@ const LEVELS: [(u8, u64, u32, u16); 14] = [
     (62, 4_706_009_088, 35_651_584, 16_832),
 ];
 
-/// The WebCodecs codec string for a `w`×`h` VP9 stream, every field of it:
-/// `vp09.<profile>.<level>.<depth>.<chroma>.<primaries>.<transfer>.<matrix>.<range>`.
+/// The WebCodecs codec string for a `w`×`h` stream of this crate's, every field
+/// of it: `vp09.<profile>.<level>.<depth>.<chroma>.<primaries>.<transfer>.<matrix>.<range>`.
 ///
-/// Profile 1 at eight bits and 4:4:4 (`03`), because that is what the encoder
-/// produces. The optional fields are spelled out rather than left to their
+/// Profile 1, eight-bit and 4:4:4, because that is what the encoder produces.
+/// The optional fields are spelled out rather than left to their
 /// defaults because the defaults are wrong for this stream on both counts: an
 /// omitted chroma field means 4:2:0, which Chromium reads as 4:2:2 on a profile
 /// 1 string since 4:2:0 is not a profile 1 picture, and omitted colour fields
@@ -1351,16 +849,53 @@ pub fn codec_string(w: u16, h: u16, fps: u64) -> Option<String> {
     let rate = u64::from(size) * fps;
     let breadth = w.max(h);
     let (level, ..) = LEVELS.iter().find(|(_, max_rate, max_size, max_breadth)| rate <= *max_rate && size <= *max_size && breadth <= *max_breadth).copied()?;
-    Some(format!("vp09.{PROFILE:02}.{level:02}.08.03.06.06.06.00"))
+    Some(format!("vp09.01.{level:02}.08.03.06.06.06.00"))
 }
 
-#[cfg(test)]
+// The crate's tests are made with the Rust coder: libvpx's own are beside it
+// (`libvpx::tests`).
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
+    // The Rust coder itself, which these tests are of: libvpx's are beside it
+    // (`libvpx::tests`).
+    use crate::native::Encoder;
 
     /// `w`×`h` of one colour, packed RGB.
     fn flat(w: u16, h: u16, colour: [u8; 3]) -> Vec<u8> {
         colour.iter().copied().cycle().take(usize::from(w) * usize::from(h) * 3).collect()
+    }
+
+    /// A stream is coded by the coder it was made with and by the same calls
+    /// whichever that is: a keyframe first, a frame of what was read after
+    /// it, and a settle at the dial it names, each a profile 1 frame the
+    /// decoder takes.
+    #[test]
+    fn a_stream_is_coded_by_the_coder_it_names() {
+        let (w, h) = (96u16, 64u16);
+        for coder in [Coder::Libvpx, Coder::Native] {
+            let mut stream = Stream::new(w, h, 40, 2, coder).expect("a stream");
+            assert_eq!((stream.coder(), stream.size(), stream.quality()), (coder, (w, h), 40));
+            let mut decoder = Decoder::new(1).expect("a decoder");
+            let mut frame = Vec::new();
+            assert!(matches!(stream.encode(false, &mut frame), Err(Error::Unread)), "{coder:?}");
+            stream.read_rgb(&flat(w, h, [200, 40, 40]), None).expect("its own picture");
+            assert!(stream.encode(false, &mut frame).expect("a frame"), "{coder:?}: a first frame that is no keyframe");
+            assert_eq!(frame_header(&frame), Some(FrameHeader { profile: PROFILE, keyframe: true }), "{coder:?}");
+            assert_eq!(decoder.decode(&frame).expect("a decode").size(), (u32::from(w), u32::from(h)), "{coder:?}");
+
+            stream.set_quality(20);
+            frame.clear();
+            stream.read_rgb(&flat(w, h, [40, 200, 40]), Some(&[Rect { x: 0, y: 0, width: 32, height: 32 }])).expect("its own picture");
+            assert!(!stream.encode(false, &mut frame).expect("a frame"), "{coder:?}: a keyframe nobody asked for");
+            decoder.decode(&frame).expect("a decode");
+            assert_eq!(stream.coarsest(), 20, "{coder:?}");
+
+            frame.clear();
+            assert!(!stream.settle(40, false, &mut frame).expect("a settle"), "{coder:?}: a settle that is a keyframe");
+            decoder.decode(&frame).expect("a decode");
+            assert_eq!((stream.coarsest(), stream.quality()), (40, 20), "{coder:?}");
+        }
     }
 
     /// A picture read from `rgb`.
@@ -1370,10 +905,39 @@ mod tests {
         picture
     }
 
-    /// Encode `picture` and return the frame with its keyframe bit.
-    fn encode(encoder: &mut Encoder, picture: &Picture, keyframe: bool) -> (Vec<u8>, bool) {
+    /// An encoder and the libvpx decoder following its stream, so that no
+    /// frame of it goes undecoded whatever a test does with it after.
+    struct Followed {
+        encoder: Encoder,
+        decoder: Decoder,
+    }
+
+    impl Followed {
+        fn new(width: u16, height: u16, quality: u8, threads: usize) -> Self {
+            Self { encoder: Encoder::new(width, height, quality, threads).expect("an encoder"), decoder: Decoder::new(1).expect("a decoder") }
+        }
+    }
+
+    impl std::ops::Deref for Followed {
+        type Target = Encoder;
+        fn deref(&self) -> &Encoder {
+            &self.encoder
+        }
+    }
+
+    impl std::ops::DerefMut for Followed {
+        fn deref_mut(&mut self) -> &mut Encoder {
+            &mut self.encoder
+        }
+    }
+
+    /// Encode `picture`, decode the frame, and return it with its keyframe
+    /// bit.
+    fn encode(encoder: &mut Followed, picture: &Picture, keyframe: bool) -> (Vec<u8>, bool) {
         let mut out = Vec::new();
-        let key = encoder.encode(picture, keyframe, None, &mut out).expect("an encode");
+        let key = encoder.encoder.encode(picture, keyframe, None, &mut out).expect("a frame");
+        let (w, h) = picture.size();
+        assert_eq!(encoder.decoder.decode(&out).expect("a frame libvpx decodes").size(), (u32::from(w), u32::from(h)));
         (out, key)
     }
 
@@ -1385,7 +949,7 @@ mod tests {
         for frame in frames {
             let decoded = decoder.decode(frame).expect("a decode");
             assert_eq!(decoded.size(), (w as u32, h as u32));
-            decoded.write_bgrx(&mut out, w * 4).expect("a picture that fits");
+            decoded.write_bgrx(&mut out, w * 4).expect("a buffer the picture fits");
         }
         out
     }
@@ -1396,9 +960,8 @@ mod tests {
         [p[2], p[1], p[0]]
     }
 
-    /// A dark terminal with one-pixel coloured glyph stems: the picture 4:2:0
-    /// would not carry. Every stem is at an odd column, and would share a 2×2
-    /// chroma sample with three pixels of background.
+    /// A dark terminal with one-pixel coloured glyph stems, each at an odd
+    /// column: the picture a colour sample per pixel is coded for.
     fn stems(w: u16, h: u16) -> (Vec<u8>, Vec<(usize, usize)>) {
         let (w, h) = (usize::from(w), usize::from(h));
         let mut rgb = flat(w as u16, h as u16, [30, 30, 30]);
@@ -1425,126 +988,9 @@ mod tests {
         rgb
     }
 
-    /// A frame told where its picture changed codes those blocks and no
-    /// others: a change it was not told of stays out of the decoder's picture
-    /// until a frame names it, and a block left out of one frame is coded by
-    /// the next that names it. A frame told nothing codes the whole picture
-    /// again, and a rectangle past the picture's edge is no error.
-    #[test]
-    fn a_frame_told_where_it_changed_codes_that_and_nothing_else() {
-        // Neither side a multiple of the map's 16-pixel block.
-        let (w, h) = (333u16, 250u16);
-        let (wu, hu) = (usize::from(w), usize::from(h));
-        const GREY: [u8; 3] = [200, 200, 200];
-        let square = |x: u16, y: u16| Rect { x, y, width: 32, height: 32 };
-        let (first, second, third) = (square(32, 32), square(200, 150), square(96, 200));
-        let paint = |rgb: &mut [u8], rect: Rect, colour: [u8; 3]| {
-            for y in usize::from(rect.y)..usize::from(rect.y + rect.height) {
-                for x in usize::from(rect.x)..usize::from(rect.x + rect.width) {
-                    rgb[(y * wu + x) * 3..][..3].copy_from_slice(&colour);
-                }
-            }
-        };
-        let mut encoder = Encoder::new(w, h, 90, 2).expect("an encoder");
-        let mut rgb = flat(w, h, GREY);
-        let mut frames = vec![encode(&mut encoder, &picture(w, h, &rgb), false).0];
-        let mut step = |rgb: &[u8], changed: Option<&[Rect]>, want: [(Rect, [u8; 3]); 3]| {
-            let mut out = Vec::new();
-            let key = encoder.encode(&picture(w, h, rgb), false, changed, &mut out).expect("an encode");
-            assert!(!key, "a frame told where it changed cost a keyframe");
-            frames.push(out);
-            let back = decode_chain(&frames, wu, hu);
-            for (rect, colour) in want {
-                let got = rgb_at(&back, wu, usize::from(rect.x) + 16, usize::from(rect.y) + 16);
-                assert!((0..3).all(|c| got[c].abs_diff(colour[c]) <= 40), "told {changed:?}: {rect:?} is {got:?}, not {colour:?}");
-            }
-        };
-
-        // Two squares change and the frame is told of one.
-        paint(&mut rgb, first, [220, 40, 40]);
-        paint(&mut rgb, second, [40, 40, 220]);
-        step(&rgb, Some(&[first]), [(first, [220, 40, 40]), (second, GREY), (third, GREY)]);
-        // The other, which the frame before skipped, is coded when named.
-        step(&rgb, Some(&[second]), [(first, [220, 40, 40]), (second, [40, 40, 220]), (third, GREY)]);
-        // Told nothing, a frame codes whatever changed.
-        paint(&mut rgb, third, [40, 180, 40]);
-        step(&rgb, None, [(first, [220, 40, 40]), (second, [40, 40, 220]), (third, [40, 180, 40])]);
-        // And a map after that one holds again, its rectangles clipped to
-        // the picture.
-        paint(&mut rgb, first, GREY);
-        paint(&mut rgb, third, GREY);
-        let edge = Rect { x: 320, y: 240, width: 100, height: 100 };
-        let outside = Rect { x: 400, y: 300, width: 16, height: 16 };
-        step(&rgb, Some(&[first, edge, outside]), [(first, GREY), (second, [40, 40, 220]), (third, [40, 180, 40])]);
-        // Nothing named is nothing coded.
-        step(&rgb, Some(&[]), [(first, GREY), (second, [40, 40, 220]), (third, [40, 180, 40])]);
-        step(&rgb, Some(&[third]), [(first, GREY), (second, [40, 40, 220]), (third, GREY)]);
-    }
-
-    /// A block a frame skips keeps the quantizer it was last coded at, so a
-    /// frame at a finer one that is told where the picture changed sharpens
-    /// that and leaves the rest coarse: what a caller that settles a quiet
-    /// picture must send its settle whole for.
-    #[test]
-    fn a_skipped_block_keeps_its_quantizer_until_a_whole_frame() {
-        let (w, h) = (320u16, 240u16);
-        let mut rgb = flat(w, h, [240, 240, 240]);
-        let mut seed = 12_345u32;
-        for px in rgb.chunks_mut(3) {
-            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-            if (seed >> 16).is_multiple_of(5) {
-                px.copy_from_slice(&[20, 20, 20]);
-            }
-        }
-        let source = picture(w, h, &rgb);
-        let (wu, hu) = (usize::from(w), usize::from(h));
-        let named = Rect { x: 0, y: 0, width: 64, height: 64 };
-        // The error of everything the rectangle leaves out.
-        let error = |bgrx: &[u8]| {
-            let rest = (0..hu).flat_map(|y| (0..wu).map(move |x| (x, y))).filter(|&(x, y)| x >= 64 || y >= 64);
-            let sum: u64 = rest.clone().map(|(x, y)| u64::from(rgb_at(bgrx, wu, x, y)[1].abs_diff(rgb[(y * wu + x) * 3 + 1]))).sum();
-            sum as f64 / rest.count() as f64
-        };
-
-        let mut encoder = Encoder::new(w, h, QUALITY_MIN, 2).expect("an encoder");
-        // Before a frame nothing is coded at any dial, wherever it has been.
-        let mut unused = Encoder::new(w, h, 20, 2).expect("an encoder");
-        unused.set_quality(90);
-        assert_eq!(unused.coarsest(), 90, "before a frame, the dial as it stands");
-        assert_eq!(encoder.coarsest(), QUALITY_MIN);
-        let mut frames = vec![encode(&mut encoder, &source, false).0];
-        let coarse = error(&decode_chain(&frames, wu, hu));
-        assert_eq!(encoder.coarsest(), QUALITY_MIN);
-
-        encoder.set_quality(90);
-        assert_eq!(encoder.coarsest(), QUALITY_MIN, "a dial that moved has coded nothing yet");
-        let mut partial = Vec::new();
-        encoder.encode(&source, false, Some(&[named]), &mut partial).expect("an encode");
-        frames.push(partial);
-        let skipped = error(&decode_chain(&frames, wu, hu));
-        assert!(skipped > coarse * 0.9, "a frame told of one corner left the rest at error {skipped:.2}, from {coarse:.2}: it coded blocks it was to skip");
-        assert_eq!(encoder.coarsest(), QUALITY_MIN, "the blocks a frame skipped are as coarse as they were");
-
-        frames.push(encode(&mut encoder, &source, false).0);
-        let settled = error(&decode_chain(&frames, wu, hu));
-        assert!(settled < coarse / 4.0, "a whole frame at quality 90 left the picture at error {settled:.2}, from {coarse:.2}");
-        assert_eq!(encoder.coarsest(), 90);
-
-        // Coarse where a frame coded and nowhere else, until frames told where
-        // have between them coded every block finer.
-        encoder.set_quality(40);
-        encoder.encode(&source, false, Some(&[named]), &mut Vec::new()).expect("an encode");
-        assert_eq!(encoder.coarsest(), 40);
-        encoder.set_quality(90);
-        encoder.encode(&source, false, Some(&[Rect { x: 64, y: 0, width: 256, height: 240 }]), &mut Vec::new()).expect("an encode");
-        assert_eq!(encoder.coarsest(), 40, "the corner coded at 40 was not in that frame");
-        encoder.encode(&source, false, Some(&[Rect { x: 10, y: 10, width: 40, height: 40 }]), &mut Vec::new()).expect("an encode");
-        assert_eq!(encoder.coarsest(), 90, "every block has been coded at 90 since");
-    }
-
     /// A rectangle converts to what the whole picture's conversion holds
     /// there and leaves the rest alone: on an odd row or column, at the last
-    /// row and column of odd sides, in a buffer that ends with its last row, past the
+    /// row and column, in a buffer that ends with its last row, past the
     /// picture's edge, and on any number of threads, whose bands a picture
     /// this small is given by a rectangle the size of a desktop below.
     #[test]
@@ -1563,7 +1009,7 @@ mod tests {
             // Packed RGB, which is tight.
             let tight = |pixels: &[u8]| -> Vec<u8> { pixels.chunks(stride).flat_map(|row| row[..width * 4].chunks(4).flat_map(|px| [px[2], px[1], px[0]])).collect() };
             let (before_rgb, after_rgb) = (tight(&before), tight(&after));
-            for threads in [1, 3, 4] {
+            for threads in [1, 4] {
                 let mut whole = Picture::new(width as u16, height as u16, 1).expect("a picture");
                 for named in &rects {
                     // What changed is this rectangle and nothing else.
@@ -1603,7 +1049,7 @@ mod tests {
         const BACK: [u8; 3] = [20, 40, 80];
         const LIT: [u8; 3] = [240, 240, 240];
         const JUNK: [u8; 3] = [170, 85, 170];
-        // On an odd row and column.
+        // On an odd row and column, and not on the encoder's 8×8 grid.
         let named = Rect { x: 33, y: 17, width: 31, height: 15 };
         // `rgb` in the byte order a stream is fed: packed RGB, or `B, G, R, X`.
         let packed = |rgb: &[u8], bgrx: bool| -> Vec<u8> { if bgrx { rgb.chunks(3).flat_map(|px| [px[2], px[1], px[0], 0]).collect() } else { rgb.to_vec() } };
@@ -1616,7 +1062,7 @@ mod tests {
         };
         let near = |got: [u8; 3], want: [u8; 3]| (0..3).all(|c| got[c].abs_diff(want[c]) <= 40);
         for bgrx in [true, false] {
-            let mut stream = Stream::new(w, h, 90, 2).expect("a stream");
+            let mut stream = Stream::new(w, h, 90, 2, Coder::Native).expect("a stream");
             assert_eq!((stream.size(), stream.quality(), stream.coarsest()), ((w, h), 90, 90));
             let mut frames = Vec::new();
             let mut step = |stream: &mut Stream, rgb: &[u8], changed: Option<&[Rect]>, keyframe: bool| {
@@ -1625,7 +1071,7 @@ mod tests {
                 if bgrx { stream.read_bgrx(&pixels, wu * 4, changed) } else { stream.read_rgb(&pixels, changed) }.expect("a read");
                 let key = stream.encode(keyframe, &mut out);
                 frames.push(out);
-                (key.expect("an encode"), decode_chain(&frames, wu, hu))
+                (key.expect("a frame"), decode_chain(&frames, wu, hu))
             };
             let whole = flat(w, h, BACK);
 
@@ -1635,16 +1081,15 @@ mod tests {
 
             // The first frame is told of changes it cannot be changes to.
             let (key, back) = step(&mut stream, &whole, Some(&[named]), false);
-            assert!(key && near(rgb_at(&back, wu, 4, 70), BACK) && near(rgb_at(&back, wu, 48, 24), BACK), "bgrx {bgrx}: the first frame was not the whole picture");
+            assert!(key && near(rgb_at(&back, wu, 4, 70), BACK) && near(rgb_at(&back, wu, 48, 24), BACK), "the first frame was not the whole picture");
 
-            // A change, in a buffer all but the rectangle of which is not the
-            // picture.
+            // A change, in a buffer the rest of which is not the picture.
             let mut rows = flat(w, h, JUNK);
             paint(&mut rows, named, LIT);
             let (key, back) = step(&mut stream, &rows, Some(&[named]), false);
-            assert!(!key && near(rgb_at(&back, wu, 48, 24), LIT), "bgrx {bgrx}: the change came back {:?}", rgb_at(&back, wu, 48, 24));
+            assert!(!key && near(rgb_at(&back, wu, 48, 24), LIT), "the change came back {:?}", rgb_at(&back, wu, 48, 24));
             for (x, y) in [(4, 4), (4, 24), (90, 24), (32, 24), (48, 4), (48, 15), (48, 16), (48, 32), (48, 70)] {
-                assert!(near(rgb_at(&back, wu, x, y), BACK), "bgrx {bgrx}: ({x}, {y}), outside the change, came back {:?}", rgb_at(&back, wu, x, y));
+                assert!(near(rgb_at(&back, wu, x, y), BACK), "({x}, {y}), outside the change, came back {:?}", rgb_at(&back, wu, x, y));
             }
 
             // Two reads before a frame, which carries both: the rectangle put
@@ -1658,16 +1103,16 @@ mod tests {
                 if bgrx { stream.read_bgrx(&pixels, wu * 4, Some(&[rect])) } else { stream.read_rgb(&pixels, Some(&[rect])) }.expect("a read");
             }
             let mut out = Vec::new();
-            assert!(!stream.encode(false, &mut out).expect("an encode"));
+            assert!(!stream.encode(false, &mut out).expect("a frame"));
             frames.push(out);
             let back = decode_chain(&frames, wu, hu);
-            assert!(near(rgb_at(&back, wu, 48, 24), BACK) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "bgrx {bgrx}: a frame did not carry both of its reads");
+            assert!(near(rgb_at(&back, wu, 48, 24), BACK) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "a frame did not carry both of its reads");
 
             // A frame of nothing read is a frame, and changes nothing.
             let mut out = Vec::new();
-            assert!(!stream.encode(false, &mut out).expect("an encode"));
+            assert!(!stream.encode(false, &mut out).expect("a frame"));
             frames.push(out);
-            assert_eq!(decode_chain(&frames, wu, hu), back, "bgrx {bgrx}: a frame of nothing read changed the picture");
+            assert_eq!(decode_chain(&frames, wu, hu), back, "a frame of nothing read changed the picture");
 
             // A settle carries what was read and no frame has: the rectangle
             // lit again, with the rest as the planes hold it.
@@ -1679,18 +1124,18 @@ mod tests {
             assert!(!stream.settle(90, false, &mut out).expect("a settle"));
             frames.push(out);
             let back = decode_chain(&frames, wu, hu);
-            assert!(near(rgb_at(&back, wu, 48, 24), LIT) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "bgrx {bgrx}: a settle did not carry what was read for it");
+            assert!(near(rgb_at(&back, wu, 48, 24), LIT) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "a settle did not carry what was read for it");
 
             // A keyframe is the whole picture, of which it was read one
             // rectangle: the planes hold the rest.
             let mut rows = flat(w, h, JUNK);
-            paint(&mut rows, named, LIT);
+            paint(&mut rows, named, BACK);
             let pixels = packed(&rows, bgrx);
             if bgrx { stream.read_bgrx(&pixels, wu * 4, Some(&[named])) } else { stream.read_rgb(&pixels, Some(&[named])) }.expect("a read");
             let mut out = Vec::new();
-            assert!(stream.encode(true, &mut out).expect("an encode"));
+            assert!(stream.encode(true, &mut out).expect("a frame"));
             let back = decode_chain(&[out], wu, hu);
-            assert!(near(rgb_at(&back, wu, 48, 24), LIT) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "bgrx {bgrx}: the keyframe was not the whole picture");
+            assert!(near(rgb_at(&back, wu, 48, 24), BACK) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "the keyframe was not the whole picture");
 
             // A buffer that is not the picture is refused whatever is to be
             // read of it, nothing included.
@@ -1742,19 +1187,20 @@ mod tests {
     /// The loop filter level a frame's uncompressed header carries (VP9
     /// bitstream §6.2), for a frame of this crate's encoder: eight bits, shown,
     /// and after a keyframe predicted from frames of its own size.
-    fn filter_level(frame: &[u8]) -> u32 {
+    pub(crate) fn filter_level(frame: &[u8]) -> u32 {
         let mut bits = frame.iter().flat_map(|byte| (0..8).rev().map(move |i| u32::from(byte >> i & 1)));
         let mut read = |n: usize| (0..n).fold(0, |value, _| value << 1 | bits.next().expect("a whole header"));
         assert_eq!(read(2), 2, "frame_marker");
-        assert_eq!(read(1) | read(1) << 1, u32::from(PROFILE), "profile");
+        let profile = read(1) | read(1) << 1;
+        assert!(profile < 2, "an eight-bit profile");
         assert_eq!(read(1), 0, "show_existing_frame");
         let keyframe = read(1) == 0;
         assert_eq!((read(1), read(1)), (1, 0), "show_frame, error_resilient_mode");
         if keyframe {
             assert_eq!(read(24), 0x49_83_42, "frame_sync_code");
             assert_ne!(read(3), 7, "color_space is not sRGB");
-            // color_range, the subsampling and a reserved bit.
-            read(4);
+            // color_range, and on profile 1 the subsampling and a reserved bit.
+            read(if profile == 1 { 4 } else { 1 });
             read(32);
             assert_eq!(read(1), 0, "render_and_frame_size_different");
         } else {
@@ -1775,17 +1221,17 @@ mod tests {
         read(6)
     }
 
-    /// A stream is filtered unless it is in four tile columns, and one that
-    /// is not says so in every frame's header and decodes as any other.
+    /// A stream is filtered unless it is in four tile columns, and one that is
+    /// not says so in every frame's header and decodes as any other.
     #[test]
-    fn the_loop_filter_is_left_out_of_four_tile_columns() {
-        assert!(loop_filtered(2047, 8));
-        assert!(!loop_filtered(2048, 8));
-        assert!(!loop_filtered(3840, 4));
-        assert!(loop_filtered(3840, 3));
+    fn the_loop_filter_is_left_out_in_four_tile_columns() {
+        assert!(loop_filtered(tile_columns_log2(2047, 8)));
+        assert!(!loop_filtered(tile_columns_log2(2048, 8)));
+        assert!(!loop_filtered(tile_columns_log2(3840, 4)));
+        assert!(loop_filtered(tile_columns_log2(3840, 3)));
 
         for (w, threads, filtered) in [(1440, 4, true), (2048, 4, false), (2048, 2, true)] {
-            let mut encoder = Encoder::new(w, 64, 50, threads).expect("an encoder");
+            let mut encoder = Followed::new(w, 64, 50, threads);
             let frames: Vec<Vec<u8>> = [[30, 60, 90], [200, 30, 30], [40, 180, 70]].iter().map(|colour| encode(&mut encoder, &picture(w, 64, &flat(w, 64, *colour)), false).0).collect();
             for (n, frame) in frames.iter().enumerate() {
                 assert_eq!(filter_level(frame) > 0, filtered, "frame {n} of {w} wide, {threads} threads");
@@ -1804,11 +1250,7 @@ mod tests {
         // Three full-size planes, tight.
         let [y, u, v] = picture.planes();
         assert_eq!((y.len(), u.len(), v.len()), (64 * 32, 64 * 32, 64 * 32));
-        assert_eq!(picture.stride(), 64);
-        // An odd side is carried as it is.
-        let odd = Picture::new(33, 17, 1).expect("a picture");
-        assert_eq!(odd.stride(), 33);
-        assert_eq!(odd.planes()[1].len(), 33 * 17);
+        assert_eq!(picture.strides(), [64, 64, 64]);
         assert!(matches!(Picture::new(0, 16, 1), Err(Error::Empty(0, 16))));
     }
 
@@ -1819,7 +1261,7 @@ mod tests {
     /// coefficients are allowed.
     #[test]
     fn the_conversion_is_bt601_studio_swing() {
-        let mut picture = Picture::new(2, 2, 1).expect("a picture");
+        let mut yuv = Picture::new(2, 2, 1).expect("a picture");
         let close = |got: u8, want: u8, what: &str| {
             assert!(got.abs_diff(want) <= 1, "{what}: got {got}, wanted {want}");
         };
@@ -1830,26 +1272,26 @@ mod tests {
             ([255, 0, 0], 81, 90, 240, "red"),
             ([0, 0, 255], 41, 240, 110, "blue"),
         ] {
-            picture.read_rgb(&flat(2, 2, colour)).expect("a 2x2 picture");
-            let [y, u, v] = picture.planes();
+            yuv.read_rgb(&flat(2, 2, colour)).expect("a 2x2 picture");
+            let [y, u, v] = yuv.planes();
             close(y[0], y_want, name);
             close(u[0], u_want, name);
             close(v[0], v_want, name);
             // The same pixels as `B, G, R, X` land on the same planes.
             let bgrx: Vec<u8> = (0..4).flat_map(|_| [colour[2], colour[1], colour[0], 0x55]).collect();
-            picture.read_bgrx(&bgrx, 8).expect("a 2x2 picture");
-            let [y, u, v] = picture.planes();
+            yuv.read_bgrx(&bgrx, 8).expect("a 2x2 picture");
+            let [y, u, v] = yuv.planes();
             close(y[0], y_want, name);
             close(u[0], u_want, name);
             close(v[0], v_want, name);
         }
-        // Each pixel keeps its own chroma: a checkerboard of full red and full
-        // blue is red and blue, not the purple their average is.
+        // Each pixel keeps its own colour: a checkerboard of full red and full
+        // blue is not averaged.
         let mut quad = Vec::new();
         quad.extend_from_slice(&[255, 0, 0, 0, 0, 255]);
         quad.extend_from_slice(&[0, 0, 255, 255, 0, 0]);
-        picture.read_rgb(&quad).expect("a 2x2 picture");
-        let [_, u, v] = picture.planes();
+        yuv.read_rgb(&quad).expect("a 2x2 picture");
+        let [_, u, v] = yuv.planes();
         close(u[0], 90, "red pixel U");
         close(v[0], 240, "red pixel V");
         close(u[1], 240, "blue pixel U");
@@ -1865,15 +1307,17 @@ mod tests {
             .step_by(15)
             .flat_map(|r| (0..=255u8).step_by(51).flat_map(move |g| (0..=255u8).step_by(85).map(move |b| [b, g, r, 0])))
             .collect();
-        let width = colours.len();
-        let pixels: Vec<u8> = colours.iter().flatten().copied().collect();
-        let mut picture = Picture::new(width as u16, 1, 1).expect("a picture");
-        picture.read_bgrx(&pixels, width * 4).expect("a row");
+        // A colour to an 8×8, so that what is tested is the matrix and not how
+        // the quantizer carries an edge at every pixel.
+        let (width, height) = (colours.len() * 8, 8);
+        let pixels: Vec<u8> = (0..height).flat_map(|_| colours.iter().flat_map(|colour| colour.iter().copied().cycle().take(32))).collect();
+        let mut picture = Picture::new(width as u16, height as u16, 1).expect("a picture");
+        picture.read_bgrx(&pixels, width * 4).expect("a picture that fits");
         assert!(picture.planes()[0].iter().all(|&y| (16..=235).contains(&y)), "luma stays in studio range");
 
-        let mut encoder = Encoder::new(width as u16, 1, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Followed::new(width as u16, height as u16, QUALITY_MAX, 1);
         let (frame, _) = encode(&mut encoder, &picture, false);
-        let back = decode_chain(&[frame], width, 1);
+        let back = decode_chain(&[frame], width, height);
         for (i, (want, got)) in pixels.as_chunks::<4>().0.iter().zip(back.as_chunks::<4>().0).enumerate() {
             // Studio swing folds 256 levels into 219 and the quantizer costs a
             // little more; a wrong matrix would be off by tens.
@@ -1898,18 +1342,17 @@ mod tests {
         }
         let mut picture = Picture::new(width as u16, height as u16, 1).expect("a picture");
         picture.read_bgrx(&pixels, stride).expect("a picture that fits");
-        let mut encoder = Encoder::new(width as u16, height as u16, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Followed::new(width as u16, height as u16, QUALITY_MAX, 1);
         let (frame, _) = encode(&mut encoder, &picture, false);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let mut back = vec![0xAA; (height - 1) * stride + width * 4];
-        decoder.decode(&frame).expect("a decode").write_bgrx(&mut back, stride).expect("a picture that fits");
+        decoder.decode(&frame).expect("a decode").write_bgrx(&mut back, stride).expect("a buffer the picture fits");
         for row in 0..height {
             for x in 0..width {
                 let got = &back[row * stride + x * 4..][..4];
                 let want = colour(row);
                 // What is tested is the stride, not the quantizer: the
-                // finest one still costs a few code values on a 3×3
-                // picture.
+                // finest one still costs a few code values on a 3×3 picture.
                 assert!((0..3).all(|c| want[c].abs_diff(got[c]) <= 8) && got[3] == 0, "row {row}: {want:?} came back {got:?}");
             }
         }
@@ -1931,7 +1374,7 @@ mod tests {
     #[test]
     fn a_lower_quality_makes_a_smaller_stream() {
         let bytes = |quality| {
-            let mut encoder = Encoder::new(320, 240, quality, 2).expect("an encoder");
+            let mut encoder = Followed::new(320, 240, quality, 2);
             (0..5u16).map(|step| encode(&mut encoder, &picture(320, 240, &moving(step)), false).0.len()).sum::<usize>()
         };
         let (coarse, fine) = (bytes(5), bytes(90));
@@ -1940,7 +1383,7 @@ mod tests {
 
     #[test]
     fn the_first_frame_is_a_keyframe_and_another_can_be_asked_for() {
-        let mut encoder = Encoder::new(320, 240, 60, 2).expect("an encoder");
+        let mut encoder = Followed::new(320, 240, 60, 2);
         let mut frame = |step, keyframe| encode(&mut encoder, &picture(320, 240, &moving(step)), keyframe);
         let first = frame(0, false);
         assert!(first.1, "a decoder has to be able to start somewhere");
@@ -1949,18 +1392,18 @@ mod tests {
         assert!(!frame(2, false).1);
         let asked = frame(3, true);
         assert!(asked.1, "the keyframe flag did not reach the encoder");
-        assert_eq!(frame_header(&asked.0), Some(FrameHeader { profile: PROFILE, keyframe: true }));
+        assert_eq!(frame_header(&asked.0), Some(FrameHeader { profile: 1, keyframe: true }));
         // And it is not sticky: the frame after a forced keyframe is an ordinary one.
         let after = frame(4, false);
         assert!(!after.1);
-        assert_eq!(frame_header(&after.0), Some(FrameHeader { profile: PROFILE, keyframe: false }));
+        assert_eq!(frame_header(&after.0), Some(FrameHeader { profile: 1, keyframe: false }));
     }
 
     /// However long a stream runs, no keyframe comes that was not asked for.
     #[test]
     fn no_keyframe_comes_unasked() {
         let (w, h) = (64u16, 48u16);
-        let mut encoder = Encoder::new(w, h, 60, 1).expect("an encoder");
+        let mut encoder = Followed::new(w, h, 60, 1);
         let mut rgb = flat(w, h, [80, 40, 20]);
         for step in 0..300u32 {
             let x = (step * 3) as usize % 48;
@@ -1969,7 +1412,7 @@ mod tests {
             }
             let (frame, keyframe) = encode(&mut encoder, &picture(w, h, &rgb), false);
             assert_eq!(keyframe, step == 0, "frame {step}");
-            assert_eq!(frame_header(&frame).map(|header| header.profile), Some(PROFILE), "frame {step}");
+            assert_eq!(frame_header(&frame).map(|header| header.profile), Some(1), "frame {step}");
         }
     }
 
@@ -1977,48 +1420,6 @@ mod tests {
     fn a_frame_header_is_read_from_the_bitstream_alone() {
         assert_eq!(frame_header(&[]), None);
         assert_eq!(frame_header(&[0x00, 0x00]), None, "no frame marker");
-    }
-
-    /// What a settle rests on: re-encoding a picture that has not changed, at a
-    /// finer quantizer, sharpens the *unchanged* blocks — as an ordinary inter
-    /// frame, with no keyframe. Were libvpx to skip blocks whose source had not
-    /// moved, a desktop sent coarse on a link that was behind would stay coarse
-    /// until it next changed, and the settle would have to spend a keyframe.
-    #[test]
-    fn a_finer_quantizer_sharpens_an_unchanged_picture_without_a_keyframe() {
-        let (w, h) = (320u16, 240u16);
-        // Speckle, so a coarse quantizer has detail to lose.
-        let mut rgb = flat(w, h, [240, 240, 240]);
-        let mut seed = 12_345u32;
-        for px in rgb.chunks_mut(3) {
-            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-            if (seed >> 16).is_multiple_of(5) {
-                px.copy_from_slice(&[20, 20, 20]);
-            }
-        }
-        let source = picture(w, h, &rgb);
-        let (wu, hu) = (usize::from(w), usize::from(h));
-        let error = |bgrx: &[u8]| {
-            let sum: u64 = (0..hu).flat_map(|y| (0..wu).map(move |x| (x, y))).map(|(x, y)| u64::from(rgb_at(bgrx, wu, x, y)[1].abs_diff(rgb[(y * wu + x) * 3 + 1]))).sum();
-            sum as f64 / (wu * hu) as f64
-        };
-
-        let mut encoder = Encoder::new(w, h, QUALITY_MIN, 2).expect("an encoder");
-        let mut frames = vec![encode(&mut encoder, &source, false).0];
-        let coarse = error(&decode_chain(&frames, wu, hu));
-
-        encoder.set_quality(90);
-        let (settle, keyframe) = encode(&mut encoder, &source, false);
-        assert!(!keyframe, "the settle frame cost a keyframe");
-        frames.push(settle);
-        let settled = error(&decode_chain(&frames, wu, hu));
-
-        let mut fresh = Encoder::new(w, h, 90, 2).expect("an encoder");
-        let fine = error(&decode_chain(&[encode(&mut fresh, &source, false).0], wu, hu));
-        assert!(
-            settled < coarse / 4.0 && settled < fine * 2.0,
-            "one frame at quality 90 left the unchanged picture at error {settled:.2} (coarse {coarse:.2}, a quality-90 keyframe {fine:.2}): the encoder skipped blocks that did not move"
-        );
     }
 
     /// A stream settles its picture with one frame: whole and at the quality
@@ -2047,11 +1448,11 @@ mod tests {
         let start = std::time::Instant::now();
         for packed_rgb in [false, true] {
             let mut walk = walk::QualityWalk::new(90, std::time::Duration::from_millis(33), true);
-            let mut stream = Stream::new(w, h, 90, 2).expect("a stream");
+            let mut stream = Stream::new(w, h, 90, 2, Coder::Native).expect("a stream");
             stream.set_quality(QUALITY_MIN);
             let mut frames = vec![Vec::new()];
             if packed_rgb { stream.read_rgb(&rgb, None) } else { stream.read_bgrx(&bgrx, wu * 4, None) }.expect("a read");
-            stream.encode(false, &mut frames[0]).expect("an encode");
+            stream.encode(false, &mut frames[0]).expect("a frame");
             walk.sent(stream.coarsest(), start);
             assert_eq!((stream.coarsest(), walk.settle_at()), (QUALITY_MIN, Some(start + walk::SETTLE_IDLE)));
             let coarse = error(&decode_chain(&frames, wu, hu));
@@ -2069,7 +1470,8 @@ mod tests {
             // The motion after it is at what the link bears, and where it is.
             let mut moved = Vec::new();
             stream.read_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }])).expect("a read");
-            stream.encode(false, &mut moved).expect("an encode");
+            stream.encode(false, &mut moved).expect("a frame");
+            frames.push(moved);
             walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
             assert_eq!((stream.coarsest(), walk.settle_at().is_some()), (QUALITY_MIN, true), "a coarse frame after the settle owes none");
 
@@ -2079,10 +1481,12 @@ mod tests {
             // the corner coarse, and a finer one of the corner leaves nothing.
             stream.set_quality(90);
             stream.read_rgb(&rgb, Some(&[Rect { x: 64, y: 64, width: 16, height: 16 }])).expect("a read");
-            stream.encode(false, &mut Vec::new()).expect("an encode");
+            frames.push(Vec::new());
+            stream.encode(false, frames.last_mut().expect("pushed above")).expect("a frame");
             assert_eq!(stream.coarsest(), QUALITY_MIN, "a frame coded what was read for the one before it");
             stream.read_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }])).expect("a read");
-            stream.encode(false, &mut Vec::new()).expect("an encode");
+            frames.push(Vec::new());
+            stream.encode(false, frames.last_mut().expect("pushed above")).expect("a frame");
             assert_eq!(stream.coarsest(), 90, "a frame of one corner coded more than it");
             stream.set_quality(QUALITY_MIN);
 
@@ -2090,6 +1494,9 @@ mod tests {
             let mut key = Vec::new();
             assert!(stream.settle(90, true, &mut key).expect("a settle"));
             assert_eq!((stream.quality(), stream.coarsest(), frame_header(&key).map(|header| header.keyframe)), (QUALITY_MIN, 90, Some(true)));
+            // Every frame of the stream decodes, in the order it was made.
+            frames.push(key);
+            decode_chain(&frames, wu, hu);
 
             assert_eq!(stream.quality(), QUALITY_MIN);
         }
@@ -2099,9 +1506,9 @@ mod tests {
     /// mid-stream without spending a keyframe to do it.
     #[test]
     fn the_quality_moves_on_a_live_encoder_without_a_keyframe() {
-        let mut encoder = Encoder::new(320, 240, 90, 2).expect("an encoder");
+        let mut encoder = Followed::new(320, 240, 90, 2);
         assert_eq!(encoder.quality(), 90);
-        let frame = |encoder: &mut Encoder, step| encode(encoder, &picture(320, 240, &moving(step)), false);
+        let frame = |encoder: &mut Followed, step| encode(encoder, &picture(320, 240, &moving(step)), false);
         frame(&mut encoder, 0);
         let fine: usize = (1..5).map(|step| frame(&mut encoder, step).0.len()).sum();
 
@@ -2119,9 +1526,9 @@ mod tests {
     /// across the change still decodes to its picture.
     #[test]
     fn the_speed_moves_on_a_live_encoder_without_a_keyframe() {
-        let mut encoder = Encoder::new(320, 240, 90, 2).expect("an encoder");
+        let mut encoder = Followed::new(320, 240, 90, 2);
         assert_eq!(encoder.speed(), Speed::Usual);
-        let frame = |encoder: &mut Encoder, step| encode(encoder, &picture(320, 240, &moving(step)), false);
+        let frame = |encoder: &mut Followed, step| encode(encoder, &picture(320, 240, &moving(step)), false);
         let mut frames = vec![frame(&mut encoder, 0).0];
         for speed in [Speed::Fastest, Speed::Usual] {
             encoder.set_speed(speed);
@@ -2140,10 +1547,10 @@ mod tests {
         assert!(ground.iter().zip([30u8, 60, 90]).all(|(c, want)| c.abs_diff(want) <= 8), "the background decoded as {ground:?}");
     }
 
-    /// An odd side is carried as it is, and decodes at its own
-    /// size, every sample to its last row and column within 3 levels of the
-    /// planes the encoder was given: the finest quantizer still moves a flat
-    /// block by a level or two (luma 126 to 127 on x86_64, 125 to 127 on arm64).
+    /// An odd side is carried as it is and decodes at its own size, every
+    /// sample to its last row and column within 3 levels of the planes the
+    /// encoder was given: the finest quantizer still moves a flat block by a
+    /// level or two.
     ///
     /// Judged on the planes rather than on RGB: the conversions either side of
     /// the codec are the `yuv` crate's, whose AVX2, NEON and scalar paths round
@@ -2153,24 +1560,26 @@ mod tests {
     fn an_odd_sized_picture_encodes_and_decodes_at_its_own_size() {
         let (w, h) = (33u16, 17u16);
         let source = picture(w, h, &flat(w, h, [40, 180, 90]));
-        let mut encoder = Encoder::new(w, h, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Followed::new(w, h, QUALITY_MAX, 1);
         let (frame, _) = encode(&mut encoder, &source, false);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let decoded = decoder.decode(&frame).expect("a decode");
         assert_eq!(decoded.size(), (33, 17));
-        let (given, got, got_strides) = (source.planes(), decoded.planes(), decoded.strides());
+        let (given, given_strides) = (source.planes(), source.strides());
+        let (got, got_strides) = (decoded.planes(), decoded.strides());
         for plane in 0..3 {
             for (x, y) in (0..17).flat_map(|y| (0..33).map(move |x| (x, y))) {
-                let (want, have) = (given[plane][y * source.stride() + x], got[plane][y * got_strides[plane] + x]);
+                let (want, have) = (given[plane][y * given_strides[plane] + x], got[plane][y * got_strides[plane] + x]);
                 assert!(want.abs_diff(have) <= 3, "plane {plane} at {x},{y}: {have}, given {want}");
             }
         }
         let mut out = vec![0; 33 * 17 * 4];
-        decoded.write_bgrx(&mut out, 33 * 4).expect("a picture that fits");
-        // 1919×1079 as a desktop is.
+        decoded.write_bgrx(&mut out, 33 * 4).expect("a buffer the picture fits");
+        // 1919×1079 as a desktop is, at the size the gateway once padded.
         let source = picture(1919, 1079, &flat(1919, 1079, [90, 90, 90]));
-        let mut encoder = Encoder::new(1919, 1079, 60, 2).expect("an encoder");
-        assert!(encoder.encode(&source, false, None, &mut Vec::new()).is_ok());
+        let mut encoder = Followed::new(1919, 1079, 60, 2);
+        let (frame, _) = encode(&mut encoder, &source, false);
+        assert_eq!(Decoder::new(1).expect("a decoder").decode(&frame).expect("a decode").size(), (1919, 1079));
     }
 
     /// Only the frames that are asked to be keyframes are, and the ones between
@@ -2178,7 +1587,7 @@ mod tests {
     #[test]
     fn keyframes_come_when_asked_and_the_frames_between_decode() {
         let (w, h) = (64u16, 32u16);
-        let mut encoder = Encoder::new(w, h, 60, 1).expect("an encoder");
+        let mut encoder = Followed::new(w, h, 60, 1);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let mut out = vec![0; 64 * 32 * 4];
         for step in 0..5usize {
@@ -2190,7 +1599,7 @@ mod tests {
             }
             let (frame, keyframe) = encode(&mut encoder, &picture(w, h, &rgb), step == 3);
             assert_eq!(keyframe, step == 0 || step == 3, "frame {step}");
-            decoder.decode(&frame).expect("a decode").write_bgrx(&mut out, 64 * 4).expect("a picture that fits");
+            decoder.decode(&frame).expect("a decode").write_bgrx(&mut out, 64 * 4).expect("a buffer the picture fits");
             let lit = &out[(step * 4 + 4) * 4..][..3];
             assert!(lit.iter().all(|&c| c > 200), "frame {step} did not decode to its own picture: {lit:?}");
         }
@@ -2220,23 +1629,33 @@ mod tests {
         // Small, but not level 1: 76_800 samples is already past level 1.1's
         // 73_728. Level 1 is 256x144, which no desktop is.
         assert_eq!(codec_string(320, 240).as_deref(), Some("vp09.01.20.08.03.06.06.06.00"));
+        // Profile 1, eight bits and 4:4:4 whatever the size, and the colour
+        // fields never move: BT.601 at studio swing is what every keyframe
+        // header declares, and a string that left them out would be read as
+        // BT.709.
+        for (w, h) in [(320u16, 240u16), (1920, 1080), (3840, 2160), (3840, 2400)] {
+            let string = codec_string(w, h).expect("a level for a real desktop");
+            assert!(string.starts_with("vp09.01."), "not profile 1: {string}");
+            assert!(string.ends_with(".08.03.06.06.06.00"), "not 8-bit 4:4:4 BT.601: {string}");
+        }
         // At 60 frames a second the sample rate binds where the picture size did
         // not: 1080p60 is 124_416_000 samples a second, past 4.0's 83_558_400,
         // and 4K60 497_664_000, past 5.0's 311_951_360.
         let at_60 = |w, h| super::codec_string(w, h, 60);
         assert_eq!(at_60(1920, 1080).as_deref(), Some("vp09.01.41.08.03.06.06.06.00"));
         assert_eq!(at_60(3840, 2160).as_deref(), Some("vp09.01.51.08.03.06.06.06.00"));
-        assert_eq!(at_60(20_000, 20_000), None, "no level covers it");
+        assert_eq!(super::codec_string(20_000, 20_000, 60), None, "no level covers it");
     }
 
-    /// **Where the picture loss on a desktop stream would be.** At the dial's
-    /// finest quantizer a one-pixel coloured glyph stem comes back as it was,
-    /// where 4:2:0 would have averaged its one chroma sample with three
-    /// background pixels and returned it at a fraction of its colour.
+    /// **What a colour sample per pixel is for.** A one-pixel coloured glyph
+    /// stem on a dark terminal comes back as it was at the dial's finest
+    /// quantizer, where a stream that averaged its colour with the three
+    /// background pixels beside it would return it at a fraction of its
+    /// saturation at any quality.
     #[test]
-    fn a_stream_keeps_a_one_pixel_stem_its_colour() {
+    fn a_one_pixel_stem_keeps_its_colour() {
         let (rgb, at) = stems(64, 64);
-        let mut encoder = Encoder::new(64, 64, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Followed::new(64, 64, QUALITY_MAX, 1);
         let (frame, _) = encode(&mut encoder, &picture(64, 64, &rgb), false);
         let decoded = decode_chain(&[frame], 64, 64);
         let worst = at.iter().map(|&(x, y)| rgb_at(&decoded, 64, x, y).iter().zip([255u8, 121, 198]).map(|(a, b)| a.abs_diff(b)).max().unwrap()).max().unwrap();
@@ -2248,7 +1667,7 @@ mod tests {
     /// which is not what the conversion did.
     #[test]
     fn the_bitstream_declares_bt601_studio_swing() {
-        let mut encoder = Encoder::new(64, 64, 60, 1).expect("an encoder");
+        let mut encoder = Followed::new(64, 64, 60, 1);
         let (frame, _) = encode(&mut encoder, &picture(64, 64, &flat(64, 64, [200, 30, 30])), false);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let decoded = decoder.decode(&frame).expect("a decode");
@@ -2256,36 +1675,18 @@ mod tests {
         assert_eq!(decoded.planes()[1].len(), 63 * decoded.strides()[1] + 64);
     }
 
-    /// A 16×16 grey keyframe at 4:2:0, VP9 profile 0, as libvpx coded one.
-    const SUBSAMPLED_KEYFRAME: [u8; 41] = [
-        0x82, 0x49, 0x83, 0x42, 0x20, 0x00, 0xf0, 0x00, 0xf6, 0x1a, 0x38, 0x24, 0x1c, 0x18, 0xf8, 0x00, 0x00, 0x20, 0x40, 0x00, 0x22, 0x9b, 0xfd, 0x6c, 0x3c, 0x2f,
-        0x2f, 0xc0, 0xaf, 0x42, 0xc5, 0xec, 0xe9, 0x2f, 0x81, 0x85, 0x05, 0xc0, 0xce, 0x9d, 0x00,
-    ];
-
-    /// A frame of any other profile decodes to a picture this crate does not
-    /// read, and says so rather than handing back planes of the wrong size.
     #[test]
-    fn a_frame_not_444_is_refused() {
-        assert_eq!(frame_header(&SUBSAMPLED_KEYFRAME), Some(FrameHeader { profile: 0, keyframe: true }));
-        let mut decoder = Decoder::new(1).expect("a decoder");
-        assert!(matches!(decoder.decode(&SUBSAMPLED_KEYFRAME), Err(Error::Format(_, 8))));
-    }
-
-    #[test]
-    fn a_wrong_picture_or_frame_is_an_error_rather_than_a_read_past_the_end() {
-        let mut encoder = Encoder::new(32, 16, 60, 1).expect("an encoder");
+    fn a_wrong_picture_is_an_error_rather_than_a_read_past_the_end() {
+        let mut encoder = Followed::new(32, 16, 60, 1);
         let other = picture(16, 16, &flat(16, 16, [0, 0, 0]));
         assert!(matches!(encoder.encode(&other, false, None, &mut Vec::new()), Err(Error::Mismatch(32, 16, 16, 16))));
         assert!(matches!(Encoder::new(0, 16, 60, 1), Err(Error::Empty(0, 16))));
         assert!(matches!(Encoder::new(16, 16, 60, 0), Err(Error::Threads(0))));
-        assert!(matches!(Decoder::new(0), Err(Error::Threads(0))));
 
         let (frame, _) = encode(&mut encoder, &picture(32, 16, &flat(32, 16, [0, 0, 0])), false);
         let mut decoder = Decoder::new(1).expect("a decoder");
         assert!(decoder.decode(&[0xFF, 0x00, 0x12]).is_err());
-        let decoded = decoder.decode(&frame).expect("a decode");
-        let mut out = [0; 10];
-        assert!(matches!(decoded.write_bgrx(&mut out, 128), Err(Error::Buffer { .. })));
+        assert_eq!(decoder.decode(&frame).expect("a decode").size(), (32, 16));
     }
 
     /// The walk and a live encoder together, on a link that carries so many
@@ -2335,7 +1736,7 @@ mod tests {
         }
 
         struct Session {
-            encoder: Encoder,
+            encoder: Followed,
             decoder: Decoder,
             walk: QualityWalk,
             now: Instant,
@@ -2366,7 +1767,7 @@ mod tests {
                     assert_eq!(keyframe, self.step == 0, "frame {}: a move of the dial cost a keyframe", self.step);
                     let decoded = self.decoder.decode(&frame).expect("a decode");
                     assert_eq!(decoded.size(), (u32::from(W), u32::from(H)));
-                    let (given, stride) = (source.planes()[0], source.stride());
+                    let (given, stride) = (source.planes()[0], source.strides()[0]);
                     let (got, got_stride) = (decoded.planes()[0], decoded.strides()[0]);
                     let distance: u64 = (0..usize::from(H))
                         .flat_map(|y| (0..usize::from(W)).map(move |x| (x, y)))
@@ -2390,7 +1791,7 @@ mod tests {
 
         // A second of delta frames at `quality`, on an encoder of its own.
         let per_second = |quality| {
-            let mut encoder = Encoder::new(W, H, quality, 2).expect("an encoder");
+            let mut encoder = Followed::new(W, H, quality, 2);
             (0..31).map(|step| encode(&mut encoder, &churning(step), false).0.len()).skip(1).sum::<usize>() as f64
         };
         let (ceiling, floor) = (per_second(CEILING), per_second(QUALITY_FLOOR));
@@ -2399,7 +1800,7 @@ mod tests {
 
         let start = Instant::now();
         let mut session = Session {
-            encoder: Encoder::new(W, H, CEILING, 2).expect("an encoder"),
+            encoder: Followed::new(W, H, CEILING, 2),
             decoder: Decoder::new(1).expect("a decoder"),
             walk: QualityWalk::new(CEILING, FRAME, true),
             now: start,

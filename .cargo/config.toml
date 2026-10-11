@@ -1,0 +1,5 @@
+# The Rust coder's kernels are AVX2 on amd64, which its baseline lacks; a user
+# building this crate with the `native` feature for amd64 sets the same (see `src/native/lanes.rs`).
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-feature=+avx2"]
+rustdocflags = ["-C", "target-feature=+avx2"]

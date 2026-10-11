@@ -25,5 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: rustup update stable && rustup default stable && rustup component add clippy
+      # With the Rust coder, which is where the crate's own tests are, and
+      # without it, which is the build a machine with no AVX2 or NEON takes.
+      - run: cargo clippy --all-targets --features native -- -D warnings
+      - run: cargo test --features native
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
