@@ -47,5 +47,5 @@ nothing is configured or installed at build time.
 Use it by release tag:
 
 ```toml
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.14" }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.15" }
 ```
