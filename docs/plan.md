@@ -276,6 +276,7 @@ of its lines; every stream the same to the byte.
 | The loop filter passes a row of a superblock's edges at once where every line across them is one value, before it looks at any one edge | 0.87 to 0.98 | 0.97 to 1.00 | 0.96 to 1.00 |
 | The search's row hashes in three multiplies a position where they were eight (a hash of eight pixels made of two of four, each of two of two), its anchors picked from a row of flags walked eight at a time by `tzcnt`, and its scratch not cleared between rows | the same | the same | 0.98 to 1.02 |
 | The sums an intra mode is chosen by kept in 16 bits a line and multiplied in 32, where they were 64 a value and a plane at a time, and every intra prediction written a row at a time from a line of means along its edge, where a diagonal was written a pixel at a time and read back | 0.95 to 1.00 | 0.98 to 1.04 | 0.98 to 1.02 |
+| A block's residual against the previous frame measured four 8×8s side by side at a time, thirty-two pixels a register (`vpsadbw` for the sums, the differences' sizes squared by `vpmaddwd`), and the previous frame read once for the four | the same | 0.94 to 0.98 | 0.83 to 1.01 |
 
 The forward transforms are libvpx's to the bit as they were: the old ones
 and these gave the same coefficients for every size and type over the
@@ -347,6 +348,22 @@ On the floor, no stream changed:
    before and `walk`'s the same; the settles and the captures are within
    the run's noise. Left: the quantizer on NEON in eight `i16`, as
    amd64's is in sixteen, with item 9.
+
+And one the list did not have, found when the four were done and the
+captures profiled by line: **the residual against the previous frame**,
+which every vector a square is offered is ranked by. It was measured an
+8×8 at a time, each with its own read of the previous frame per plane,
+and was a sixth of the coder's time on the captures: at 1920×1080 a
+vector other than zero is measured on two to four times as many 8×8s as
+the zero vector is. Four side by side are now one read and one kernel,
+where a row of a square has four not yet measured and the picture holds
+them. `browser`'s capture is 0.83 of the build before, `drag`'s frames
+0.89, the other captures 0.96 to 0.98 but `terminal`'s, which measures
+few, and the settles 0.94 to 0.98. On arm64 the four are still an 8×8
+at a time behind the one read. Looked at with it and left: the scan for
+what has not changed is 32 pixels a register already, the compiler's,
+and waits on memory; and no kernel of a keyframe is over 7% of it, the
+bool coder's chain 10%.
 
 Then, as before:
 

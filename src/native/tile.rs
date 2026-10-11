@@ -919,11 +919,24 @@ impl<'a> Tile<'a> {
         }
         let (rows, cols) = self.inside(mi_row, mi_col, SB_LOG2);
         for r in rows {
+            let py = (mi_row + r) * 8;
+            // The residuals four 8×8s at a time, as far as the row goes.
+            let mut residuals = [Moments::default(); 8];
+            if self.previous.is_some() {
+                let mut c = cols.start;
+                while c < cols.end {
+                    if c + 4 <= cols.end {
+                        residuals[c..c + 4].copy_from_slice(&self.residual_moments4((mi_col + c) * 8, py, Mv::ZERO));
+                        c += 4;
+                    } else {
+                        residuals[c] = self.residual_moments((mi_col + c) * 8, py, Mv::ZERO);
+                        c += 1;
+                    }
+                }
+            }
             for c in cols.clone() {
-                let (px, py) = ((mi_col + c) * 8, (mi_row + r) * 8);
-                let source = self.source_moments(px, py);
-                let residual = if self.previous.is_some() { self.residual_moments(px, py, Mv::ZERO) } else { Moments::default() };
-                self.measures[r * 8 + c] = Measure { source, residual };
+                let source = self.source_moments((mi_col + c) * 8, py);
+                self.measures[r * 8 + c] = Measure { source, residual: residuals[c] };
             }
         }
     }
@@ -1014,6 +1027,28 @@ impl<'a> Tile<'a> {
         m
     }
 
+    /// `residual_moments` of the four 8×8s side by side from `(px, py)`:
+    /// the previous frame read once for the four, and their differences
+    /// taken a row of the four at a time, where the picture holds them all.
+    fn residual_moments4(&mut self, px: usize, py: usize, mv: Mv) -> [Moments; 4] {
+        let src = self.source;
+        if px + 32 > src.width || py + 8 > src.height {
+            return std::array::from_fn(|i| self.residual_moments(px + 8 * i, py, mv));
+        }
+        let reference = self.previous.as_ref().expect("an inter frame").reference;
+        let (dx, dy) = mv.split();
+        let mut four = [Moments::default(); 4];
+        for plane in 0..3 {
+            let (prediction, stride) = reference.block(plane, (px as isize + dx, py as isize + dy), (32, 8), (src.width, src.height), &mut self.patch);
+            let moments = pixels::difference_moments4(&src.planes[plane][py * src.stride + px..], src.stride, prediction, stride);
+            for (m, (sum, squares)) in four.iter_mut().zip(moments) {
+                m.sums[plane] = i64::from(sum);
+                m.squares += i64::from(squares);
+            }
+        }
+        four
+    }
+
     /// The moments of the square of `1 << n` 8×8s at `(mi_row, mi_col)`, as
     /// far as the frame holds it, less the previous frame at `mv`, a vector
     /// other than zero, from it: at its nearest whole pixels, which measure
@@ -1033,15 +1068,28 @@ impl<'a> Tile<'a> {
         };
         let mut total = Moments::default();
         for r in rows {
-            for c in cols.clone() {
+            let mut c = cols.start;
+            while c < cols.end {
                 let i = r * 8 + c;
-                if self.moved[at].2 & 1 << i == 0 {
+                // Four 8×8s at a time where the row has four not yet
+                // measured.
+                let four = c + 4 <= cols.end && self.moved[at].2 >> i & 0xf == 0;
+                if four {
+                    let m = self.residual_moments4((col0 + c) * 8, (row0 + r) * 8, mv);
+                    let (_, moments, measured) = &mut self.moved[at];
+                    moments[i..i + 4].copy_from_slice(&m);
+                    *measured |= 0xf << i;
+                } else if self.moved[at].2 & 1 << i == 0 {
                     let m = self.residual_moments((col0 + c) * 8, (row0 + r) * 8, mv);
                     let (_, moments, measured) = &mut self.moved[at];
                     moments[i] = m;
                     *measured |= 1 << i;
                 }
-                total.add(&self.moved[at].1[i]);
+                let n = if four { 4 } else { 1 };
+                for m in &self.moved[at].1[i..i + n] {
+                    total.add(m);
+                }
+                c += n;
             }
         }
         total

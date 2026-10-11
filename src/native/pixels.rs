@@ -29,6 +29,15 @@ pub(super) fn difference_moments(a: &[u8], a_stride: usize, b: &[u8], b_stride: 
     return avx2::difference_moments(a, a_stride, b, b_stride);
 }
 
+/// `difference_moments` of each of the four 8×8s side by side at the start
+/// of `a`, less the four at the start of `b`.
+pub(super) fn difference_moments4(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> [(i32, i32); 4] {
+    #[cfg(target_arch = "aarch64")]
+    return neon::difference_moments4(a, a_stride, b, b_stride);
+    #[cfg(target_arch = "x86_64")]
+    return avx2::difference_moments4(a, a_stride, b, b_stride);
+}
+
 /// The `n`×`n` at the start of `a` less the one at the start of `b`, into
 /// `out` in raster order; `n` is 4 to 32.
 pub(super) fn subtract(n: usize, a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, out: &mut [i16]) {
@@ -138,6 +147,11 @@ mod neon {
         }
     }
 
+    /// An 8×8 at a time: eight pixels are a register's worth here.
+    pub(super) fn difference_moments4(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> [(i32, i32); 4] {
+        std::array::from_fn(|i| difference_moments(&a[8 * i..], a_stride, &b[8 * i..], b_stride))
+    }
+
     pub(super) fn subtract(n: usize, a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, out: &mut [i16]) {
         if n == 4 {
             // A row's four pixels each as the low half of a vector of eight.
@@ -237,6 +251,39 @@ mod avx2 {
         }
     }
 
+    /// A row of the four at a time, thirty-two pixels a register: each
+    /// 8×8's sum is its row's in `a` less its row's in `b`, which `vpsadbw`
+    /// against nothing gives eight pixels at a time, and its squares are
+    /// those of the differences' sizes, widened to 16 bits a half at a time.
+    pub(super) fn difference_moments4(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> [(i32, i32); 4] {
+        let row = |p: &[u8], at: usize| {
+            let p = &p[at..][..32];
+            unsafe { _mm256_loadu_si256(p.as_ptr().cast()) }
+        };
+        unsafe {
+            let zero = _mm256_setzero_si256();
+            // The low half of each lane is the first and the third 8×8,
+            // the high half the second and the fourth.
+            let (mut sums, mut low, mut high) = (zero, zero, zero);
+            for r in 0..8 {
+                let (x, y) = (row(a, r * a_stride), row(b, r * b_stride));
+                sums = _mm256_add_epi64(sums, _mm256_sub_epi64(_mm256_sad_epu8(x, zero), _mm256_sad_epu8(y, zero)));
+                let d = _mm256_or_si256(_mm256_subs_epu8(x, y), _mm256_subs_epu8(y, x));
+                let (l, h) = (_mm256_unpacklo_epi8(d, zero), _mm256_unpackhi_epi8(d, zero));
+                low = _mm256_add_epi32(low, _mm256_madd_epi16(l, l));
+                high = _mm256_add_epi32(high, _mm256_madd_epi16(h, h));
+            }
+            // Each 8×8's four sums of squares into one.
+            let pairs = _mm256_hadd_epi32(low, high);
+            let squares = _mm256_hadd_epi32(pairs, pairs);
+            let (mut sum, mut square) = ([0i64; 4], [0i32; 8]);
+            // SAFETY: each is a register's worth.
+            _mm256_storeu_si256(sum.as_mut_ptr().cast(), sums);
+            _mm256_storeu_si256(square.as_mut_ptr().cast(), squares);
+            [(sum[0] as i32, square[0]), (sum[1] as i32, square[1]), (sum[2] as i32, square[4]), (sum[3] as i32, square[5])]
+        }
+    }
+
     pub(super) fn subtract(n: usize, a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, out: &mut [i16]) {
         match n {
             4 => {
@@ -303,6 +350,10 @@ mod tests {
             assert_eq!(line_sums(&a[at..], sa), scalar::line_sums(&a[at..], sa), "seed {seed}");
             assert_eq!(difference_moments(&a[at..], sa, &b, sb), scalar::difference_moments(&a[at..], sa, &b, sb), "seed {seed}");
             assert_eq!(difference_moments(&b, sb, &a[at..], sa), scalar::difference_moments(&b, sb, &a[at..], sa), "seed {seed}");
+            for (x, xs, y, ys) in [(&a[at..], sa, &b[..], sb), (&b[..], sb, &a[at..], sa)] {
+                let each: [(i32, i32); 4] = std::array::from_fn(|i| scalar::difference_moments(&x[8 * i..], xs, &y[8 * i..], ys));
+                assert_eq!(difference_moments4(x, xs, y, ys), each, "seed {seed}");
+            }
             for n in [4, 8, 16, 32] {
                 let (mut got, mut want) = (vec![0; n * n], vec![0; n * n]);
                 let (a, b) = (noise(n * 40, seed), noise(n * 40, seed + 7));
