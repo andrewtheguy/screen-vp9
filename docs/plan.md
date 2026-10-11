@@ -185,55 +185,60 @@ vp9-wasm has not been run on these streams.
 
 ## What is open
 
-In the order it is taken up:
+In the order it is taken up, set again on 2026-10-11: a very busy picture,
+the whole screen changing many times a second, is the edge of a remote
+desktop and not its middle, so what is only about one comes last.
 
-1. **A settle of a busy picture takes 1.1 to 1.8 of libvpx's time** from
-   65 and from 80, more from 2048 wide than under it. libvpx's settle
-   time read at two levels because the measurement made a fresh encoder a
-   pass and its second frame paid page faults, or did not; on encoders
-   kept warm it is 0.5 to 0.65 of what it read, and this is what is left.
-   The time is in the transform sizes under the largest, which are the
-   settle's 1.0 to 1.4 dB over libvpx's from 65; from 80 they buy 0.0 to
-   0.2 dB. Untried: the smaller sizes only where the largest leaves more
-   than some error, and what a settle from 80 or 89 needs of them at all.
-2. **An intra block's rounding past 48/128**: 56/128 buys a keyframe
-   another 0.4 dB for 0.5% more bytes at dial 65 and up, and costs `walk`
-   3% of its capture for 0.11 dB and `drag`'s capture 0.06 dB. Why
-   `drag` loses is not known; a rounding by block size or by frame kind
-   is untried.
-3. **The frames of `video` and `walk`**, 0.64 to 0.83 of libvpx's time, the
-   nearest the line of the whole captures. Profiled: the token estimate,
-   the block walk, the intra mode and the transforms 5 to 11% each, and
-   the search 9 to 12%, now gone over: its projections, its hashing and
-   its tables' upkeep 0.3 to 0.45 ms each of an 11 ms frame at 1920×1080,
-   none of them one thing. What is left untried in it: the row hashes of
-   an 8×8 row taken once and not twice, the projections' sums in sixteen
-   bits, a table of its own in place of the standard one; a hundredth of
-   a frame each.
-4. **The 4×4 split threshold**: what makes it safe at 10 is a diagonal mode
-   for a 4×4 where the 8×8 would have taken one, and knowing why a churning
-   picture costs more at a low dial with it.
-5. **The transforms run in 32-bit lanes** (`vpmulld` on AVX2), where
-   libvpx's are 16-bit. Not measured.
-6. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
-   four (27 ms of wall time for 86 of processor time at 1920×1080). No
-   thread was found waiting; what is left is memory, and not looked into.
-   The first keyframe of a stream runs on cold buffers (130 ms against 40
-   for the next at 1920×1080).
-7. **A flat desktop settled from dial 20** takes 4 to 10 times libvpx's
+1. **A flat desktop settled from dial 20** takes 4 to 10 times libvpx's
    bytes: one or two kilobytes against a few hundred bytes.
-8. **`Speed::Fastest` was not measured in this replan.**
-9. **Never measured, from the first plan's list**: the updates to the other
+2. **Never measured, from the first plan's list**: the updates to the other
    probabilities on frames of a line of text, the loop filter in one and
    two columns on `terminal` and `flood`, `INTRA_MODE_GAIN`, vectors ranked
    by their residual's squares on `browser` and `drag`, and `terminal` and
    `flood` captured at quality 100.
-10. **A gate that fails a build.** The comparison is in the tests again, so
-    it can be one; its lines are not decided, and a time on this machine
-    moves by a tenth from run to run.
-11. **The conversion is not the same on arm64 and amd64.** The `yuv`
-    crate's NEON path makes a luma of 217 of an RGB grey of 235 where its
-    AVX2 path makes 218. Which values and planes differ is not measured.
+3. **The conversion is not the same on arm64 and amd64.** The `yuv`
+   crate's NEON path makes a luma of 217 of an RGB grey of 235 where its
+   AVX2 path makes 218. Which values and planes differ is not measured.
+4. **The 4×4 split threshold**: what makes it safe at 10 is a diagonal mode
+   for a 4×4 where the 8×8 would have taken one, and knowing why a churning
+   picture costs more at a low dial with it.
+5. **An intra block's rounding past 48/128**: 56/128 buys a keyframe
+   another 0.4 dB for 0.5% more bytes at dial 65 and up, and costs `walk`
+   3% of its capture for 0.11 dB and `drag`'s capture 0.06 dB. Why
+   `drag` loses is not known; a rounding by block size or by frame kind
+   is untried.
+6. **The first keyframe of a stream runs on cold buffers** (130 ms against
+   40 for the next at 1920×1080).
+7. **A gate that fails a build.** The comparison is in the tests again, so
+   it can be one; its lines are not decided, and a time on this machine
+   moves by a tenth from run to run.
+8. **The transforms run in 32-bit lanes** (`vpmulld` on AVX2), where
+   libvpx's are 16-bit. Not measured.
+9. **`Speed::Fastest` was not measured in this replan.**
+
+Of a very busy picture alone, and last:
+
+10. **A settle of a busy picture takes 1.1 to 1.8 of libvpx's time** from
+    65 and from 80, more from 2048 wide than under it. libvpx's settle
+    time read at two levels because the measurement made a fresh encoder a
+    pass and its second frame paid page faults, or did not; on encoders
+    kept warm it is 0.5 to 0.65 of what it read, and this is what is left.
+    The time is in the transform sizes under the largest, which are the
+    settle's 1.0 to 1.4 dB over libvpx's from 65; from 80 they buy 0.0 to
+    0.2 dB. Untried: the smaller sizes only where the largest leaves more
+    than some error, and what a settle from 80 or 89 needs of them at all.
+11. **The frames of `video` and `walk`**, 0.64 to 0.83 of libvpx's time, the
+    nearest the line of the whole captures. Profiled: the token estimate,
+    the block walk, the intra mode and the transforms 5 to 11% each, and
+    the search 9 to 12%, now gone over: its projections, its hashing and
+    its tables' upkeep 0.3 to 0.45 ms each of an 11 ms frame at 1920×1080,
+    none of them one thing. What is left untried in it: the row hashes of
+    an 8×8 row taken once and not twice, the projections' sums in sixteen
+    bits, a table of its own in place of the standard one; a hundredth of
+    a frame each.
+12. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
+    four (27 ms of wall time for 86 of processor time at 1920×1080). No
+    thread was found waiting; what is left is memory, and not looked into.
 
 ## Main risk
 
