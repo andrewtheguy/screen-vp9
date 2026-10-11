@@ -26,8 +26,16 @@ jobs:
       - uses: actions/checkout@v5
       - run: rustup update stable && rustup default stable && rustup component add clippy
       # With the Rust coder, which is where the crate's own tests are, and
-      # without it, which is the build a machine with no AVX2 or NEON takes.
+      # without it, which is the build a machine with no AVX2 or NEON takes:
+      # `.cargo/config.toml` asks for AVX2 on amd64 whatever the features, so
+      # there the environment takes it back out.
       - run: cargo clippy --all-targets --features native -- -D warnings
       - run: cargo test --features native
       - run: cargo clippy --all-targets -- -D warnings
+        env:
+          RUSTFLAGS: ${{ runner.arch == 'X64' && '-C target-feature=-avx2' || '' }}
+          RUSTDOCFLAGS: ${{ runner.arch == 'X64' && '-C target-feature=-avx2' || '' }}
       - run: cargo test
+        env:
+          RUSTFLAGS: ${{ runner.arch == 'X64' && '-C target-feature=-avx2' || '' }}
+          RUSTDOCFLAGS: ${{ runner.arch == 'X64' && '-C target-feature=-avx2' || '' }}
