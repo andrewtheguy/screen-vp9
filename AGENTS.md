@@ -8,6 +8,12 @@
   the codec string or the quality walk changes here and reaches them as a
   pin bump. Nothing about a wire belongs here: how a frame is framed, where a
   link's lag is read from and which picture to encode are each user's own.
+- Those two are its only users, so the API is theirs alone and changes
+  whenever a better shape for them is found: no caller elsewhere is kept
+  working. It is the same shape as `screen-vp9`'s — the same `Stream` and
+  `Encoder` calls with the same signatures, the same `walk` — so that a user
+  holds one or the other without adapting either. A change to that shape is
+  made in both repositories.
 - Nothing a user builds links libvpx. It is a dev-dependency, which only the
   tests compile: the decoder in `src/decoder.rs`, and in `src/reference.rs` its
   encoder as `screen-vp9` sets it up, which the `*_against_libvpx` measurements

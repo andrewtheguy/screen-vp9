@@ -59,6 +59,10 @@ pub const QUALITY_MIN: u8 = 1;
 /// The finest end of the quality dial.
 pub const QUALITY_MAX: u8 = 100;
 
+/// The VP9 profile of every stream here: eight-bit 4:4:4, a colour sample per
+/// pixel, which is what [`FrameHeader::profile`] says of one of its frames.
+pub const PROFILE: u8 = 1;
+
 /// The finest quantizer the dial reaches. VP9's range is 0–63, coarsest last;
 /// below about 8 a VP9 desktop is visually lossless and costs several times the
 /// bytes to be so, so a dial that mapped past it would have a top third where
@@ -1178,7 +1182,7 @@ mod tests {
         let mut frame = |step, keyframe| encode(&mut encoder, &picture(320, 240, &moving(step)), keyframe);
         let first = frame(0, false);
         assert!(first.1, "a decoder has to be able to start somewhere");
-        assert_eq!(frame_header(&first.0), Some(FrameHeader { profile: 1, keyframe: true }));
+        assert_eq!(frame_header(&first.0), Some(FrameHeader { profile: PROFILE, keyframe: true }));
         assert!(!frame(1, false).1, "an unasked-for keyframe is bytes for nothing");
         assert!(!frame(2, false).1);
         let asked = frame(3, true);
