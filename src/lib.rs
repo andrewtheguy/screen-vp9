@@ -186,6 +186,12 @@ pub enum Error {
     /// libvpx refused a call, in its own words.
     #[error("vp9 {call}: {detail}")]
     Codec { call: &'static str, detail: String },
+    /// libvpx took the picture and made no frame of it: nothing was appended.
+    /// With no lag and no dropped frames it should not happen, and it is an
+    /// error and not an assertion because a caller can carry on from it, the
+    /// pixels being the next frame's to carry.
+    #[error("libvpx made no frame of the picture")]
+    NoFrame,
     #[error("a {0}x{1} picture has no pixels")]
     Empty(u16, u16),
     #[error("an encoder for {0} threads: libvpx takes 1 to {MAX_THREADS}")]
@@ -457,7 +463,7 @@ pub struct Encoder {
     /// Boxed so that its address never changes: libvpx is handed a pointer to
     /// it at init and every call after.
     ctx: Box<vpx::vpx_codec_ctx_t>,
-    /// The configuration libvpx is running on, kept so [`Self::set_quality`]
+    /// The configuration libvpx is running on, kept so [`Self::follow`]
     /// can hand back the same struct with two fields changed rather than
     /// rebuild one and risk disagreeing with the encoder about a field it never
     /// meant to touch.
@@ -466,10 +472,13 @@ pub struct Encoder {
     /// replaced on every frame. Never freed: `vpx_img_wrap` allocated nothing.
     img: vpx::vpx_image_t,
     size: (u16, u16),
-    /// The dial in force, which [`Self::set_quality`] moves.
+    /// The dial the next frame is coded at, which [`Self::set_quality`] moves.
     quality: u8,
-    /// The speed in force, which [`Self::set_speed`] moves.
+    /// The speed the next frame is searched at, which [`Self::set_speed`] moves.
     speed: Speed,
+    /// The dial and the speed libvpx is running at, which a frame brings to
+    /// the two above before it is coded ([`Self::follow`]).
+    running: (u8, Speed),
     /// Where timestamps are measured from. Real elapsed time rather than a
     /// frame counter, so a pts is a millisecond on the timebase set below: the
     /// desktop decides when a frame happens, and a counter would tell the
@@ -587,6 +596,7 @@ impl Encoder {
             size: (width, height),
             quality,
             speed: Speed::default(),
+            running: (quality, Speed::default()),
             started: std::time::Instant::now(),
             pts: -1,
             active: vec![0; usize::from(width).div_ceil(ACTIVE_BLOCK) * usize::from(height).div_ceil(ACTIVE_BLOCK)],
@@ -659,22 +669,36 @@ impl Encoder {
         self.quality
     }
 
-    /// Move the dial on the live encoder, without a keyframe: the next frame is
+    /// Move the dial, without a keyframe: the next frame is
     /// coded at the new quantizer against the frames before it. This is how a
     /// link that is behind gives quality up, and "without a keyframe" is the
     /// whole reason it is written this way rather than by rebuilding the encoder,
     /// which would force a keyframe — the most bytes a frame can be — at the
     /// exact moment the link has run out of room.
     ///
-    /// `vpx_codec_enc_config_set` is libvpx's own mechanism for it, and both
-    /// halves are needed: the config carries the quantizer bounds and the control
-    /// carries the value `VPX_Q` mode actually reads. A refusal leaves the
-    /// encoder at the quality [`Self::quality`] reports.
-    pub fn set_quality(&mut self, quality: u8) -> Result<(), Error> {
-        let quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
-        let q = quality_to_q(quality);
-        if q == quality_to_q(self.quality) {
-            self.quality = quality;
+    /// Nothing is asked of libvpx here: the frame that is coded at the dial
+    /// takes libvpx to it first, and a libvpx that refuses is that frame's
+    /// error ([`Self::encode`]).
+    pub fn set_quality(&mut self, quality: u8) {
+        self.quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
+    }
+
+    /// Bring libvpx to the dial and the speed the next frame is to be coded
+    /// at, where it is not there already.
+    ///
+    /// `vpx_codec_enc_config_set` is libvpx's own mechanism for the dial, and
+    /// both halves are needed: the config carries the quantizer bounds and the
+    /// control carries the value `VPX_Q` mode actually reads. A refusal leaves
+    /// libvpx where it was, to be asked again by the next frame.
+    fn follow(&mut self) -> Result<(), Error> {
+        if self.speed != self.running.1 {
+            // SAFETY: the context is live and the control's argument is an `int`.
+            unsafe { self.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, self.speed.cpu_used(), "cpuused")? };
+            self.running.1 = self.speed;
+        }
+        let q = quality_to_q(self.quality);
+        if q == quality_to_q(self.running.0) {
+            self.running.0 = self.quality;
             return Ok(());
         }
         // Edited on a copy and kept only once libvpx has accepted it, so a
@@ -688,20 +712,19 @@ impl Encoder {
         unsafe {
             check(vpx::vpx_codec_enc_config_set(&mut *self.ctx, &cfg), "enc_config_set")?;
             if let Err(refused) = self.control(vpx::vp8e_enc_control_id_VP8E_SET_CQ_LEVEL, q as c_int, "cq_level") {
-                // The bounds go back, so a refusal leaves the encoder wholly at
-                // the quality it reports. Should libvpx refuse the config it was
-                // running on a moment ago, the bounds pinned at `q` are what it
-                // codes at, whatever `cq_level` says: the encoder is at the new
-                // quality, and reports that.
+                // The bounds go back, so a refusal leaves libvpx wholly where
+                // it was. Should it refuse the config it was running on a
+                // moment ago, the bounds pinned at `q` are what it codes at,
+                // whatever `cq_level` says: it is at the new dial.
                 if check(vpx::vpx_codec_enc_config_set(&mut *self.ctx, &self.cfg), "enc_config_set").is_err() {
                     self.cfg = cfg;
-                    self.quality = quality;
+                    self.running.0 = self.quality;
                 }
                 return Err(refused);
             }
             self.cfg = cfg;
         }
-        self.quality = quality;
+        self.running.0 = self.quality;
         Ok(())
     }
 
@@ -724,18 +747,22 @@ impl Encoder {
         self.speed
     }
 
-    /// Move the speed on the live encoder, without a keyframe, as
-    /// [`Self::set_quality`] moves the dial: the next frame is searched at the
-    /// new speed against the frames before it. A refusal leaves the encoder at
-    /// the speed [`Self::speed`] reports.
-    pub fn set_speed(&mut self, speed: Speed) -> Result<(), Error> {
-        if speed == self.speed {
-            return Ok(());
-        }
-        // SAFETY: the context is live and the control's argument is an `int`.
-        unsafe { self.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, speed.cpu_used(), "cpuused")? };
+    /// Move the speed, without a keyframe, as [`Self::set_quality`] moves
+    /// the dial: the next frame is searched at the new speed against the
+    /// frames before it.
+    pub fn set_speed(&mut self, speed: Speed) {
         self.speed = speed;
-        Ok(())
+    }
+
+    /// Settle `picture` at `quality`: encode it whole and at that dial, and
+    /// leave the dial where it was, for the frames after it. Returns whether
+    /// the frame is a keyframe, as [`Self::encode`] does.
+    pub fn settle(&mut self, picture: &Picture, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
+        let walked = self.quality;
+        self.set_quality(quality);
+        let encoded = self.encode(picture, keyframe, None, out);
+        self.quality = walked;
+        encoded
     }
 
     /// Encode `picture` and append the frame to `out`. `keyframe` makes it one a
@@ -753,17 +780,17 @@ impl Encoder {
     /// [`Self::set_quality`] passes `None`. A keyframe codes everything
     /// whatever `changed` says.
     ///
-    /// Returns whether
-    /// the frame is a keyframe, or `None` when the encoder produced no bitstream
-    /// and nothing was appended: with no lag and no dropped frames that should be
-    /// unreachable, but it is a return value rather than an assertion because a
-    /// caller has to be ready to carry its pixels over to the next frame anyway.
-    pub fn encode(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+    /// Returns whether the frame is a keyframe. A libvpx that would not be
+    /// brought to the dial or the speed is an error before anything is coded,
+    /// and one that made no frame of the picture is [`Error::NoFrame`]:
+    /// nothing is appended either way.
+    pub fn encode(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>, out: &mut Vec<u8>) -> Result<bool, Error> {
         if picture.size() != self.size {
             let (w, h) = self.size;
             let (pw, ph) = picture.size();
             return Err(Error::Mismatch(w, h, pw, ph));
         }
+        self.follow()?;
         // Strictly increasing, which two encodes inside one millisecond would
         // otherwise not be.
         self.pts = (self.started.elapsed().as_millis() as i64).max(self.pts + 1);
@@ -829,7 +856,7 @@ impl Encoder {
                 log::warn!("vp9: one encode produced {packets} packets; expected one");
             }
             if out.len() == from {
-                return Ok(None);
+                return Err(Error::NoFrame);
             }
             // What this frame coded is at this dial now: the blocks its map
             // names, or all of them.
@@ -841,7 +868,7 @@ impl Encoder {
                 self.coded_at.fill(self.quality);
             }
             self.begun = true;
-            Ok(Some(keyframe))
+            Ok(keyframe)
         }
     }
 
@@ -939,9 +966,6 @@ pub struct Stream {
     /// The rectangles read since the last frame, while that is all that is
     /// owed.
     changed: Vec<Rect>,
-    /// A frame was coded that no decoder was handed, so the frames after it
-    /// are coded against a picture none holds: the next is a keyframe.
-    lost: bool,
 }
 
 /// What of a [`Stream`]'s planes its decoder is yet to be sent.
@@ -965,7 +989,6 @@ impl Stream {
             filled: false,
             owed: Owed::Whole,
             changed: Vec::new(),
-            lost: false,
         })
     }
 
@@ -980,8 +1003,8 @@ impl Stream {
     }
 
     /// Move the dial without a keyframe, as [`Encoder::set_quality`] does.
-    pub fn set_quality(&mut self, quality: u8) -> Result<(), Error> {
-        self.encoder.set_quality(quality)
+    pub fn set_quality(&mut self, quality: u8) {
+        self.encoder.set_quality(quality);
     }
 
     /// The coarsest dial any block of the decoder's picture was last coded at
@@ -1061,18 +1084,18 @@ impl Stream {
     }
 
     /// Encode the picture as it was last read and append the frame to `out`,
-    /// returning what [`Encoder::encode`] does. The frame codes what was read
+    /// returning whether it is a keyframe. The frame codes what was read
     /// since the frame before it: the blocks those rectangles touch, the whole
     /// picture if any read was whole, and no block at all if nothing was
     /// read, which is a frame all the same. `keyframe` makes it one a decoder
     /// can start from, which codes everything; the stream's first frame is
     /// one either way.
     ///
-    /// A frame the encoder produced nothing for, or failed at, leaves the
-    /// whole picture owed to the next, since no decoder was handed what this
-    /// one coded. A stream nothing was ever read into has no picture to code,
-    /// and says so ([`Error::Unread`]).
-    pub fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+    /// A frame libvpx made nothing of ([`Error::NoFrame`]), or failed at,
+    /// leaves the whole picture owed to the next, since no decoder was handed
+    /// what this one coded. A stream nothing was ever read into has no
+    /// picture to code, and says so ([`Error::Unread`]).
+    pub fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
         if !self.filled {
             return Err(Error::Unread);
         }
@@ -1083,12 +1106,9 @@ impl Stream {
         };
         // Until a frame comes out the planes are ahead of every decoder.
         self.owed = Owed::Whole;
-        let encoded = self.encoder.encode(&self.picture, keyframe || self.lost, changed, out)?;
-        if encoded.is_some() {
-            self.owed = Owed::Nothing;
-            self.lost = false;
-        }
-        Ok(encoded)
+        let keyframe = self.encoder.encode(&self.picture, keyframe, changed, out)?;
+        self.owed = Owed::Nothing;
+        Ok(keyframe)
     }
 
     /// Settle the picture at `quality`: encode it as it was last read, whole
@@ -1102,34 +1122,16 @@ impl Stream {
     /// read for it: a quiet desktop is the picture the planes hold, and one
     /// that changed since is read where it did ([`Self::read_bgrx`]) first.
     ///
-    /// Returns what [`Encoder::encode`] does. A dial the encoder would not
-    /// move to `quality` is an error before anything is coded. One it would
-    /// not move back is an error too, and the frame it had coded by then is
-    /// not appended: the stream stays at the [`Self::quality`] it reports,
-    /// the settle's and no longer the walk's, and its next frame is a
-    /// keyframe, since no decoder was handed the picture it would otherwise
-    /// be coded against. The walk is told where the encoder stayed
-    /// ([`walk::QualityWalk::stays_at`]) so that its next verdict starts from
-    /// the quality in force.
-    pub fn settle(&mut self, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<Option<bool>, Error> {
+    /// Returns whether the frame is a keyframe, and fails as
+    /// [`Self::encode`] does.
+    pub fn settle(&mut self, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
         if !self.filled {
             return Err(Error::Unread);
         }
-        let walked = self.encoder.quality();
-        self.encoder.set_quality(quality)?;
         self.owed = Owed::Whole;
-        let from = out.len();
-        let encoded = self.encode(keyframe, out);
-        // Back whatever the encode came to: the dial is the walk's again.
-        if let Err(stuck) = self.encoder.set_quality(walked) {
-            if out.len() > from {
-                out.truncate(from);
-                self.owed = Owed::Whole;
-                self.lost = true;
-            }
-            return encoded.and(Err(stuck));
-        }
-        encoded
+        let keyframe = self.encoder.settle(&self.picture, quality, keyframe, out)?;
+        self.owed = Owed::Nothing;
+        Ok(keyframe)
     }
 }
 
@@ -1371,7 +1373,7 @@ mod tests {
     /// Encode `picture` and return the frame with its keyframe bit.
     fn encode(encoder: &mut Encoder, picture: &Picture, keyframe: bool) -> (Vec<u8>, bool) {
         let mut out = Vec::new();
-        let key = encoder.encode(picture, keyframe, None, &mut out).expect("an encode").expect("a frame");
+        let key = encoder.encode(picture, keyframe, None, &mut out).expect("an encode");
         (out, key)
     }
 
@@ -1448,7 +1450,7 @@ mod tests {
         let mut frames = vec![encode(&mut encoder, &picture(w, h, &rgb), false).0];
         let mut step = |rgb: &[u8], changed: Option<&[Rect]>, want: [(Rect, [u8; 3]); 3]| {
             let mut out = Vec::new();
-            let key = encoder.encode(&picture(w, h, rgb), false, changed, &mut out).expect("an encode").expect("a frame");
+            let key = encoder.encode(&picture(w, h, rgb), false, changed, &mut out).expect("an encode");
             assert!(!key, "a frame told where it changed cost a keyframe");
             frames.push(out);
             let back = decode_chain(&frames, wu, hu);
@@ -1507,17 +1509,17 @@ mod tests {
         let mut encoder = Encoder::new(w, h, QUALITY_MIN, 2).expect("an encoder");
         // Before a frame nothing is coded at any dial, wherever it has been.
         let mut unused = Encoder::new(w, h, 20, 2).expect("an encoder");
-        unused.set_quality(90).expect("the encoder to accept a new quantizer");
+        unused.set_quality(90);
         assert_eq!(unused.coarsest(), 90, "before a frame, the dial as it stands");
         assert_eq!(encoder.coarsest(), QUALITY_MIN);
         let mut frames = vec![encode(&mut encoder, &source, false).0];
         let coarse = error(&decode_chain(&frames, wu, hu));
         assert_eq!(encoder.coarsest(), QUALITY_MIN);
 
-        encoder.set_quality(90).expect("the encoder to accept a new quantizer");
+        encoder.set_quality(90);
         assert_eq!(encoder.coarsest(), QUALITY_MIN, "a dial that moved has coded nothing yet");
         let mut partial = Vec::new();
-        encoder.encode(&source, false, Some(&[named]), &mut partial).expect("an encode").expect("a frame");
+        encoder.encode(&source, false, Some(&[named]), &mut partial).expect("an encode");
         frames.push(partial);
         let skipped = error(&decode_chain(&frames, wu, hu));
         assert!(skipped > coarse * 0.9, "a frame told of one corner left the rest at error {skipped:.2}, from {coarse:.2}: it coded blocks it was to skip");
@@ -1530,13 +1532,13 @@ mod tests {
 
         // Coarse where a frame coded and nowhere else, until frames told where
         // have between them coded every block finer.
-        encoder.set_quality(40).expect("the encoder to accept a new quantizer");
-        encoder.encode(&source, false, Some(&[named]), &mut Vec::new()).expect("an encode").expect("a frame");
+        encoder.set_quality(40);
+        encoder.encode(&source, false, Some(&[named]), &mut Vec::new()).expect("an encode");
         assert_eq!(encoder.coarsest(), 40);
-        encoder.set_quality(90).expect("the encoder to accept a new quantizer");
-        encoder.encode(&source, false, Some(&[Rect { x: 64, y: 0, width: 256, height: 240 }]), &mut Vec::new()).expect("an encode").expect("a frame");
+        encoder.set_quality(90);
+        encoder.encode(&source, false, Some(&[Rect { x: 64, y: 0, width: 256, height: 240 }]), &mut Vec::new()).expect("an encode");
         assert_eq!(encoder.coarsest(), 40, "the corner coded at 40 was not in that frame");
-        encoder.encode(&source, false, Some(&[Rect { x: 10, y: 10, width: 40, height: 40 }]), &mut Vec::new()).expect("an encode").expect("a frame");
+        encoder.encode(&source, false, Some(&[Rect { x: 10, y: 10, width: 40, height: 40 }]), &mut Vec::new()).expect("an encode");
         assert_eq!(encoder.coarsest(), 90, "every block has been coded at 90 since");
     }
 
@@ -1623,7 +1625,7 @@ mod tests {
                 if bgrx { stream.read_bgrx(&pixels, wu * 4, changed) } else { stream.read_rgb(&pixels, changed) }.expect("a read");
                 let key = stream.encode(keyframe, &mut out);
                 frames.push(out);
-                (key.expect("an encode").expect("a frame"), decode_chain(&frames, wu, hu))
+                (key.expect("an encode"), decode_chain(&frames, wu, hu))
             };
             let whole = flat(w, h, BACK);
 
@@ -1656,14 +1658,14 @@ mod tests {
                 if bgrx { stream.read_bgrx(&pixels, wu * 4, Some(&[rect])) } else { stream.read_rgb(&pixels, Some(&[rect])) }.expect("a read");
             }
             let mut out = Vec::new();
-            assert_eq!(stream.encode(false, &mut out).expect("an encode"), Some(false));
+            assert!(!stream.encode(false, &mut out).expect("an encode"));
             frames.push(out);
             let back = decode_chain(&frames, wu, hu);
             assert!(near(rgb_at(&back, wu, 48, 24), BACK) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "bgrx {bgrx}: a frame did not carry both of its reads");
 
             // A frame of nothing read is a frame, and changes nothing.
             let mut out = Vec::new();
-            assert_eq!(stream.encode(false, &mut out).expect("an encode"), Some(false));
+            assert!(!stream.encode(false, &mut out).expect("an encode"));
             frames.push(out);
             assert_eq!(decode_chain(&frames, wu, hu), back, "bgrx {bgrx}: a frame of nothing read changed the picture");
 
@@ -1674,7 +1676,7 @@ mod tests {
             let pixels = packed(&rows, bgrx);
             if bgrx { stream.read_bgrx(&pixels, wu * 4, Some(&[named])) } else { stream.read_rgb(&pixels, Some(&[named])) }.expect("a read");
             let mut out = Vec::new();
-            assert_eq!(stream.settle(90, false, &mut out).expect("a settle"), Some(false));
+            assert!(!stream.settle(90, false, &mut out).expect("a settle"));
             frames.push(out);
             let back = decode_chain(&frames, wu, hu);
             assert!(near(rgb_at(&back, wu, 48, 24), LIT) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "bgrx {bgrx}: a settle did not carry what was read for it");
@@ -1686,7 +1688,7 @@ mod tests {
             let pixels = packed(&rows, bgrx);
             if bgrx { stream.read_bgrx(&pixels, wu * 4, Some(&[named])) } else { stream.read_rgb(&pixels, Some(&[named])) }.expect("a read");
             let mut out = Vec::new();
-            assert_eq!(stream.encode(true, &mut out).expect("an encode"), Some(true));
+            assert!(stream.encode(true, &mut out).expect("an encode"));
             let back = decode_chain(&[out], wu, hu);
             assert!(near(rgb_at(&back, wu, 48, 24), LIT) && near(rgb_at(&back, wu, 48, 70), LIT) && near(rgb_at(&back, wu, 4, 4), BACK), "bgrx {bgrx}: the keyframe was not the whole picture");
 
@@ -2005,7 +2007,7 @@ mod tests {
         let mut frames = vec![encode(&mut encoder, &source, false).0];
         let coarse = error(&decode_chain(&frames, wu, hu));
 
-        encoder.set_quality(90).expect("the encoder to accept a new quantizer");
+        encoder.set_quality(90);
         let (settle, keyframe) = encode(&mut encoder, &source, false);
         assert!(!keyframe, "the settle frame cost a keyframe");
         frames.push(settle);
@@ -2046,10 +2048,10 @@ mod tests {
         for packed_rgb in [false, true] {
             let mut walk = walk::QualityWalk::new(90, std::time::Duration::from_millis(33), true);
             let mut stream = Stream::new(w, h, 90, 2).expect("a stream");
-            stream.set_quality(QUALITY_MIN).expect("a live encoder takes a new quality");
+            stream.set_quality(QUALITY_MIN);
             let mut frames = vec![Vec::new()];
             if packed_rgb { stream.read_rgb(&rgb, None) } else { stream.read_bgrx(&bgrx, wu * 4, None) }.expect("a read");
-            stream.encode(false, &mut frames[0]).expect("an encode").expect("a frame");
+            stream.encode(false, &mut frames[0]).expect("an encode");
             walk.sent(stream.coarsest(), start);
             assert_eq!((stream.coarsest(), walk.settle_at()), (QUALITY_MIN, Some(start + walk::SETTLE_IDLE)));
             let coarse = error(&decode_chain(&frames, wu, hu));
@@ -2057,7 +2059,7 @@ mod tests {
             walk.settle(start + walk::SETTLE_IDLE);
             let mut settle = Vec::new();
             // Nothing is read for it: the planes are the quiet desktop.
-            assert_eq!(stream.settle(walk.ceiling(), false, &mut settle).expect("a settle"), Some(false), "the settle cost a keyframe");
+            assert!(!stream.settle(walk.ceiling(), false, &mut settle).expect("a settle"), "the settle cost a keyframe");
             frames.push(settle);
             walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
             assert_eq!((stream.quality(), stream.coarsest(), walk.settle_at()), (QUALITY_MIN, 90, None), "the settle left the dial or the picture where it was not");
@@ -2067,7 +2069,7 @@ mod tests {
             // The motion after it is at what the link bears, and where it is.
             let mut moved = Vec::new();
             stream.read_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }])).expect("a read");
-            stream.encode(false, &mut moved).expect("an encode").expect("a frame");
+            stream.encode(false, &mut moved).expect("an encode");
             walk.sent(stream.coarsest(), start + walk::SETTLE_IDLE);
             assert_eq!((stream.coarsest(), walk.settle_at().is_some()), (QUALITY_MIN, true), "a coarse frame after the settle owes none");
 
@@ -2075,18 +2077,18 @@ mod tests {
             // had it, and a frame codes what was read for it and not what
             // was read for the one before: a finer frame elsewhere leaves
             // the corner coarse, and a finer one of the corner leaves nothing.
-            stream.set_quality(90).expect("a live encoder takes a new quality");
+            stream.set_quality(90);
             stream.read_rgb(&rgb, Some(&[Rect { x: 64, y: 64, width: 16, height: 16 }])).expect("a read");
-            stream.encode(false, &mut Vec::new()).expect("an encode").expect("a frame");
+            stream.encode(false, &mut Vec::new()).expect("an encode");
             assert_eq!(stream.coarsest(), QUALITY_MIN, "a frame coded what was read for the one before it");
             stream.read_rgb(&rgb, Some(&[Rect { x: 0, y: 0, width: 16, height: 16 }])).expect("a read");
-            stream.encode(false, &mut Vec::new()).expect("an encode").expect("a frame");
+            stream.encode(false, &mut Vec::new()).expect("an encode");
             assert_eq!(stream.coarsest(), 90, "a frame of one corner coded more than it");
-            stream.set_quality(QUALITY_MIN).expect("a live encoder takes a new quality");
+            stream.set_quality(QUALITY_MIN);
 
             // A settle that is to be a keyframe is one, at the settle's quality.
             let mut key = Vec::new();
-            assert_eq!(stream.settle(90, true, &mut key).expect("a settle"), Some(true));
+            assert!(stream.settle(90, true, &mut key).expect("a settle"));
             assert_eq!((stream.quality(), stream.coarsest(), frame_header(&key).map(|header| header.keyframe)), (QUALITY_MIN, 90, Some(true)));
 
             assert_eq!(stream.quality(), QUALITY_MIN);
@@ -2103,13 +2105,13 @@ mod tests {
         frame(&mut encoder, 0);
         let fine: usize = (1..5).map(|step| frame(&mut encoder, step).0.len()).sum();
 
-        encoder.set_quality(QUALITY_MIN).expect("the encoder to accept a new quantizer");
+        encoder.set_quality(QUALITY_MIN);
         assert_eq!(encoder.quality(), QUALITY_MIN);
         let coarse: Vec<_> = (5..9).map(|step| frame(&mut encoder, step)).collect();
         assert!(coarse.iter().map(|(data, _)| data.len()).sum::<usize>() < fine, "the quantizer did not reach the running encoder");
         assert!(!coarse.iter().any(|(_, keyframe)| *keyframe), "moving the quantizer cost a keyframe, which is what this avoids");
 
-        encoder.set_quality(0).expect("a clamp");
+        encoder.set_quality(0);
         assert_eq!(encoder.quality(), QUALITY_MIN, "clamped, not wrapped");
     }
 
@@ -2122,7 +2124,7 @@ mod tests {
         let frame = |encoder: &mut Encoder, step| encode(encoder, &picture(320, 240, &moving(step)), false);
         let mut frames = vec![frame(&mut encoder, 0).0];
         for speed in [Speed::Fastest, Speed::Usual] {
-            encoder.set_speed(speed).expect("the encoder to accept a new speed");
+            encoder.set_speed(speed);
             assert_eq!(encoder.speed(), speed);
             for step in 1..4 {
                 let (data, keyframe) = frame(&mut encoder, step);
@@ -2168,7 +2170,7 @@ mod tests {
         // 1919×1079 as a desktop is.
         let source = picture(1919, 1079, &flat(1919, 1079, [90, 90, 90]));
         let mut encoder = Encoder::new(1919, 1079, 60, 2).expect("an encoder");
-        assert!(encoder.encode(&source, false, None, &mut Vec::new()).expect("an encode").is_some());
+        assert!(encoder.encode(&source, false, None, &mut Vec::new()).is_ok());
     }
 
     /// Only the frames that are asked to be keyframes are, and the ones between
@@ -2354,7 +2356,7 @@ mod tests {
                     while let Some((back, delivery, verdict)) = self.fences.front().copied().filter(|(back, ..)| *back <= self.now) {
                         self.fences.pop_front();
                         if let Some(pace) = self.walk.fenced(delivery, verdict, back) {
-                            self.encoder.set_quality(pace.quality).expect("the encoder to take the walk's quality");
+                            self.encoder.set_quality(pace.quality);
                         }
                     }
                     assert_eq!(self.encoder.quality(), self.walk.quality(), "the encoder is not coding what the walk holds");
