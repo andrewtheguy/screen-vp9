@@ -98,10 +98,15 @@ the other; a number on the line is left plain.
   0.4 dB more for 0.5% more bytes but `walk` 3% more over its capture
   for 0.11 dB, and `drag`'s capture 0.06 dB less; inter blocks at 48 too
   cost `video` 2.6% and `walk` 3.6% of their captures.
-- **What is over the line in bytes**: a flat desktop settled from dial 20
-  at 4 to 10× (one or two kilobytes against a few hundred bytes), and from
-  65 and up at 1.0 to 2.1× (tens of bytes); `walk`'s captures at up to
-  1.10×, `uncover`'s and `video`'s at up to 1.04×.
+- **What is over the line in bytes**: a flat desktop settled from dial 65
+  and up at 1.0 to 2.1× (tens of bytes); `walk`'s captures at up to
+  1.10×, `uncover`'s and `video`'s at up to 1.04×. Settled from dial 20 it
+  was at 4 to 10× (one or two kilobytes against a few hundred bytes) and
+  is at 0.47 to 0.92×, `browser`'s row below, since 2026-10-11: the
+  keyframe at 20 leaves the whole of one chroma plane a value off, its
+  first block's rounding carried along by DC, and the settle had a
+  coefficient in every 32×32 to make it up, where each square is now
+  predicted from the ones settled before it with nothing to code.
 
 ## What changed between releases 0.0.1-alpha.3 and 0.0.1-alpha.4
 
@@ -593,13 +598,15 @@ This encoder's least time over libvpx's.
 
 ### A settle from dial 20 to 90: bytes
 
-This encoder's bytes over libvpx's.
+This encoder's bytes over libvpx's. `browser`'s row is of 2026-10-11, with
+the flat squares of a settle predicted from each other; the others are the
+run's, and at 1920×1080 are a hundredth or two under it since.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | `uncover` | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | $\color{red}{1.01}$ | $\color{red}{1.01}$ |
 | `flood` | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.98}$ | 1.00 | $\color{green}{0.98}$ | $\color{green}{0.98}$ | 1.00 | $\color{red}{1.01}$ | 1.00 |
-| `browser` | $\color{red}{4.64}$ | $\color{red}{4.04}$ | $\color{red}{4.62}$ | $\color{red}{5.38}$ | $\color{red}{5.48}$ | $\color{red}{6.55}$ | $\color{red}{7.61}$ | $\color{red}{8.60}$ | $\color{red}{9.04}$ | $\color{red}{9.62}$ |
+| `browser` | $\color{green}{0.54}$ | $\color{green}{0.71}$ | $\color{green}{0.47}$ | $\color{green}{0.53}$ | $\color{green}{0.55}$ | $\color{green}{0.62}$ | $\color{green}{0.92}$ | $\color{green}{0.84}$ | $\color{green}{0.76}$ | $\color{green}{0.78}$ |
 | `drag` | $\color{green}{0.97}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.95}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | 1.00 | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ |
 | `video` | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.04}$ |
 | `walk` | $\color{green}{0.89}$ | $\color{green}{0.86}$ | $\color{green}{0.87}$ | $\color{green}{0.86}$ | $\color{green}{0.87}$ | $\color{green}{0.85}$ | $\color{green}{0.86}$ | $\color{green}{0.84}$ | $\color{green}{0.84}$ | $\color{green}{0.89}$ |

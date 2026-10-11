@@ -1071,6 +1071,15 @@ impl<'a> Tile<'a> {
             return Some((Mode::Unchanged, Moments::default()));
         }
         let dc = total.source.variance(count);
+        // A square of one value a plane, which DC predicts to the pixel from
+        // what the frame has coded around it, has nothing to code that way,
+        // where the previous frame would have a coefficient a transform
+        // block to make up what it is off by: a flat desktop a keyframe at a
+        // coarse dial left a value off in one plane settles in these, block
+        // after block, each exact for the next.
+        if self.previous.is_some() && !partly && dc == 0 && self.still(mi_row, mi_col, n) && self.dc_exact(mi_row, mi_col, n) {
+            return Some((Mode::Intra { luma: IntraMode::Dc, chroma: IntraMode::Dc }, total.source));
+        }
         // An intra block's modes, weighed as the variances are: per pixel
         // squared over the count, times the count again.
         let ac = i64::from(self.quantizer.ac_step());
@@ -1142,6 +1151,32 @@ impl<'a> Tile<'a> {
         };
         let split_variance = if matches!(mode, Mode::Inter(_)) { self.inter_split_variance } else { self.split_variance };
         (n == 0 || variance <= split_variance * count * count).then_some((mode, moments))
+    }
+
+    /// Whether DC predicts the square of `1 << n` 8×8s at `(mi_row,
+    /// mi_col)`, whose source is one value a plane, to the pixel: the pixels
+    /// coded above it and to its left, as far as the frame holds the square,
+    /// are that value in every plane. A transform block inside the square
+    /// is then predicted from the same, and past the frame's edge a decoder
+    /// repeats the last pixel inside it. A square with neither is predicted
+    /// 128 and left to the other modes.
+    fn dc_exact(&self, mi_row: usize, mi_col: usize, n: u32) -> bool {
+        let (up, left) = (mi_row > 0, mi_col > self.mi_col_start);
+        if !up && !left {
+            return false;
+        }
+        let (rows, cols) = self.inside(mi_row, mi_col, n);
+        let (w, h) = (cols.len() * 8, rows.len() * 8);
+        let (stride, lx, ly) = (self.contexts.stride, mi_col * 8 - self.contexts.x, (mi_row - self.top) * 8);
+        (0..3).all(|plane| {
+            let value = self.source.row(plane, mi_row * 8)[mi_col * 8];
+            let coded = &self.contexts.planes[plane];
+            let above = match ly {
+                0 => &self.above_pixels[plane][lx..lx + w],
+                ly => &coded[(ly - 1) * stride + lx..][..w],
+            };
+            (!up || above.iter().all(|&p| p == value)) && (!left || (0..h).all(|r| coded[(ly + r) * stride + lx - 1] == value))
+        })
     }
 
     /// Of the intra modes, the one whose residual over the square of
