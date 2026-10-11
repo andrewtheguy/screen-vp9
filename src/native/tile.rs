@@ -1198,41 +1198,56 @@ impl<'a> Tile<'a> {
         let (px, py, w, h) = (mi_col * 8, mi_row * 8, cols.len() * 8, rows.len() * 8);
         let src = self.source;
         let (up, left) = (mi_row > 0, mi_col > self.mi_col_start);
-        let (mut colsum, mut rowsum) = ([0i64; 64], [0i64; 64]);
+        // The sums of the square's rows and of its columns, per plane: a
+        // line of 64 pixels sums inside 16 bits.
+        let (mut colsum, mut rowsum) = ([[0u16; 64]; 3], [[0u16; 64]; 3]);
+        for r in rows.clone() {
+            for c in cols.clone() {
+                let sums = self.line_sums(row0 + r, col0 + c);
+                let (y, x) = ((r - rows.start) * 8, (c - cols.start) * 8);
+                for (plane, (row_sums, col_sums)) in sums.iter().enumerate() {
+                    for k in 0..8 {
+                        rowsum[plane][y + k] += row_sums[k];
+                        colsum[plane][x + k] += col_sums[k];
+                    }
+                }
+            }
+        }
         // Per plane the residual's sum, and the sum of its squares over the
         // planes, each per mode: V, H and TM.
         let mut sums = [[0i64; 3]; 3];
         let mut squares = [source.squares; 3];
+        // A line's pixels with its sums: the pixels' sum, their squares'
+        // and their products with the sums, none of them past 32 bits.
+        let products = |line: &[u8], of: &[u16]| {
+            let sums = line.iter().zip(of).fold((0u32, 0u32, 0u32), |(sum, squares, products), (&v, &of)| {
+                let v = u32::from(v);
+                (sum + v, squares + v * v, products + v * u32::from(of))
+            });
+            (i64::from(sums.0), i64::from(sums.1), i64::from(sums.2))
+        };
         for (plane, sums) in sums.iter_mut().enumerate() {
-            colsum[..w].fill(0);
-            rowsum[..h].fill(0);
-            for r in rows.clone() {
-                for c in cols.clone() {
-                    let (row_sums, col_sums) = self.line_sums(row0 + r, col0 + c)[plane];
-                    let (y, x) = ((r - rows.start) * 8, (c - cols.start) * 8);
-                    for k in 0..8 {
-                        rowsum[y + k] += i64::from(row_sums[k]);
-                        colsum[x + k] += i64::from(col_sums[k]);
-                    }
+            // The row above the square, past the picture's edge its last
+            // pixel, and the column left of it.
+            let (mut above, mut beside) = ([127u8; 64], [129u8; 64]);
+            if up {
+                let row = src.row(plane, py - 1);
+                let inside = w.min(src.width - px);
+                above[..inside].copy_from_slice(&row[px..px + inside]);
+                above[inside..w].fill(row[src.width - 1]);
+            }
+            if left {
+                for (r, beside) in beside[..h].iter_mut().enumerate() {
+                    *beside = src.row(plane, py + r)[px - 1];
                 }
             }
-            let above = |c: usize| if up { i64::from(src.row(plane, py - 1)[(px + c).min(src.width - 1)]) } else { 127 };
-            let beside = |r: usize| if left { i64::from(src.row(plane, py + r)[px - 1]) } else { 129 };
             let corner = match (up, left) {
                 (true, true) => i64::from(src.row(plane, py - 1)[px - 1]),
                 (true, false) => 129,
                 (false, _) => 127,
             };
-            let (mut a, mut a2, mut ac) = (0, 0, 0);
-            for (c, &colsum) in colsum[..w].iter().enumerate() {
-                let v = above(c);
-                (a, a2, ac) = (a + v, a2 + v * v, ac + v * colsum);
-            }
-            let (mut l, mut l2, mut lr) = (0, 0, 0);
-            for (r, &rowsum) in rowsum[..h].iter().enumerate() {
-                let v = beside(r);
-                (l, l2, lr) = (l + v, l2 + v * v, lr + v * rowsum);
-            }
+            let (a, a2, ac) = products(&above[..w], &colsum[plane][..w]);
+            let (l, l2, lr) = products(&beside[..h], &rowsum[plane][..h]);
             let (w, h, s, k) = (w as i64, h as i64, source.sums[plane], corner);
             // V: each pixel less the one above the square in its column.
             sums[0] = s - h * a;
@@ -1258,7 +1273,7 @@ impl<'a> Tile<'a> {
     /// The sums of the rows and of the columns of the source's 8×8 at
     /// `(mi_row, mi_col)`, per plane: past the picture's edges, its last
     /// pixels repeated.
-    fn line_sums(&mut self, mi_row: usize, mi_col: usize) -> [([u16; 8], [u16; 8]); 3] {
+    fn line_sums(&mut self, mi_row: usize, mi_col: usize) -> &[([u16; 8], [u16; 8]); 3] {
         let i = (mi_row & 7) * 8 + (mi_col & 7);
         if self.summed & 1 << i == 0 {
             let src = self.source;
@@ -1278,7 +1293,7 @@ impl<'a> Tile<'a> {
             });
             self.summed |= 1 << i;
         }
-        self.line_sums[i]
+        &self.line_sums[i]
     }
 
     /// The partition of the square of `1 << n` 8×8s at `(mi_row, mi_col)`:

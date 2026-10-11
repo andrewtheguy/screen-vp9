@@ -275,6 +275,7 @@ of its lines; every stream the same to the byte.
 | The levels in 16 bits, and a block's tokens and the contexts they are coded at made sixteen coefficients at a time into a map (as far into the block as the scan reaches), which the loops that cost the tokens and record them only read | 0.91 to 1.03 | 0.92 to 1.00 | 0.95 to 1.02 |
 | The loop filter passes a row of a superblock's edges at once where every line across them is one value, before it looks at any one edge | 0.87 to 0.98 | 0.97 to 1.00 | 0.96 to 1.00 |
 | The search's row hashes in three multiplies a position where they were eight (a hash of eight pixels made of two of four, each of two of two), its anchors picked from a row of flags walked eight at a time by `tzcnt`, and its scratch not cleared between rows | the same | the same | 0.98 to 1.02 |
+| The sums an intra mode is chosen by kept in 16 bits a line and multiplied in 32, where they were 64 a value and a plane at a time, and every intra prediction written a row at a time from a line of means along its edge, where a diagonal was written a pixel at a time and read back | 0.95 to 1.00 | 0.98 to 1.04 | 0.98 to 1.02 |
 
 The forward transforms are libvpx's to the bit as they were: the old ones
 and these gave the same coefficients for every size and type over the
@@ -334,11 +335,18 @@ On the floor, no stream changed:
    hashing was 8% of the coder's time on `drag` and 3% on `walk` and
    `video`, and is spread over the threads. What is left of the search
    is filling the tables again (4% of `drag`) and the projections (5%).
-4. **The intra predictions.** They are scalar loops the compiler is left
-   to, the row above gathered a pixel at a time, and the residual after
-   one reads eight pixels where it wrote one. The intra mode is 5 to 11%
-   of a busy frame. The quantizer on NEON in eight `i16`, as amd64's is
-   in sixteen, with item 9.
+4. **The intra predictions**: written, and they show on a keyframe.
+   Choosing the mode was 7% of a run of keyframes and predicting 7%. The
+   first added each 8×8's row and column sums into 64 bits a value, a
+   plane at a time; they are 16 bits, and their products with the edge
+   32. The second gathered its edges through calls for four bytes, and
+   wrote a diagonal mode a pixel at a time, which the residual after it
+   then read eight at once and waited on; each is now a line of means
+   along the edge and every row a stretch of it, held to the pixel at a
+   time by a test. Six of seven keyframes are 0.95 to 0.98 of the build
+   before and `walk`'s the same; the settles and the captures are within
+   the run's noise. Left: the quantizer on NEON in eight `i16`, as
+   amd64's is in sixteen, with item 9.
 
 Then, as before:
 
