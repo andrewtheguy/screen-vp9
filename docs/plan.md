@@ -241,13 +241,15 @@ read from the two before it, and the bool coder, each bool's range from
 the last. They are chains, and were made shorter by tile rows and by tables, not
 by a wider register.
 
-**The floor stays at x86-64-v3, and AVX-512 is dropped** (2026-10-11):
-x86-64-v4 is not an open item. It leaves out every Intel desktop and
-laptop processor from Alder Lake on and every AMD one before Zen 4, and
-the machine the tables are made on cannot run it, so nothing written for
-it could be measured or tested here. Between the two levels there is no
-feature a codec reads: the `skylake` build above, which adds the
-machine's own tuning, ADX, AES and CLMUL, measures the same.
+**The floor is x86-64-v3 for now.** It moves up only where a higher one
+is measured to buy enough to justify it, and nothing is: AVX-512 was
+dropped from the open items on 2026-10-11. x86-64-v4 leaves out every
+Intel desktop and laptop processor from Alder Lake on and every AMD one
+before Zen 4, and the machine the tables are made on cannot run it, so
+nothing written for it could be measured or tested here. Between the
+two levels there is no feature a codec reads: the `skylake` build above,
+which adds the machine's own tuning, ADX, AES and CLMUL, measures the
+same.
 
 **arm64's floor is where it was**, NEON. Its ceiling is gone the same way:
 the dot product (`sdot`, `udot`, Armv8.2's, in every Apple M) is what the moments and the search's
