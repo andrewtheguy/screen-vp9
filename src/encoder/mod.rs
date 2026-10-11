@@ -1185,11 +1185,13 @@ mod tests {
     }
 
     /// A `w`×`h` in RGB of quarters that one intra mode each predicts best:
-    /// stripes down, which V predicts; stripes across, H; a hatch two
+    /// stripes down, which V predicts; stripes across, H; bands eight
     /// pixels wide down and to the right, D135, or with `k` odd down and
-    /// to the left, D45 (a ramp that way TM predicts too, and anything
-    /// coarser makes an 8×8's quarters differ, which codes it as 4×4s in
-    /// DC, V or H); and a plane sloping both ways, TM. Each `k` makes
+    /// to the left, D45, a few levels of luma apart (a ramp that way TM
+    /// predicts too, bands further apart make an 8×8's quarters differ,
+    /// which codes it as 4×4s in DC, V, H or TM, and a hatch finer than
+    /// the block is a coefficient or two of DC's residual, cheaper than
+    /// what a diagonal leaves of it); and a plane sloping both ways, TM. Each `k` makes
     /// others, none of them in another's picture, nor the hatch at its
     /// previous one's slant.
     fn lines_rgb(w: u16, h: u16, k: usize) -> Vec<u8> {
@@ -1199,7 +1201,7 @@ mod tests {
                 let v = match (x * 4 / usize::from(w) + k) % 4 {
                     0 => (x * (37 + 6 * k)) % 251,
                     1 => (y * (53 + 10 * k)) % 241,
-                    2 => 100 + 10 * k + ((if k.is_multiple_of(2) { x + usize::from(h) - y } else { x + y }) % 4 / 2) * (60 + 10 * k),
+                    2 => 100 + 10 * k + ((if k.is_multiple_of(2) { x + usize::from(h) - y } else { x + y }) % 16 / 8) * (12 + 2 * k),
                     _ => (x % 64) * (k + 1) + (2 + k) * (y % 32),
                 } as u8;
                 rgb.extend([v, v / 2 + 40, 255 - v]);
