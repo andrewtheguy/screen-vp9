@@ -11,4 +11,6 @@
   Every encoder gets an independent decoder in its tests.
 - Do not run `cargo fmt`. Errors are `thiserror`: every caller branches on them.
 - A release is the version in `Cargo.toml` bumped and tagged `v<version>` on
-  `main`; users pin the tag.
+  `main`, with a GitHub release for the tag (`gh release create v<version>
+  --verify-tag --title v<version>`) whose notes say what changed since the
+  last tag, breaking API first; users pin the tag.
