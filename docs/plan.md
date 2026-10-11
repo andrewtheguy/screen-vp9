@@ -80,8 +80,10 @@ desktop as drawn:
   rectangles first. Luma PSNR is read before bytes and time: a stream
   coarser at the same dial is not at the same dial.
 - **The machine the tables are made on is the six-core AVX2 one.** The Mac
-  runs the tests, for the NEON kernels, and no measurement longer than a
-  minute.
+  runs the tests, for the NEON kernels; its own tables, in
+  [benchmarks-m2-max.md](benchmarks-m2-max.md), are each line's median of
+  three runs (`tools/median_of_runs.py`), its times moving by up to three
+  fifths from one run to the next on a desktop in use.
 
 ## Where it stands
 
@@ -96,6 +98,12 @@ desktop as drawn:
 - A settle of a busy picture takes more time than libvpx's: 1.12 to 1.77
   of it from 65, for 1.0 to 1.4 dB more picture at the same bytes, and
   0.93 to 1.30 from 89 for 0.3 to 0.4 dB more at fewer bytes.
+
+On the M2 Max ([benchmarks-m2-max.md](benchmarks-m2-max.md), the median of
+three runs of 2026-10-10) the lines are the same: a whole capture 0.19 to
+0.74 of libvpx's time frame for frame, a picture level or better in 68
+cells of 70; a keyframe alone 0.49 to 0.92 of its time, no cell over 1.00;
+a settle of a busy picture 0.96 to 1.42 of it from 65.
 
 ## Measured again in this replan
 
@@ -226,8 +234,6 @@ In the order it is taken up:
 11. **The conversion is not the same on arm64 and amd64.** The `yuv`
     crate's NEON path makes a luma of 217 of an RGB grey of 235 where its
     AVX2 path makes 218. Which values and planes differ is not measured.
-12. **The M2 Max's numbers** were better against libvpx than this
-    machine's, and have not been made again since the fork.
 
 ## Main risk
 

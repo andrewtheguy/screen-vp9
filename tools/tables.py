@@ -3,6 +3,9 @@ in src/native/mod.rs, each run in release with `--ignored --nocapture`:
 
     python3 -I tools/tables.py <captures log> [<keyframes log> [<settles log>]]
 
+and of docs/benchmarks-m2-max.md the same, from logs tools/median_of_runs.py
+made of three runs of each.
+
 From `captures_against_libvpx`: per capture and size the bytes ratio, the
 median of the per-frame time ratios and the luma PSNR difference over every
 frame, a table each; then the frames apart. From `keyframes_against_libvpx`
