@@ -35,7 +35,7 @@ impl Quantizer {
     /// return the end of block: one past the last nonzero level in the scan
     /// whose inverse is `iscan`.
     #[cfg(test)]
-    pub(super) fn quantize(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i16], levels: &mut [i32]) -> usize {
+    pub(super) fn quantize(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i16], levels: &mut [i16]) -> usize {
         self.quantize_in::<false>(n, intra, iscan, coeffs, levels).0
     }
 
@@ -43,7 +43,7 @@ impl Quantizer {
     /// dequantizes them against `coeffs`, in the scale of a transform below
     /// 32×32: 64 times the squared error in pixels. A 32×32 transform's
     /// coefficients are half that scale.
-    pub(super) fn quantize_with_error(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i16], levels: &mut [i32]) -> (usize, i64) {
+    pub(super) fn quantize_with_error(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i16], levels: &mut [i16]) -> (usize, i64) {
         let (eob, error) = self.quantize_in::<true>(n, intra, iscan, coeffs, levels);
         (eob, error << (2 * u32::from(n == 32)))
     }
@@ -57,7 +57,7 @@ impl Quantizer {
 
     /// `quantize`, with the squared error on the coefficients' own scale
     /// where `ERROR`, otherwise 0.
-    fn quantize_in<const ERROR: bool>(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i16], levels: &mut [i32]) -> (usize, i64) {
+    fn quantize_in<const ERROR: bool>(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i16], levels: &mut [i16]) -> (usize, i64) {
         // A block with nothing in it, a flat one predicted exactly, is
         // nothing quantized.
         if nothing(&coeffs[..n * n]) {
@@ -87,7 +87,7 @@ impl Quantizer {
     /// The error `quantize_with_error` gives, one coefficient at a time
     /// from the levels it left, the reference its kernels are held to.
     #[cfg(test)]
-    fn error(&self, n: usize, coeffs: &[i16], levels: &[i32]) -> i64 {
+    fn error(&self, n: usize, coeffs: &[i16], levels: &[i16]) -> i64 {
         let shift = u32::from(n == 32);
         // A coefficient of 8-bit pixels is within 32640 of zero, so an error
         // squares within 32 bits.
@@ -96,19 +96,19 @@ impl Quantizer {
             let e = c - if level < 0 { -v } else { v };
             i64::from(e * e)
         };
-        let dc = error(i32::from(coeffs[0]), levels[0], self.dequant[0]);
-        let ac: i64 = coeffs[1..n * n].iter().zip(&levels[1..n * n]).map(|(&c, &l)| error(i32::from(c), l, self.dequant[1])).sum();
+        let dc = error(i32::from(coeffs[0]), i32::from(levels[0]), self.dequant[0]);
+        let ac: i64 = coeffs[1..n * n].iter().zip(&levels[1..n * n]).map(|(&c, &l)| error(i32::from(c), i32::from(l), self.dequant[1])).sum();
         (dc + ac) << (2 * shift)
     }
 
     /// What a decoder makes of `levels` (libvpx's `decode_coefs`): each
     /// times its step, halved at 32×32, as the 16 bits a decoder keeps it in.
-    pub(super) fn dequantize(&self, n: usize, levels: &[i32], scan: &[u16], eob: usize, coeffs: &mut [i32]) {
+    pub(super) fn dequantize(&self, n: usize, levels: &[i16], scan: &[u16], eob: usize, coeffs: &mut [i32]) {
         coeffs.fill(0);
         let shift = u32::from(n == 32);
         for &rc in &scan[..eob] {
             let rc = usize::from(rc);
-            let level = levels[rc];
+            let level = i32::from(levels[rc]);
             let v = (level.abs() * self.dequant[usize::from(rc != 0)]) >> shift;
             coeffs[rc] = i32::from((if level < 0 { -v } else { v }) as i16);
         }
@@ -136,13 +136,13 @@ struct Terms {
 
 /// `Quantizer::quantize` one coefficient at a time, in raster order.
 #[cfg(test)]
-fn quantize_scalar(terms: &Terms, coeffs: &[i16], iscan: &[u16], levels: &mut [i32]) -> usize {
+fn quantize_scalar(terms: &Terms, coeffs: &[i16], iscan: &[u16], levels: &mut [i16]) -> usize {
     let mut eob = 0;
     for (rc, (&coeff, out)) in coeffs.iter().zip(levels).enumerate() {
         let k = usize::from(rc != 0);
         let abs = i32::from(coeff).abs();
         let level = if abs < terms.least[k] { 0 } else { ((abs + terms.round[k]).min(i32::from(i16::MAX)) * terms.quant[k]) >> terms.shift };
-        *out = if coeff < 0 { -level } else { level };
+        *out = (if coeff < 0 { -level } else { level }) as i16;
         if level != 0 {
             eob = eob.max(usize::from(iscan[rc]));
         }
@@ -157,7 +157,7 @@ mod neon {
     use super::Terms;
 
     /// `Quantizer::quantize_in` four coefficients at a time.
-    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i16], iscan: &[u16], levels: &mut [i32]) -> (usize, i64) {
+    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i16], iscan: &[u16], levels: &mut [i16]) -> (usize, i64) {
         // The crate is built for NEON, and every load and store
         // is of four values inside slices of whole fours, `coeffs` and
         // `levels` as long as `iscan`.
@@ -176,7 +176,7 @@ mod neon {
                 let abs = vabsq_s32(c);
                 let level = vshlq_s32(vmulq_s32(vminq_s32(vaddq_s32(abs, lanes(terms.round, first)), most), lanes(terms.quant, first)), shift);
                 let level = vbicq_s32(level, vreinterpretq_s32_u32(vcltq_s32(abs, lanes(terms.least, first))));
-                vst1q_s32(levels.as_mut_ptr().add(at), vbslq_s32(vcltzq_s32(c), vnegq_s32(level), level));
+                vst1_s16(levels.as_mut_ptr().add(at), vmovn_s32(vbslq_s32(vcltzq_s32(c), vnegq_s32(level), level)));
                 let ends = vmovl_u16(vld1_u16(iscan.as_ptr().add(at)));
                 eob = vmaxq_u32(eob, vandq_u32(vtstq_s32(level, level), ends));
                 if ERROR {
@@ -203,7 +203,7 @@ mod avx2 {
     /// bits: a magnitude and its rounding are held to 15, a step's
     /// reciprocal is 14 at most, and what is kept of their product is its
     /// high half.
-    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i16], iscan: &[u16], levels: &mut [i32]) -> (usize, i64) {
+    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i16], iscan: &[u16], levels: &mut [i16]) -> (usize, i64) {
         // The crate is built for AVX2, but its intrinsics are still `unsafe`
         // to call from a function not marked for it; and every load and store
         // is of sixteen values inside slices of whole sixteens, `coeffs` and
@@ -232,10 +232,8 @@ mod avx2 {
                 let level = _mm256_or_si256(_mm256_sll_epi16(_mm256_mulhi_epu16(rounded, quant), high), _mm256_srl_epi16(_mm256_mullo_epi16(rounded, quant), low));
                 // Nothing where the magnitude is under `least`.
                 let level = _mm256_and_si256(level, _mm256_cmpeq_epi16(_mm256_max_epu16(abs, lanes(terms.least, first)), abs));
-                // The sign put back, and the levels widened.
-                let signed = _mm256_sign_epi16(level, c);
-                _mm256_storeu_si256(levels.as_mut_ptr().add(at).cast(), _mm256_cvtepi16_epi32(_mm256_castsi256_si128(signed)));
-                _mm256_storeu_si256(levels.as_mut_ptr().add(at + 8).cast(), _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(signed)));
+                // The sign put back.
+                _mm256_storeu_si256(levels.as_mut_ptr().add(at).cast(), _mm256_sign_epi16(level, c));
                 let ends = _mm256_loadu_si256(iscan.as_ptr().add(at).cast());
                 eob = _mm256_max_epu16(eob, _mm256_andnot_si256(_mm256_cmpeq_epi16(level, zero), ends));
                 if ERROR {

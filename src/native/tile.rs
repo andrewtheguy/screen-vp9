@@ -542,14 +542,14 @@ struct Measure {
 /// the previous frame's quantization error, leaves a lone level deep in
 /// the scan of many a block, a hundred zero tokens for one coefficient.
 #[allow(clippy::too_many_arguments)]
-fn worth_coding(costs: &tokens::Costs, energy: &mut [u8; 1024], quantizer: &Quantizer, side: usize, kind: tokens::Kind, coeffs: &[i16], levels: &mut [i32], eob: usize, error: i64) -> (usize, u32, i64) {
-    let bits = tokens::estimate(costs, kind, 0, levels, eob, energy);
+fn worth_coding(costs: &tokens::Costs, map: &mut [u8; 1024], quantizer: &Quantizer, side: usize, kind: tokens::Kind, coeffs: &[i16], levels: &mut [i16], eob: usize, error: i64) -> (usize, u32, i64) {
+    let bits = tokens::estimate(costs, kind, 0, levels, eob, map);
     if eob == 0 {
         return (0, bits, error);
     }
     let ac = i64::from(quantizer.ac_step());
     let weight = RATE_WEIGHT * ac * ac;
-    let nothing = tokens::estimate(costs, kind, 0, &[], 0, energy);
+    let nothing = tokens::estimate(costs, kind, 0, &[], 0, map);
     let left = Quantizer::energy(side, coeffs);
     if left * 256_000 + weight * i64::from(nothing) <= error * 256_000 + weight * i64::from(bits) {
         levels.fill(0);
@@ -572,15 +572,15 @@ fn eight(row: &[u8], x: usize) -> [u8; 8] {
 /// next row reads, kept from row to row on a thread.
 struct Scratch {
     moved: Vec<(Mv, [Moments; 64], u64)>,
-    levels: [Vec<i32>; 3],
+    levels: [Vec<i16>; 3],
     eobs: [Vec<usize>; 3],
-    best_levels: Vec<i32>,
+    best_levels: Vec<i16>,
     best_eobs: Vec<usize>,
     patch: Vec<u8>,
     residual: Box<[i16; 1024]>,
     coeffs: Box<[i16; 1024]>,
     dequantized: Box<[i32; 1024]>,
-    energy: Box<[u8; 1024]>,
+    map: Box<[u8; 1024]>,
     /// What the rows coded on the thread count, which each row's tape
     /// holds while the row is coded.
     counts: Counts,
@@ -598,7 +598,7 @@ impl Scratch {
             residual: Box::new([0; 1024]),
             coeffs: Box::new([0; 1024]),
             dequantized: Box::new([0; 1024]),
-            energy: Box::new([0; 1024]),
+            map: Box::new([0; 1024]),
             counts: Counts::new(),
         }
     }
@@ -651,11 +651,11 @@ struct Tile<'a> {
     moved: Vec<(Mv, [Moments; 64], u64)>,
     /// The block being coded: per plane, the levels of its transform blocks
     /// one after another, each in raster order, and their ends of block.
-    levels: [Vec<i32>; 3],
+    levels: [Vec<i16>; 3],
     eobs: [Vec<usize>; 3],
     /// The luma levels and ends of block of the best transform size tried so
     /// far.
-    best_levels: Vec<i32>,
+    best_levels: Vec<i16>,
     best_eobs: Vec<usize>,
     /// Scratch for a block of the previous frame copied out past its edges.
     patch: Vec<u8>,
@@ -664,7 +664,7 @@ struct Tile<'a> {
     residual: Box<[i16; 1024]>,
     coeffs: Box<[i16; 1024]>,
     dequantized: Box<[i32; 1024]>,
-    energy: Box<[u8; 1024]>,
+    map: Box<[u8; 1024]>,
     /// The tape's own counts, empty, while the tape holds the thread's.
     spare: Counts,
 }
@@ -672,7 +672,7 @@ struct Tile<'a> {
 impl<'a> Tile<'a> {
     /// The coder of the superblock row `job`, working in `scratch`.
     fn new(frame: &Frame<'a>, job: Job<'a>, scratch: Scratch, failed: &'a AtomicBool) -> Self {
-        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, dequantized, energy, counts: mut spare } = scratch;
+        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, dequantized, map, counts: mut spare } = scratch;
         moved.clear();
         std::mem::swap(&mut job.tape.counts, &mut spare);
         let mi_col_start = job.x / 8;
@@ -708,7 +708,7 @@ impl<'a> Tile<'a> {
             residual,
             coeffs,
             dequantized,
-            energy,
+            map,
             spare,
         }
     }
@@ -737,8 +737,8 @@ impl<'a> Tile<'a> {
             }
         }
         std::mem::swap(&mut self.contexts.tape.counts, &mut self.spare);
-        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, dequantized, energy, spare: counts, .. } = self;
-        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, dequantized, energy, counts }
+        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, dequantized, map, spare: counts, .. } = self;
+        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, dequantized, map, counts }
     }
 
     /// Wait for the row above to code the superblock above superblock
@@ -1433,7 +1433,7 @@ impl<'a> Tile<'a> {
                 self.transform(0, mi_col * 8 + x, mi_row * 8 + y, side, TxType::DctDct);
                 let levels = &mut self.levels[0][i * area..][..area];
                 let (eob, error) = self.quantizer.quantize_with_error(side, false, tokens::scan(tx, TxType::DctDct).inverse, &self.coeffs[..area], levels);
-                let (eob, bits, error) = worth_coding(self.costs, &mut self.energy, self.quantizer, side, kind, &self.coeffs[..area], levels, eob, error);
+                let (eob, bits, error) = worth_coding(self.costs, &mut self.map, self.quantizer, side, kind, &self.coeffs[..area], levels, eob, error);
                 // In 256000ths of the squared error on the coefficients'
                 // scale, which is 64 times that in pixels.
                 cost += error * 256_000 + weight * i64::from(bits);
@@ -1671,7 +1671,7 @@ impl<'a> Tile<'a> {
                 let (col4, row4) = (x / 4, y / 4);
                 let ctx = usize::from(above_nz[col4..col4 + n4].iter().any(|&a| a != 0)) + usize::from(left_nz[row4..row4 + n4].iter().any(|&l| l != 0));
                 let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: false, inter: false };
-                bits += i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.energy));
+                bits += i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.map));
                 let coded = u8::from(eob > 0);
                 coded_any |= eob > 0;
                 for k in 0..n4 {
@@ -1744,7 +1744,7 @@ impl<'a> Tile<'a> {
                 let levels = &mut self.levels[0][b * 16..][..16];
                 let (eob, error) = self.quantizer.quantize_with_error(4, true, scan.inverse, &self.coeffs[..16], levels);
                 let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
-                let bits = bits + i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.energy));
+                let bits = bits + i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.map));
                 let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
                 if cost < best.0 {
                     best = (cost, mode, eob);
@@ -1769,7 +1769,7 @@ impl<'a> Tile<'a> {
             let levels = &mut self.levels[0][b * 16..][..16];
             let (eob, error) = self.quantizer.quantize_with_error(4, true, scan.inverse, &self.coeffs[..16], levels);
             let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
-            let (eob, _, _) = worth_coding(self.costs, &mut self.energy, self.quantizer, 4, kind, &self.coeffs[..16], levels, eob, error);
+            let (eob, _, _) = worth_coding(self.costs, &mut self.map, self.quantizer, 4, kind, &self.coeffs[..16], levels, eob, error);
             if eob > 0 {
                 self.quantizer.dequantize(4, levels, scan.order, eob, &mut self.dequantized[..16]);
                 transform::inverse_add(4, tx_type, &self.dequantized[..16], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
@@ -1841,7 +1841,7 @@ impl<'a> Tile<'a> {
                     error += e;
                     let (col4, row4) = (x / 4, y / 4);
                     let ctx = usize::from(above_nz[col4..col4 + n4].iter().any(|&a| a != 0)) + usize::from(left_nz[row4..row4 + n4].iter().any(|&l| l != 0));
-                    bits += i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.energy));
+                    bits += i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.map));
                     let coded = u8::from(eob > 0);
                     coded_any |= eob > 0;
                     for k in 0..n4 {
@@ -2044,7 +2044,7 @@ impl<'a> Tile<'a> {
                     let levels = &mut self.levels[plane][i * area..][..area];
                     let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: plane > 0, inter: !matches!(mode, Mode::Intra { .. } | Mode::Intra4 { .. }) };
                     let (eob, error) = self.quantizer.quantize_with_error(tx, !kind.inter, scan.inverse, &self.coeffs[..area], levels);
-                    let (eob, _, _) = worth_coding(self.costs, &mut self.energy, self.quantizer, tx, kind, &self.coeffs[..area], levels, eob, error);
+                    let (eob, _, _) = worth_coding(self.costs, &mut self.map, self.quantizer, tx, kind, &self.coeffs[..area], levels, eob, error);
                     self.eobs[plane].push(eob);
                     eob
                 } else {
@@ -2085,7 +2085,7 @@ impl<'a> Tile<'a> {
                 let eob = self.eobs[plane][i];
                 let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: plane > 0, inter };
                 let ctx = usize::from(above) + usize::from(left);
-                tokens::write(self.contexts.tape, kind, ctx, &self.levels[plane][i * area..][..area], eob, &mut self.energy);
+                tokens::write(self.contexts.tape, kind, ctx, &self.levels[plane][i * area..][..area], eob, &mut self.map);
                 let coded = u8::from(eob > 0);
                 for k in 0..n4 {
                     self.above_nonzero[plane][ax + k] = if col4 + k < wide4 { coded } else { 0 };

@@ -272,6 +272,7 @@ of its lines; every stream the same to the byte.
 | A residual, its forward transform under 32×32 and the coefficients the quantizer reads in 16 bits a value: sixteen a register (`vpmaddwd` for a pair of products, `vpmulhuw` for a level), where they were eight of 32 with `vpmulld` | 0.85 to 0.95 | 0.93 to 0.98 | 0.94 to 0.98 |
 | An intra prediction's row above copied whole where the picture has it, and TM written a row at a time in 16 bits for the compiler to vectorize | 0.91 to 1.02 | 0.97 to 1.03 | 0.94 to 1.02 |
 | The loop filter's edges two at a time where two that lie one after the other take the same filter: sixteen lines an AVX2 register, each eight with its own level | 0.97 to 1.00 | 0.97 to 1.01 | 0.96 to 1.03 |
+| The levels in 16 bits, and a block's tokens and the contexts they are coded at made sixteen coefficients at a time into a map (as far into the block as the scan reaches), which the loops that cost the tokens and record them only read | 0.91 to 1.03 | 0.92 to 1.00 | 0.95 to 1.02 |
 
 The forward transforms are libvpx's to the bit as they were: the old ones
 and these gave the same coefficients for every size and type over the
@@ -282,6 +283,15 @@ The 32×32 stays in 32 bits: its second pass leaves 16. NEON is the same
 kernel in eight `i16` (`vmlal`, `vqrshrn`), its tests run on the Mac and
 its time not measured. The quantizer on NEON reads the 16 bits and works in
 32 as before.
+
+The token map is held to coding a token at a time from the scan's own
+neighbour tables, over every size, type and context. Costing the tokens
+was 10 to 12% of the coder's time, nearly all of it in dense 4×4 and 8×8
+blocks. On keyframes five of the seven captures are 0.91 to 0.96, and
+`browser` and `terminal`, whose blocks are large with little in them, are
+1.00 and 1.03, inside what this machine moves by: with the whole block
+mapped whatever the scan reached, one or the other was 1.02 in each of
+two runs.
 
 ## What is open
 
@@ -297,11 +307,14 @@ only about one still comes last.
 On the floor, no stream changed:
 
 1. **The inverse transforms in sixteen `i16` a register.** The forward
-   ones are, above. The inverse has to stay the decoder's to the bit,
-   and a decoder's wraps at 16 bits where libvpx's C does: the sums that
-   leave 16 bits are found before it is believed. With it the levels and
-   what a decoder makes of them in 16 bits, which the token loops read.
-   The 32×32 forward, whose second pass leaves 16 bits, is in 32 still.
+   ones are, above, and so are the levels, which the token loops read
+   through a map. The inverse has to stay the decoder's to the bit, and
+   a decoder's wraps at 16 bits where libvpx's C does: the sums that
+   leave 16 bits are found before it is believed. It is 0.9% of the
+   coder's time on a keyframe, 1.3% on a settle and 1.9% on a whole
+   capture, so it is not written until something else has made that
+   more. The 32×32 forward, whose second pass leaves 16 bits, is in 32
+   still.
 2. **The loop filter in one and two columns**: the edges are two
    to an AVX2 register, above, and it bought a keyframe 1 to 3% and
    nothing else past what this machine moves by. What is left is the

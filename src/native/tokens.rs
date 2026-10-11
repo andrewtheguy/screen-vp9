@@ -10,10 +10,9 @@ use super::bool_writer::{Run, cost};
 use super::probs::{CONTEXTS, NODES, Probs, token_context};
 use super::tables::{
     CAT1_PROB, CAT2_PROB, CAT3_PROB, CAT4_PROB, CAT5_PROB, CAT6_PROB, COEFBAND_4X4, COEFBAND_8X8PLUS, COL_ISCAN_4X4, COL_ISCAN_8X8, COL_ISCAN_16X16, COL_SCAN_4X4,
-    COL_SCAN_4X4_NEIGHBORS, COL_SCAN_8X8, COL_SCAN_8X8_NEIGHBORS, COL_SCAN_16X16, COL_SCAN_16X16_NEIGHBORS, ISCAN_4X4, ISCAN_8X8, ISCAN_16X16, ISCAN_32X32, PARETO8_FULL,
-    PT_ENERGY_CLASS, ROW_ISCAN_4X4, ROW_ISCAN_8X8, ROW_ISCAN_16X16, ROW_SCAN_4X4, ROW_SCAN_4X4_NEIGHBORS, ROW_SCAN_8X8, ROW_SCAN_8X8_NEIGHBORS, ROW_SCAN_16X16,
-    ROW_SCAN_16X16_NEIGHBORS, SCAN_4X4, SCAN_4X4_NEIGHBORS, SCAN_8X8, SCAN_8X8_NEIGHBORS, SCAN_16X16, SCAN_16X16_NEIGHBORS, SCAN_32X32, SCAN_32X32_NEIGHBORS,
-};
+    COL_SCAN_8X8, COL_SCAN_16X16, ISCAN_4X4, ISCAN_8X8, ISCAN_16X16, ISCAN_32X32, PARETO8_FULL,
+    ROW_ISCAN_4X4, ROW_ISCAN_8X8, ROW_ISCAN_16X16, ROW_SCAN_4X4, ROW_SCAN_8X8, ROW_SCAN_16X16,
+    SCAN_4X4, SCAN_8X8, SCAN_16X16, SCAN_32X32, };
 use super::tape::Tape;
 use super::transform::TxType;
 
@@ -23,49 +22,29 @@ pub(super) const TOKENS: usize = 12;
 /// The end of block's place among `TOKENS`.
 pub(super) const EOB_TOKEN: usize = 11;
 
-/// The token of each level from 0 to 67, the least `CATEGORY6_TOKEN` codes.
-const TOKEN_OF: [u8; 68] = {
-    let mut table = [10; 68];
-    let mut level = 0;
-    while level < 67 {
-        table[level] = match level {
-            0..=4 => level as u8,
-            5..=6 => 5,
-            7..=10 => 6,
-            11..=18 => 7,
-            19..=34 => 8,
-            _ => 9,
-        };
-        level += 1;
-    }
-    table
-};
-
 /// The order a transform block's coefficients are coded in: the
-/// coefficient at each position, the two earlier ones each position's
-/// context is taken from, and per coefficient one past its position.
+/// coefficient at each position, and per coefficient one past its position.
 #[derive(Clone, Copy)]
 pub(super) struct Scan {
     pub(super) order: &'static [u16],
-    pub(super) neighbors: &'static [u16],
     pub(super) inverse: &'static [u16],
 }
 
 /// The scan of transform size `tx` (0 for 4×4 to 3 for 32×32) and type
 /// `tx_type` (libvpx's `vp9_scan_orders`).
 pub(super) fn scan(tx: usize, tx_type: TxType) -> Scan {
-    let at = |order, neighbors, inverse| Scan { order, neighbors, inverse };
+    let at = |order, inverse| Scan { order, inverse };
     match (tx, tx_type) {
-        (0, TxType::AdstDct) => at(&ROW_SCAN_4X4, &ROW_SCAN_4X4_NEIGHBORS, &ROW_ISCAN_4X4),
-        (0, TxType::DctAdst) => at(&COL_SCAN_4X4, &COL_SCAN_4X4_NEIGHBORS, &COL_ISCAN_4X4),
-        (0, _) => at(&SCAN_4X4, &SCAN_4X4_NEIGHBORS, &ISCAN_4X4),
-        (1, TxType::AdstDct) => at(&ROW_SCAN_8X8, &ROW_SCAN_8X8_NEIGHBORS, &ROW_ISCAN_8X8),
-        (1, TxType::DctAdst) => at(&COL_SCAN_8X8, &COL_SCAN_8X8_NEIGHBORS, &COL_ISCAN_8X8),
-        (1, _) => at(&SCAN_8X8, &SCAN_8X8_NEIGHBORS, &ISCAN_8X8),
-        (2, TxType::AdstDct) => at(&ROW_SCAN_16X16, &ROW_SCAN_16X16_NEIGHBORS, &ROW_ISCAN_16X16),
-        (2, TxType::DctAdst) => at(&COL_SCAN_16X16, &COL_SCAN_16X16_NEIGHBORS, &COL_ISCAN_16X16),
-        (2, _) => at(&SCAN_16X16, &SCAN_16X16_NEIGHBORS, &ISCAN_16X16),
-        _ => at(&SCAN_32X32, &SCAN_32X32_NEIGHBORS, &ISCAN_32X32),
+        (0, TxType::AdstDct) => at(&ROW_SCAN_4X4, &ROW_ISCAN_4X4),
+        (0, TxType::DctAdst) => at(&COL_SCAN_4X4, &COL_ISCAN_4X4),
+        (0, _) => at(&SCAN_4X4, &ISCAN_4X4),
+        (1, TxType::AdstDct) => at(&ROW_SCAN_8X8, &ROW_ISCAN_8X8),
+        (1, TxType::DctAdst) => at(&COL_SCAN_8X8, &COL_ISCAN_8X8),
+        (1, _) => at(&SCAN_8X8, &ISCAN_8X8),
+        (2, TxType::AdstDct) => at(&ROW_SCAN_16X16, &ROW_ISCAN_16X16),
+        (2, TxType::DctAdst) => at(&COL_SCAN_16X16, &COL_ISCAN_16X16),
+        (2, _) => at(&SCAN_16X16, &ISCAN_16X16),
+        _ => at(&SCAN_32X32, &ISCAN_32X32),
     }
 }
 
@@ -151,13 +130,19 @@ pub(super) fn code(w: &mut Run, more: bool, level: i32, p: &[u8; NODES]) {
 /// What each token costs at a frame's probabilities, in 256ths of a bit, per
 /// band and context (`probs::token_context`): each token's way down the
 /// tree below the end of block's node, its sign and its extra bits counted
-/// as a bit each; then the end of block; then the end of block's node passed
-/// on the way to a token.
-pub(super) struct Costs(Box<[[u16; TOKENS + 1]; CONTEXTS]>);
+/// as a bit each; then the end of block; and from `AFTER_MORE` each token
+/// again with the end of block's node passed on the way to it, which a
+/// token costs unless the one before it was a zero. A token's whole cost
+/// is under a quarter of what 16 bits hold.
+pub(super) struct Costs(Box<[[u16; 2 * AFTER_MORE]; CONTEXTS]>);
+
+/// Where in a row of `Costs` the tokens' costs after the end of block's node
+/// start.
+const AFTER_MORE: usize = 16;
 
 impl Costs {
     pub(super) fn new(probs: &Probs) -> Self {
-        let mut costs = Box::new([[0; TOKENS + 1]; CONTEXTS]);
+        let mut costs = Box::new([[0; 2 * AFTER_MORE]; CONTEXTS]);
         let false_at: [u32; 256] = std::array::from_fn(|p| if p == 0 { 0 } else { cost(false, p as u8) });
         let contexts = probs.coef.iter().flatten().flatten().flat_map(|kind| kind.iter().flatten());
         for (costs, p) in costs.iter_mut().zip(contexts) {
@@ -169,7 +154,7 @@ impl Costs {
             };
             let c = |bits: &[(bool, u8)], extra: u32| bits.iter().map(|&(b, p)| one(b, p)).sum::<u32>() + 256 * extra;
             let large = c(&[(true, p[1]), (true, p[2])], 1);
-            *costs = [
+            let plain = [
                 c(&[(false, p[1])], 0),
                 c(&[(true, p[1]), (false, p[2])], 1),
                 large + c(&[(false, q[0]), (false, q[1])], 0),
@@ -185,59 +170,234 @@ impl Costs {
                 c(&[(true, p[0])], 0),
             ]
             .map(|v| v.min(u32::from(u16::MAX)) as u16);
+            costs[..TOKENS].copy_from_slice(&plain[..TOKENS]);
+            for (after, token) in costs[AFTER_MORE..].iter_mut().zip(&plain[..EOB_TOKEN]) {
+                *after = token.saturating_add(plain[TOKENS]);
+            }
         }
         Self(costs)
     }
 }
 
 /// One position of a scan, with what its token is coded by: where its
-/// coefficient is, six times its band, and the two earlier coefficients the
-/// position after it takes its context from.
+/// coefficient is, six times its band, and how many sixteens of the block in
+/// raster order hold the scan as far as here.
 #[derive(Clone, Copy)]
 struct Place {
     rc: u16,
-    band: u16,
-    next: [u16; 2],
+    band: u8,
+    sixteens: u8,
+}
+
+/// Which of the coefficients coded before one its context is taken from
+/// (libvpx's `init_scan_neighbors`): the one above and the one to the left,
+/// or one of them twice where a scan runs along the rows or down the
+/// columns. On the first row it is the one to the left either way, and in
+/// the first column the one above.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Neighbours {
+    Both,
+    Left,
+    Above,
 }
 
 /// The places of the scan of transform size `tx` and type `tx_type`, the
-/// scan's tables read once into one, so that a token costs one read of it.
-fn places(tx: usize, tx_type: TxType) -> &'static [Place] {
+/// scan's tables read once into one, so that a token costs one read of it,
+/// and where its contexts come from.
+fn places(tx: usize, tx_type: TxType) -> (&'static [Place], Neighbours) {
     static PLACES: std::sync::LazyLock<[Vec<Place>; 10]> = std::sync::LazyLock::new(|| {
         std::array::from_fn(|i| {
             let (tx, tx_type) = (i / 3, [TxType::DctDct, TxType::AdstDct, TxType::DctAdst][i % 3]);
-            let Scan { order, neighbors, .. } = scan(tx, tx_type);
+            let Scan { order, .. } = scan(tx, tx_type);
             let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
-            (0..order.len()).map(|c| Place { rc: order[c], band: u16::from(bands[c]) * 6, next: [2 * c + 2, 2 * c + 3].map(|n| neighbors.get(n).copied().unwrap_or(0)) }).collect()
+            let mut reach = 0;
+            (0..order.len())
+                .map(|c| {
+                    reach = reach.max(order[c] / 16 + 1);
+                    Place { rc: order[c], band: bands[c] * 6, sixteens: reach as u8 }
+                })
+                .collect()
         })
     });
-    let kind = match tx_type {
-        TxType::AdstDct if tx < 3 => 1,
-        TxType::DctAdst if tx < 3 => 2,
-        _ => 0,
+    let (kind, neighbours) = match tx_type {
+        TxType::AdstDct if tx < 3 => (1, Neighbours::Left),
+        TxType::DctAdst if tx < 3 => (2, Neighbours::Above),
+        _ => (0, Neighbours::Both),
     };
-    &PLACES[tx.min(3) * 3 + kind]
+    (&PLACES[tx.min(3) * 3 + kind], neighbours)
 }
 
-/// What `write` would record costs at `costs`, in 256ths of a bit.
-pub(super) fn estimate(costs: &Costs, kind: Kind, ctx: usize, levels: &[i32], eob: usize, energy: &mut [u8; 1024]) -> u32 {
+/// Per coefficient of the first `sixteens` sixteens of a block of size `tx`
+/// in raster order, into `map`: its
+/// token in the low five bits, and above them the context a token there is
+/// coded at, which is the rounded mean of the energies of its neighbours
+/// (`PT_ENERGY_CLASS` of their tokens). The first's context is `ctx`, the
+/// block's. Sixteen coefficients at a time, so that the loop along the scan
+/// only reads.
+#[inline(always)]
+fn chart(tx: usize, neighbours: Neighbours, ctx: usize, levels: &[i16], sixteens: usize, map: &mut [u8; 1024]) {
+    let levels = &levels[..16 * sixteens];
+    #[cfg(target_arch = "aarch64")]
+    neon::chart(tx, neighbours, levels, map);
+    #[cfg(target_arch = "x86_64")]
+    avx2::chart(tx, neighbours, levels, map);
+    map[0] = map[0] & (CONTEXT - 1) | (ctx as u8) << CONTEXT.trailing_zeros();
+}
+
+/// What a context counts in a byte of `chart`'s map, a token under it.
+const CONTEXT: u8 = 32;
+
+/// Which of sixteen coefficients in raster order are in a block's first row,
+/// from its first sixteen: at 4×4 and at 8×8, then every one.
+const FIRST_ROW: [[u8; 16]; 3] = [[255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0], [255; 16]];
+/// Which are in its first column: at 4×4, at 8×8, and where a row starts.
+const FIRST_COLUMN: [[u8; 16]; 3] = [[255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0], [255, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0], [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]];
+
+#[cfg(target_arch = "x86_64")]
+mod avx2 {
+    use std::arch::x86_64::*;
+
+    use super::{CONTEXT, FIRST_COLUMN, FIRST_ROW, Neighbours};
+
+    /// `super::chart`, but for the first coefficient's context.
+    #[inline(always)]
+    pub(super) fn chart(tx: usize, neighbours: Neighbours, levels: &[i16], map: &mut [u8; 1024]) {
+        // The crate is built for AVX2, but its intrinsics are still `unsafe`
+        // to call from a function not marked for it; and every load and
+        // store is of sixteen values inside `levels`, whole sixteens, or
+        // `map`, which is as long as the largest block.
+        assert!(levels.len() <= 16 << (2 * tx) && tx < 4);
+        unsafe {
+            let zero = _mm_setzero_si128();
+            let (first_row, first_column) = (_mm_loadu_si128(FIRST_ROW[tx.min(2)].as_ptr().cast()), _mm_loadu_si128(FIRST_COLUMN[tx.min(2)].as_ptr().cast()));
+            // The energies of the sixteen before these, and of the sixteen
+            // before those.
+            let mut before = [zero; 2];
+            for (k, sixteen) in levels.as_chunks::<16>().0.iter().enumerate() {
+                let magnitude = _mm256_abs_epi16(_mm256_loadu_si256(sixteen.as_ptr().cast()));
+                // Held to a byte, in order.
+                let l = _mm256_castsi256_si128(_mm256_permute4x64_epi64::<0b1000>(_mm256_packus_epi16(magnitude, magnitude)));
+                // -1 where a magnitude is over `k`.
+                let over = |k: i8| {
+                    let least = _mm_set1_epi8(k + 1);
+                    _mm_cmpeq_epi8(_mm_max_epu8(l, least), l)
+                };
+                let over_10 = over(10);
+                // Up to 4 a token is its magnitude, and from there one more
+                // at each of `TOKEN_OF`'s steps.
+                let mut token = _mm_sub_epi8(_mm_min_epu8(l, _mm_set1_epi8(5)), over_10);
+                for step in [6, 18, 34, 66] {
+                    token = _mm_sub_epi8(token, over(step));
+                }
+                let energy = _mm_sub_epi8(_mm_sub_epi8(_mm_min_epu8(l, _mm_set1_epi8(3)), over(4)), over_10);
+                // Each one's neighbour to the left and the one above, a row
+                // back.
+                let left = _mm_alignr_epi8::<15>(energy, before[0]);
+                let above = match tx {
+                    0 => _mm_slli_si128::<4>(energy),
+                    1 => _mm_alignr_epi8::<8>(energy, before[0]),
+                    2 => before[0],
+                    _ => before[1],
+                };
+                let in_first_row = if 16 * k < 4 << tx { first_row } else { zero };
+                let in_first_column = if tx < 3 || k % 2 == 0 { first_column } else { zero };
+                let (above, left) = (_mm_blendv_epi8(above, left, in_first_row), _mm_blendv_epi8(left, above, in_first_column));
+                let context = match neighbours {
+                    Neighbours::Both => _mm_avg_epu8(above, left),
+                    Neighbours::Left => left,
+                    Neighbours::Above => above,
+                };
+                // A context is under 8: shifted as 16 bits, it stays in its
+                // byte.
+                let context = _mm_slli_epi16::<{ CONTEXT.trailing_zeros() as i32 }>(context);
+                _mm_storeu_si128(map[16 * k..][..16].as_mut_ptr().cast(), _mm_or_si128(token, context));
+                before = [energy, before[0]];
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use std::arch::aarch64::*;
+
+    use super::{CONTEXT, FIRST_COLUMN, FIRST_ROW, Neighbours};
+
+    /// `super::chart`, but for the first coefficient's context.
+    #[inline(always)]
+    pub(super) fn chart(tx: usize, neighbours: Neighbours, levels: &[i16], map: &mut [u8; 1024]) {
+        // The crate is built for NEON, and every load and store is of
+        // sixteen values inside `levels`, whole sixteens, or `map`, which
+        // is as long as the largest block.
+        assert!(levels.len() <= 16 << (2 * tx) && tx < 4);
+        unsafe {
+            let zero = vdupq_n_u8(0);
+            let (first_row, first_column) = (vld1q_u8(FIRST_ROW[tx.min(2)].as_ptr()), vld1q_u8(FIRST_COLUMN[tx.min(2)].as_ptr()));
+            // The energies of the sixteen before these, and of the sixteen
+            // before those.
+            let mut before = [zero; 2];
+            for (k, sixteen) in levels.as_chunks::<16>().0.iter().enumerate() {
+                // The magnitudes, held to a byte.
+                let l = vcombine_u8(vqmovun_s16(vabsq_s16(vld1q_s16(sixteen.as_ptr()))), vqmovun_s16(vabsq_s16(vld1q_s16(sixteen.as_ptr().add(8)))));
+                // -1 where a magnitude is over `k`.
+                let over = |k: u8| vcgtq_u8(l, vdupq_n_u8(k));
+                let over_10 = over(10);
+                // Up to 4 a token is its magnitude, and from there one more
+                // at each of `TOKEN_OF`'s steps.
+                let mut token = vsubq_u8(vminq_u8(l, vdupq_n_u8(5)), over_10);
+                for step in [6, 18, 34, 66] {
+                    token = vsubq_u8(token, over(step));
+                }
+                let energy = vsubq_u8(vsubq_u8(vminq_u8(l, vdupq_n_u8(3)), over(4)), over_10);
+                // Each one's neighbour to the left and the one above, a row
+                // back.
+                let left = vextq_u8::<15>(before[0], energy);
+                let above = match tx {
+                    0 => vextq_u8::<12>(zero, energy),
+                    1 => vextq_u8::<8>(before[0], energy),
+                    2 => before[0],
+                    _ => before[1],
+                };
+                let in_first_row = if 16 * k < 4 << tx { first_row } else { zero };
+                let in_first_column = if tx < 3 || k % 2 == 0 { first_column } else { zero };
+                let (above, left) = (vbslq_u8(in_first_row, left, above), vbslq_u8(in_first_column, above, left));
+                let context = match neighbours {
+                    Neighbours::Both => vrhaddq_u8(above, left),
+                    Neighbours::Left => left,
+                    Neighbours::Above => above,
+                };
+                let context = vshlq_n_u8::<{ CONTEXT.trailing_zeros() as i32 }>(context);
+                vst1q_u8(map[16 * k..][..16].as_mut_ptr(), vorrq_u8(token, context));
+                before = [energy, before[0]];
+            }
+        }
+    }
+}
+
+/// What `write` would record costs at `costs`, in 256ths of a bit. `map` is
+/// scratch, its contents whatever they are.
+pub(super) fn estimate(costs: &Costs, kind: Kind, ctx: usize, levels: &[i16], eob: usize, map: &mut [u8; 1024]) -> u32 {
     let first = token_context(kind.tx, kind.chroma, kind.inter);
-    let places = places(kind.tx, kind.tx_type);
-    let mut ctx = ctx;
-    let mut more = true;
+    let (places, neighbours) = places(kind.tx, kind.tx_type);
+    if eob == 0 {
+        return u32::from(costs.0[first + ctx][EOB_TOKEN]);
+    }
+    chart(kind.tx, neighbours, ctx, levels, usize::from(places[eob.min(places.len() - 1)].sixteens), map);
+    let at = |place: &Place| {
+        let m = usize::from(map[usize::from(place.rc) & 1023]);
+        (first + usize::from(place.band) + m / usize::from(CONTEXT), m % usize::from(CONTEXT))
+    };
+    // An end of block cannot follow a zero, so after one its node is not
+    // passed.
+    let mut more = AFTER_MORE;
     let mut total = 0;
     for place in &places[..eob] {
-        let rc = usize::from(place.rc);
-        let level = levels[rc];
-        let token = usize::from(TOKEN_OF[(level.unsigned_abs() as usize).min(67)]);
-        energy[rc & 1023] = PT_ENERGY_CLASS[token];
-        let costs = &costs.0[first + usize::from(place.band) + ctx];
-        total += u32::from(costs[token]) + if more { u32::from(costs[TOKENS]) } else { 0 };
-        more = level != 0;
-        ctx = (1 + usize::from(energy[usize::from(place.next[0]) & 1023]) + usize::from(energy[usize::from(place.next[1]) & 1023])) >> 1;
+        let (context, token) = at(place);
+        total += u32::from(costs.0[context][(more + token) % (2 * AFTER_MORE)]);
+        more = if token != 0 { AFTER_MORE } else { 0 };
     }
     if let Some(place) = places.get(eob) {
-        total += u32::from(costs.0[first + usize::from(place.band) + ctx][EOB_TOKEN]);
+        total += u32::from(costs.0[at(place).0][EOB_TOKEN]);
     }
     total
 }
@@ -257,27 +417,29 @@ pub(super) struct Kind {
 /// scan ends at `eob`, starting from context `ctx`: how many of the blocks
 /// above and to the left had coefficients. Each token is recorded with the
 /// band and context it is coded at, which come from the energy of the
-/// tokens before it. `energy` is scratch, its contents whatever they are.
-pub(super) fn write(t: &mut Tape, kind: Kind, ctx: usize, levels: &[i32], eob: usize, energy: &mut [u8; 1024]) {
+/// tokens before it. `map` is scratch, its contents whatever they are.
+pub(super) fn write(t: &mut Tape, kind: Kind, ctx: usize, levels: &[i16], eob: usize, map: &mut [u8; 1024]) {
     let first = token_context(kind.tx, kind.chroma, kind.inter);
-    let places = places(kind.tx, kind.tx_type);
-    // The energy of each coefficient coded so far, by raster position: a
-    // position's context is read from neighbours earlier in the scan, so
-    // only from what this block has written.
-    let mut ctx = ctx;
+    let (places, neighbours) = places(kind.tx, kind.tx_type);
+    if eob == 0 {
+        return t.end(first + ctx);
+    }
+    // A position's context is read from neighbours earlier in the scan, and
+    // what is past the end of block is zero.
+    chart(kind.tx, neighbours, ctx, levels, usize::from(places[eob.min(places.len() - 1)].sixteens), map);
+    let at = |place: &Place| {
+        let m = usize::from(map[usize::from(place.rc) & 1023]);
+        (first + usize::from(place.band) + m / usize::from(CONTEXT), m % usize::from(CONTEXT))
+    };
     // An end of block cannot follow a zero, so after one it is not coded.
     let mut more = true;
     for place in &places[..eob] {
-        let rc = usize::from(place.rc);
-        let level = levels[rc];
-        let token = usize::from(TOKEN_OF[(level.unsigned_abs() as usize).min(67)]);
-        energy[rc & 1023] = PT_ENERGY_CLASS[token];
-        t.token(first + usize::from(place.band) + ctx, more, level, token);
-        more = level != 0;
-        ctx = (1 + usize::from(energy[usize::from(place.next[0]) & 1023]) + usize::from(energy[usize::from(place.next[1]) & 1023])) >> 1;
+        let (context, token) = at(place);
+        t.token(context, more, i32::from(levels[usize::from(place.rc)]), token);
+        more = token != 0;
     }
     if let Some(place) = places.get(eob) {
-        t.end(first + usize::from(place.band) + ctx);
+        t.end(at(place).0);
     }
 }
 
@@ -285,13 +447,102 @@ pub(super) fn write(t: &mut Tape, kind: Kind, ctx: usize, levels: &[i32], eob: u
 mod tests {
     use super::super::bool_writer::tests::BoolReader;
     use super::super::tables::COEF_PROBS;
+    use super::super::tables::{PT_ENERGY_CLASS, COL_SCAN_16X16_NEIGHBORS, COL_SCAN_4X4_NEIGHBORS, COL_SCAN_8X8_NEIGHBORS, ROW_SCAN_16X16_NEIGHBORS, ROW_SCAN_4X4_NEIGHBORS, ROW_SCAN_8X8_NEIGHBORS, SCAN_16X16_NEIGHBORS, SCAN_32X32_NEIGHBORS, SCAN_4X4_NEIGHBORS, SCAN_8X8_NEIGHBORS};
     use super::*;
+
+    /// The token of each level from 0 to 67, the least `CATEGORY6_TOKEN` codes.
+    const TOKEN_OF: [u8; 68] = {
+        let mut table = [10; 68];
+        let mut level = 0;
+        while level < 67 {
+            table[level] = match level {
+                0..=4 => level as u8,
+                5..=6 => 5,
+                7..=10 => 6,
+                11..=18 => 7,
+                19..=34 => 8,
+                _ => 9,
+            };
+            level += 1;
+        }
+        table
+    };
+
+    /// The two earlier coefficients each position of a scan takes its context
+    /// from, a pair a position (libvpx's `vp9_scan_orders`' neighbours).
+    fn neighbors(tx: usize, tx_type: TxType) -> &'static [u16] {
+        match (tx, tx_type) {
+            (0, TxType::AdstDct) => &ROW_SCAN_4X4_NEIGHBORS,
+            (0, TxType::DctAdst) => &COL_SCAN_4X4_NEIGHBORS,
+            (0, _) => &SCAN_4X4_NEIGHBORS,
+            (1, TxType::AdstDct) => &ROW_SCAN_8X8_NEIGHBORS,
+            (1, TxType::DctAdst) => &COL_SCAN_8X8_NEIGHBORS,
+            (1, _) => &SCAN_8X8_NEIGHBORS,
+            (2, TxType::AdstDct) => &ROW_SCAN_16X16_NEIGHBORS,
+            (2, TxType::DctAdst) => &COL_SCAN_16X16_NEIGHBORS,
+            (2, _) => &SCAN_16X16_NEIGHBORS,
+            _ => &SCAN_32X32_NEIGHBORS,
+        }
+    }
+
+    /// `estimate` a token at a time, its context from the scan's own table
+    /// of neighbours: what the map is held to.
+    fn estimate_by_one(costs: &Costs, kind: Kind, ctx: usize, levels: &[i16], eob: usize) -> u32 {
+        let first = token_context(kind.tx, kind.chroma, kind.inter);
+        let (Scan { order, .. }, neighbors) = (scan(kind.tx, kind.tx_type), neighbors(kind.tx, kind.tx_type));
+        let bands: &[u8] = if kind.tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
+        let mut energy = vec![0; order.len()];
+        let (mut ctx, mut more, mut total) = (ctx, true, 0);
+        for c in 0..eob {
+            let rc = usize::from(order[c]);
+            let token = usize::from(TOKEN_OF[usize::from(levels[rc].unsigned_abs()).min(67)]);
+            energy[rc] = PT_ENERGY_CLASS[token];
+            let costs = &costs.0[first + usize::from(bands[c]) * 6 + ctx];
+            total += u32::from(costs[token]) + if more { u32::from(costs[AFTER_MORE]) - u32::from(costs[0]) } else { 0 };
+            more = levels[rc] != 0;
+            if c + 1 < order.len() {
+                ctx = (1 + usize::from(energy[usize::from(neighbors[2 * c + 2])]) + usize::from(energy[usize::from(neighbors[2 * c + 3])])) >> 1;
+            }
+        }
+        if eob < order.len() {
+            total += u32::from(costs.0[first + usize::from(bands[eob]) * 6 + ctx][EOB_TOKEN]);
+        }
+        total
+    }
+
+    #[test]
+    fn the_map_gives_what_a_token_at_a_time_does() {
+        let costs = Costs::new(&Probs::default());
+        let mut state = 0x1234_5678_u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        let types = [TxType::DctDct, TxType::AdstDct, TxType::DctAdst, TxType::AdstAdst];
+        for round in 0..4000 {
+            let tx = round % 4;
+            let tx_type = if tx == 3 { TxType::DctDct } else { types[round / 4 % 4] };
+            let n = 4 << tx;
+            // Every token's range, and how full a block is, from nearly
+            // empty to every coefficient.
+            let (range, one_in) = ([2, 5, 12, 80, 20_000][round / 16 % 5], [1, 2, 5, 40][round / 80 % 4]);
+            let levels: Vec<i16> = (0..n * n).map(|_| if next() % one_in == 0 { ((next() % (2 * range + 1)) as i32 - range as i32) as i16 } else { 0 }).collect();
+            let order = scan(tx, tx_type).order;
+            let eob = order.iter().rposition(|&rc| levels[usize::from(rc)] != 0).map_or(0, |i| i + 1);
+            let kind = Kind { tx, tx_type, chroma: round % 3 == 0, inter: round % 5 == 0 };
+            let ctx = round % 3;
+            let mut map = [(round % 251) as u8; 1024];
+            assert_eq!(estimate(&costs, kind, ctx, &levels, eob, &mut map), estimate_by_one(&costs, kind, ctx, &levels, eob), "round {round}: {n}x{n} {tx_type:?}, eob {eob}");
+        }
+    }
 
     /// libvpx's `decode_coefs`, read with the specification's bool reader:
     /// the levels back in raster order and the end of block.
     fn read(r: &mut BoolReader, tx: usize, tx_type: TxType, ctx: usize) -> (Vec<i32>, usize) {
         let probs = &COEF_PROBS[tx][0][0];
-        let Scan { order: scan, neighbors, .. } = scan(tx, tx_type);
+        let (Scan { order: scan, .. }, neighbors) = (scan(tx, tx_type), neighbors(tx, tx_type));
         let bands: &[u8] = if tx == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
         let max = 16 << (2 * tx);
         let mut levels = vec![0; max];
@@ -356,14 +607,14 @@ mod tests {
             let mut estimate = 0;
             let mut energy = [0; 1024];
             for block in 0..400 / (tx + 1) {
-                let mut levels = vec![0; n * n];
+                let mut levels = vec![0i16; n * n];
                 // Denser towards the start of the scan, as coefficients are.
                 for (c, &rc) in scan.iter().enumerate() {
                     state ^= state << 13;
                     state ^= state >> 17;
                     state ^= state << 5;
                     if (state % 1000) as usize > 600 + 400 * c / (n * n) {
-                        levels[usize::from(rc)] = (state >> 20) as i32 % 9 - 4;
+                        levels[usize::from(rc)] = ((state >> 20) as i32 % 9 - 4) as i16;
                     }
                 }
                 let eob = scan.iter().rposition(|&rc| levels[usize::from(rc)] != 0).map_or(0, |i| i + 1);
@@ -380,11 +631,11 @@ mod tests {
     #[test]
     fn levels_of_every_size_type_and_token_read_back() {
         // Every token's range, zeros between, a full block and an empty one.
-        let samples = [1, -1, 2, 3, -4, 5, 6, -7, 10, 11, 18, -19, 34, 35, 66, -67, 300, 16_449];
+        let samples: [i16; 18] = [1, -1, 2, 3, -4, 5, 6, -7, 10, 11, 18, -19, 34, 35, 66, -67, 300, 16_449];
         let types = [TxType::DctDct, TxType::AdstDct, TxType::DctAdst, TxType::AdstAdst];
         for (tx, tx_type) in (0..3).flat_map(|tx| types.map(|t| (tx, t))).chain([(3, TxType::DctDct)]) {
             let n = 4 << tx;
-            let mut cases: Vec<Vec<i32>> = vec![vec![0; n * n]];
+            let mut cases: Vec<Vec<i16>> = vec![vec![0; n * n]];
             let mut sparse = vec![0; n * n];
             for (i, &s) in samples.iter().enumerate() {
                 sparse[(i * 7) % (n * n)] = s;
@@ -405,6 +656,7 @@ mod tests {
                     let data = super::super::tape::code([&t], &Probs::default().table(), None);
                     let mut r = BoolReader::new(&data);
                     let (back, back_eob) = read(&mut r, tx, tx_type, ctx);
+                    let back: Vec<i16> = back.iter().map(|&v| v as i16).collect();
                     assert_eq!((&back, back_eob), (levels, eob), "{n}x{n} {tx_type:?}, case {case}, context {ctx}");
                     assert_eq!(r.literal(7), 0x5a, "{n}x{n}, case {case}: what follows the block");
                 }
