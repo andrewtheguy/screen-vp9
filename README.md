@@ -62,7 +62,8 @@ libvpx is [libvpx-prebuilt](https://github.com/andrewtheguy/libvpx-prebuilt)'s
 static archive, which the build fetches: one of the two coders, and the
 decoder every frame the Rust coder makes in a test is held to. How the Rust
 coder works is in [docs/encoder.md](docs/encoder.md), what it was measured at
-in [docs/benchmarks.md](docs/benchmarks.md), and how it was planned and
+in [docs/benchmarks.md](docs/benchmarks.md) (on an Apple M2 Max in
+[docs/benchmarks-m2-max.md](docs/benchmarks-m2-max.md)), and how it was planned and
 decided in [docs/plan.md](docs/plan.md).
 
 Use it by release tag:

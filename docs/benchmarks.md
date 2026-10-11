@@ -19,10 +19,10 @@ five passes, each on one encoder kept across them, as a session's is. `tools/tab
 They were run on 2026-10-10 on a six-core Intel i5-8500T (AVX2) under WSL2,
 four threads, the machine idle and one measurement at a time, on the encoder
 of commit `29a7849`. A time on this machine moves by a tenth from one run to
-the next, so a ratio within a tenth of 1.00 is on the line. The tables this
-file held before were made on an Apple M2 Max, where this encoder stood
-better against libvpx than it does here: the two are not to be read against
-each other.
+the next, so a ratio within a tenth of 1.00 is on the line. The same
+measurements on an Apple M2 Max, the NEON kernels against libvpx there, are
+in [benchmarks-m2-max.md](benchmarks-m2-max.md): the two are not to be read
+against each other.
 
 Throughout, a *ratio* is this encoder over libvpx, so under 1.00 is fewer
 bytes or less time; a *PSNR difference* is this encoder's luma PSNR less
