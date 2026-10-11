@@ -9,8 +9,10 @@
 //! left of it have moved already.
 //!
 //! An edge is filtered eight lines at a time, a line to each lane of a
-//! vector of 16-bit values, NEON on arm64 and SSE on amd64, and held by
-//! its tests to libvpx's C written out a line at a time.
+//! vector of 16-bit values, and on amd64 two edges that lie one after the
+//! other and take the same filter are sixteen lines of one AVX2 register,
+//! each eight with its own level. Both are held by their tests to libvpx's C
+//! written out a line at a time.
 
 use super::Geometry;
 
@@ -179,6 +181,28 @@ impl Width {
     }
 }
 
+/// A value per line across an edge, each operation the scalar one in each
+/// lane, so that a filter is written once for however many lines a register
+/// holds.
+trait Line: Copy {
+    fn splat(v: i16) -> Self;
+    fn add(self, o: Self) -> Self;
+    fn sub(self, o: Self) -> Self;
+    fn and(self, o: Self) -> Self;
+    fn times(self, k: i16) -> Self;
+    /// `|self - o|`.
+    fn diff(self, o: Self) -> Self;
+    /// -1 where at most `limit`, 0 elsewhere.
+    fn at_most(self, limit: Self) -> Self;
+    /// Held to a signed byte.
+    fn clamp8(self) -> Self;
+    /// Shifted right `N`, the sign kept.
+    fn shr<const N: i32>(self) -> Self;
+    /// Of `a` and `b`, `a` where `self` is -1 and `b` where it is 0.
+    fn select(self, a: Self, b: Self) -> Self;
+    fn any(self) -> bool;
+}
+
 /// A value per line of the eight across an edge: one NEON register on
 /// arm64, one SSE register on amd64, so that a filter's taps stay in
 /// registers. Every operation is the scalar one in each lane.
@@ -187,24 +211,10 @@ struct V(#[cfg(target_arch = "aarch64")] std::arch::aarch64::int16x8_t, #[cfg(ta
 
 // The crate is built for NEON; each `unsafe` here is for that.
 #[cfg(target_arch = "aarch64")]
-impl V {
+impl Line for V {
     #[inline(always)]
     fn splat(v: i16) -> V {
         V(unsafe { std::arch::aarch64::vdupq_n_s16(v) })
-    }
-
-    /// The eight bytes of `v`, lowest first.
-    #[inline(always)]
-    fn from_u64(v: u64) -> V {
-        use std::arch::aarch64::*;
-        V(unsafe { vreinterpretq_s16_u16(vmovl_u8(vcreate_u8(v))) })
-    }
-
-    /// Each lane, a pixel, as a byte of the `u64`, lowest first.
-    #[inline(always)]
-    fn to_u64(self) -> u64 {
-        use std::arch::aarch64::*;
-        unsafe { vget_lane_u64::<0>(vreinterpret_u64_u8(vmovn_u16(vreinterpretq_u16_s16(self.0)))) }
     }
 
     #[inline(always)]
@@ -227,33 +237,28 @@ impl V {
         V(unsafe { std::arch::aarch64::vmulq_n_s16(self.0, k) })
     }
 
-    /// `|self - o|`.
     #[inline(always)]
     fn diff(self, o: V) -> V {
         V(unsafe { std::arch::aarch64::vabdq_s16(self.0, o.0) })
     }
 
-    /// -1 where at most `limit`, 0 elsewhere.
     #[inline(always)]
     fn at_most(self, limit: V) -> V {
         use std::arch::aarch64::*;
         V(unsafe { vreinterpretq_s16_u16(vcleq_s16(self.0, limit.0)) })
     }
 
-    /// Held to a signed byte.
     #[inline(always)]
     fn clamp8(self) -> V {
         use std::arch::aarch64::*;
         V(unsafe { vmaxq_s16(vminq_s16(self.0, vdupq_n_s16(127)), vdupq_n_s16(-128)) })
     }
 
-    /// Shifted right `N`, the sign kept.
     #[inline(always)]
     fn shr<const N: i32>(self) -> V {
         V(unsafe { std::arch::aarch64::vshrq_n_s16::<N>(self.0) })
     }
 
-    /// Of `a` and `b`, `a` where `self` is -1 and `b` where it is 0.
     #[inline(always)]
     fn select(self, a: V, b: V) -> V {
         use std::arch::aarch64::*;
@@ -264,6 +269,23 @@ impl V {
     fn any(self) -> bool {
         use std::arch::aarch64::*;
         unsafe { vmaxvq_u16(vreinterpretq_u16_s16(self.0)) != 0 }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl V {
+    /// The eight bytes of `v`, lowest first.
+    #[inline(always)]
+    fn from_u64(v: u64) -> V {
+        use std::arch::aarch64::*;
+        V(unsafe { vreinterpretq_s16_u16(vmovl_u8(vcreate_u8(v))) })
+    }
+
+    /// Each lane, a pixel, as a byte of the `u64`, lowest first.
+    #[inline(always)]
+    fn to_u64(self) -> u64 {
+        use std::arch::aarch64::*;
+        unsafe { vget_lane_u64::<0>(vreinterpret_u64_u8(vmovn_u16(vreinterpretq_u16_s16(self.0)))) }
     }
 
     /// The 8×8 of `px` from `at`, rows `stride` apart, turned about its
@@ -310,24 +332,10 @@ fn transpose8(a: [std::arch::aarch64::uint8x8_t; 8]) -> [std::arch::aarch64::uin
 // intrinsics are still `unsafe` to call from a function not marked for it;
 // each `unsafe` here is for that.
 #[cfg(target_arch = "x86_64")]
-impl V {
+impl Line for V {
     #[inline(always)]
     fn splat(v: i16) -> V {
         V(unsafe { std::arch::x86_64::_mm_set1_epi16(v) })
-    }
-
-    /// The eight bytes of `v`, lowest first.
-    #[inline(always)]
-    fn from_u64(v: u64) -> V {
-        use std::arch::x86_64::*;
-        V(unsafe { _mm_cvtepu8_epi16(_mm_cvtsi64_si128(v as i64)) })
-    }
-
-    /// Each lane, a pixel, as a byte of the `u64`, lowest first.
-    #[inline(always)]
-    fn to_u64(self) -> u64 {
-        use std::arch::x86_64::*;
-        unsafe { _mm_cvtsi128_si64(_mm_packus_epi16(self.0, self.0)) as u64 }
     }
 
     #[inline(always)]
@@ -351,34 +359,29 @@ impl V {
         V(unsafe { _mm_mullo_epi16(self.0, _mm_set1_epi16(k)) })
     }
 
-    /// `|self - o|`.
     #[inline(always)]
     fn diff(self, o: V) -> V {
         use std::arch::x86_64::*;
         V(unsafe { _mm_abs_epi16(_mm_sub_epi16(self.0, o.0)) })
     }
 
-    /// -1 where at most `limit`, 0 elsewhere.
     #[inline(always)]
     fn at_most(self, limit: V) -> V {
         use std::arch::x86_64::*;
         V(unsafe { _mm_xor_si128(_mm_cmpgt_epi16(self.0, limit.0), _mm_set1_epi16(-1)) })
     }
 
-    /// Held to a signed byte.
     #[inline(always)]
     fn clamp8(self) -> V {
         use std::arch::x86_64::*;
         V(unsafe { _mm_max_epi16(_mm_min_epi16(self.0, _mm_set1_epi16(127)), _mm_set1_epi16(-128)) })
     }
 
-    /// Shifted right `N`, the sign kept.
     #[inline(always)]
     fn shr<const N: i32>(self) -> V {
         V(unsafe { std::arch::x86_64::_mm_srai_epi16::<N>(self.0) })
     }
 
-    /// Of `a` and `b`, `a` where `self` is -1 and `b` where it is 0.
     #[inline(always)]
     fn select(self, a: V, b: V) -> V {
         V(unsafe { std::arch::x86_64::_mm_blendv_epi8(b.0, a.0, self.0) })
@@ -388,15 +391,30 @@ impl V {
     fn any(self) -> bool {
         unsafe { std::arch::x86_64::_mm_movemask_epi8(self.0) != 0 }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl V {
+    /// The eight bytes of `v`, lowest first.
+    #[inline(always)]
+    fn from_u64(v: u64) -> V {
+        use std::arch::x86_64::*;
+        V(unsafe { _mm_cvtepu8_epi16(_mm_cvtsi64_si128(v as i64)) })
+    }
+
+    /// Each lane, a pixel, as a byte of the `u64`, lowest first.
+    #[inline(always)]
+    fn to_u64(self) -> u64 {
+        use std::arch::x86_64::*;
+        unsafe { _mm_cvtsi128_si64(_mm_packus_epi16(self.0, self.0)) as u64 }
+    }
 
     /// The 8×8 of `px` from `at`, rows `stride` apart, turned about its
     /// diagonal: a lane per row, a value per column.
     #[inline(always)]
     fn columns(px: &[u8], at: usize, stride: usize) -> [V; 8] {
         use std::arch::x86_64::*;
-        let px = &px[at..at + 7 * stride + 8];
-        let rows: [__m128i; 8] = std::array::from_fn(|i| unsafe { _mm_loadl_epi64(px[i * stride..].as_ptr().cast()) });
-        let pairs = transpose8(rows);
+        let pairs = turned(px, at, stride);
         std::array::from_fn(|c| V(unsafe { _mm_cvtepu8_epi16(if c % 2 == 0 { pairs[c / 2] } else { _mm_srli_si128::<8>(pairs[c / 2]) }) }))
     }
 
@@ -404,11 +422,121 @@ impl V {
     #[inline(always)]
     fn put_columns(px: &mut [u8], at: usize, stride: usize, columns: [V; 8]) {
         use std::arch::x86_64::*;
-        let px = &mut px[at..at + 7 * stride + 8];
-        let pairs = transpose8(columns.map(|c| unsafe { _mm_packus_epi16(c.0, c.0) }));
-        for (i, row) in px.chunks_mut(stride).take(8).enumerate() {
-            unsafe { _mm_storel_epi64(row.as_mut_ptr().cast(), if i % 2 == 0 { pairs[i / 2] } else { _mm_srli_si128::<8>(pairs[i / 2]) }) };
-        }
+        put_turned(px, at, stride, columns.map(|c| unsafe { _mm_packus_epi16(c.0, c.0) }));
+    }
+}
+
+/// Sixteen lines across an edge, two eights with a level each, in one AVX2
+/// register: the first eight in its low half.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+struct Pair(std::arch::x86_64::__m256i);
+
+// As for `V`: the crate is built for AVX2.
+#[cfg(target_arch = "x86_64")]
+impl Line for Pair {
+    #[inline(always)]
+    fn splat(v: i16) -> Pair {
+        Pair(unsafe { std::arch::x86_64::_mm256_set1_epi16(v) })
+    }
+
+    #[inline(always)]
+    fn add(self, o: Pair) -> Pair {
+        Pair(unsafe { std::arch::x86_64::_mm256_add_epi16(self.0, o.0) })
+    }
+
+    #[inline(always)]
+    fn sub(self, o: Pair) -> Pair {
+        Pair(unsafe { std::arch::x86_64::_mm256_sub_epi16(self.0, o.0) })
+    }
+
+    #[inline(always)]
+    fn and(self, o: Pair) -> Pair {
+        Pair(unsafe { std::arch::x86_64::_mm256_and_si256(self.0, o.0) })
+    }
+
+    #[inline(always)]
+    fn times(self, k: i16) -> Pair {
+        use std::arch::x86_64::*;
+        Pair(unsafe { _mm256_mullo_epi16(self.0, _mm256_set1_epi16(k)) })
+    }
+
+    #[inline(always)]
+    fn diff(self, o: Pair) -> Pair {
+        use std::arch::x86_64::*;
+        Pair(unsafe { _mm256_abs_epi16(_mm256_sub_epi16(self.0, o.0)) })
+    }
+
+    #[inline(always)]
+    fn at_most(self, limit: Pair) -> Pair {
+        use std::arch::x86_64::*;
+        Pair(unsafe { _mm256_xor_si256(_mm256_cmpgt_epi16(self.0, limit.0), _mm256_set1_epi16(-1)) })
+    }
+
+    #[inline(always)]
+    fn clamp8(self) -> Pair {
+        use std::arch::x86_64::*;
+        Pair(unsafe { _mm256_max_epi16(_mm256_min_epi16(self.0, _mm256_set1_epi16(127)), _mm256_set1_epi16(-128)) })
+    }
+
+    #[inline(always)]
+    fn shr<const N: i32>(self) -> Pair {
+        Pair(unsafe { std::arch::x86_64::_mm256_srai_epi16::<N>(self.0) })
+    }
+
+    #[inline(always)]
+    fn select(self, a: Pair, b: Pair) -> Pair {
+        Pair(unsafe { std::arch::x86_64::_mm256_blendv_epi8(b.0, a.0, self.0) })
+    }
+
+    #[inline(always)]
+    fn any(self) -> bool {
+        unsafe { std::arch::x86_64::_mm256_movemask_epi8(self.0) != 0 }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Pair {
+    /// `a` for the first eight lines and `b` for the second.
+    #[inline(always)]
+    fn of(a: V, b: V) -> Pair {
+        Pair(unsafe { std::arch::x86_64::_mm256_set_m128i(b.0, a.0) })
+    }
+
+    /// The sixteen bytes of `v`, a line each.
+    #[inline(always)]
+    fn from_bytes(v: std::arch::x86_64::__m128i) -> Pair {
+        Pair(unsafe { std::arch::x86_64::_mm256_cvtepu8_epi16(v) })
+    }
+
+    /// Each lane, a pixel, as a byte.
+    #[inline(always)]
+    fn to_bytes(self) -> std::arch::x86_64::__m128i {
+        use std::arch::x86_64::*;
+        unsafe { _mm256_castsi256_si128(_mm256_permute4x64_epi64::<0b1000>(_mm256_packus_epi16(self.0, self.0))) }
+    }
+}
+
+/// The 8×8 of `px` from `at`, rows `stride` apart, turned about its
+/// diagonal, as `transpose8` leaves it.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn turned(px: &[u8], at: usize, stride: usize) -> [std::arch::x86_64::__m128i; 4] {
+    use std::arch::x86_64::*;
+    let px = &px[at..at + 7 * stride + 8];
+    transpose8(std::array::from_fn(|i| unsafe { _mm_loadl_epi64(px[i * stride..].as_ptr().cast()) }))
+}
+
+/// Eight columns, each the low half of a register, back into the 8×8 of
+/// `px` that `turned` reads.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn put_turned(px: &mut [u8], at: usize, stride: usize, columns: [std::arch::x86_64::__m128i; 8]) {
+    use std::arch::x86_64::*;
+    let px = &mut px[at..at + 7 * stride + 8];
+    let pairs = transpose8(columns);
+    for (i, row) in px.chunks_mut(stride).take(8).enumerate() {
+        unsafe { _mm_storel_epi64(row.as_mut_ptr().cast(), if i % 2 == 0 { pairs[i / 2] } else { _mm_srli_si128::<8>(pairs[i / 2]) }) };
     }
 }
 
@@ -426,20 +554,28 @@ fn transpose8(a: [std::arch::x86_64::__m128i; 8]) -> [std::arch::x86_64::__m128i
     }
 }
 
-/// Eight lines across an edge: from the eighth pixel before the edge,
-/// `[0]`, to the eighth after, `[15]`.
-type Taps = [V; 16];
+/// The lines across an edge, a lane each: from the eighth pixel before the
+/// edge, `[0]`, to the eighth after, `[15]`.
+type Taps<L> = [L; 16];
 
-/// Filter eight lines across an edge in `t` as libvpx's `vpx_lpf_*_c`
-/// filter of `width` filters each (`filter_mask`, `flat_mask4`,
-/// `flat_mask5`, `filter4`, `filter8` and `filter16`), each lane a line,
-/// without a branch inside a lane so that the eight are one vector. Only
+impl Limits {
+    /// A line's limit, its blimit and its hev limit, the same for every
+    /// line.
+    #[inline(always)]
+    fn lanes(self) -> [V; 3] {
+        [self.limit, self.blimit, self.hev].map(|v| V::splat(v as i16))
+    }
+}
+
+/// Filter the lines across an edge in `t` as libvpx's `vpx_lpf_*_c` filter
+/// of `width` filters each (`filter_mask`, `flat_mask4`, `flat_mask5`,
+/// `filter4`, `filter8` and `filter16`), each lane a line with its own
+/// limits, without a branch inside a lane so that they are one vector. Only
 /// the taps `width` reads are looked at.
 #[inline(always)]
-fn filter_lines(t: &mut Taps, width: Width, l: Limits) {
+fn filter_lines<L: Line>(t: &mut Taps<L>, width: Width, [limit, blimit, hev_limit]: [L; 3]) {
     let s = *t;
-    let limit = V::splat(l.limit as i16);
-    let one = V::splat(1);
+    let one = L::splat(1);
     let mask = s[4]
         .diff(s[5])
         .at_most(limit)
@@ -448,19 +584,18 @@ fn filter_lines(t: &mut Taps, width: Width, l: Limits) {
         .and(s[9].diff(s[8]).at_most(limit))
         .and(s[10].diff(s[9]).at_most(limit))
         .and(s[11].diff(s[10]).at_most(limit))
-        .and(s[7].diff(s[8]).add(s[7].diff(s[8])).add(s[6].diff(s[9]).shr::<1>()).at_most(V::splat(l.blimit as i16)));
+        .and(s[7].diff(s[8]).add(s[7].diff(s[8])).add(s[6].diff(s[9]).shr::<1>()).at_most(blimit));
     if !mask.any() {
         return;
     }
-    let hev_limit = V::splat(l.hev as i16);
     let not_hev = s[6].diff(s[7]).at_most(hev_limit).and(s[9].diff(s[8]).at_most(hev_limit));
-    let bias = V::splat(128);
+    let bias = L::splat(128);
     let [ps1, ps0, qs0, qs1] = [s[6].sub(bias), s[7].sub(bias), s[8].sub(bias), s[9].sub(bias)];
     let inner = qs0.sub(ps0);
-    let outer = not_hev.select(V::splat(0), ps1.sub(qs1).clamp8());
+    let outer = not_hev.select(L::splat(0), ps1.sub(qs1).clamp8());
     let f = outer.add(inner).add(inner).add(inner).clamp8().and(mask);
-    let f1 = f.add(V::splat(4)).clamp8().shr::<3>();
-    let f2 = f.add(V::splat(3)).clamp8().shr::<3>();
+    let f1 = f.add(L::splat(4)).clamp8().shr::<3>();
+    let f2 = f.add(L::splat(3)).clamp8().shr::<3>();
     let o = f1.add(one).shr::<1>().and(not_hev);
     t[6] = ps1.add(o).clamp8().add(bias);
     t[7] = ps0.add(f2).clamp8().add(bias);
@@ -483,7 +618,7 @@ fn filter_lines(t: &mut Taps, width: Width, l: Limits) {
     // running sum, one tap out and one in at each step.
     let mut sum = s[4].times(3).add(s[5].times(2)).add(s[6]).add(s[7]).add(s[8]);
     for k in 5..11 {
-        t[k] = flat.select(sum.add(V::splat(4)).shr::<3>(), t[k]);
+        t[k] = flat.select(sum.add(L::splat(4)).shr::<3>(), t[k]);
         sum = sum.sub(s[(k - 3).max(4)]).sub(s[k]).add(s[k + 1]).add(s[(k + 4).min(11)]);
     }
     if width == Width::Eight {
@@ -507,31 +642,50 @@ fn filter_lines(t: &mut Taps, width: Width, l: Limits) {
         sum = sum.add(*tap);
     }
     for k in 1..15 {
-        t[k] = flat2.select(sum.add(V::splat(8)).shr::<4>(), t[k]);
+        t[k] = flat2.select(sum.add(L::splat(8)).shr::<4>(), t[k]);
         sum = sum.sub(s[k.saturating_sub(7)]).sub(s[k]).add(s[k + 1]).add(s[(k + 8).min(15)]);
     }
 }
 
-/// Filter the vertical edge before pixel `at` of `px`, on its eight rows
-/// `stride` apart: each 8×8 across the edge turned so that its columns are
-/// lanes.
-fn vertical_edge(px: &mut [u8], at: usize, stride: usize, width: Width, l: Limits) {
-    let reach = width.reach();
-    // Lines that are one value across the edge are what the filter leaves
-    // them, and a desktop is mostly those: looked for before any is turned.
-    let even = |r: usize| {
+/// Whether each of the eight rows from `at` is one value from `reach`
+/// before the vertical edge there to `reach` after it. Such lines are what
+/// the filter leaves them, and a desktop is mostly those: looked for before
+/// any is turned.
+#[inline(always)]
+fn even_rows(px: &[u8], at: usize, stride: usize, reach: usize) -> bool {
+    (0..8).all(|r| {
         let line = &px[at + r * stride - reach..][..2 * reach];
         line.as_chunks::<8>().0.iter().all(|eight| u64::from_le_bytes(*eight) == u64::from(line[0]) * 0x0101_0101_0101_0101)
-    };
-    if (0..8).all(even) {
-        return;
+    })
+}
+
+/// As `even_rows`, of the eight columns from `at` across the horizontal
+/// edge above it.
+#[inline(always)]
+fn even_columns(px: &[u8], at: usize, stride: usize, reach: usize) -> bool {
+    let row = |j: usize| u64::from_le_bytes(px[at + j * stride - 8 * stride..][..8].try_into().expect("eight pixels"));
+    let first = row(8 - reach);
+    (9 - reach..8 + reach).all(|j| row(j) == first)
+}
+
+/// Filter the vertical edge before pixel `at` of `px`, on its eight rows
+/// `stride` apart.
+fn vertical_edge(px: &mut [u8], at: usize, stride: usize, width: Width, l: Limits) {
+    if !even_rows(px, at, stride, width.reach()) {
+        vertical_lines(px, at, stride, width, l);
     }
-    let mut t: Taps = [V::splat(0); 16];
+}
+
+/// `vertical_edge` without its look for even lines: each 8×8 across the
+/// edge turned so that its columns are lanes.
+fn vertical_lines(px: &mut [u8], at: usize, stride: usize, width: Width, l: Limits) {
+    let reach = width.reach();
+    let mut t: Taps<V> = [V::splat(0); 16];
     // The 8×8s from `reach` before the edge.
     for x in (8 - reach..8 + reach).step_by(8) {
         t[x..x + 8].copy_from_slice(&V::columns(px, at + x - 8, stride));
     }
-    filter_lines(&mut t, width, l);
+    filter_lines(&mut t, width, l.lanes());
     for x in (8 - reach..8 + reach).step_by(8) {
         V::put_columns(px, at + x - 8, stride, t[x..x + 8].try_into().expect("eight columns"));
     }
@@ -540,20 +694,117 @@ fn vertical_edge(px: &mut [u8], at: usize, stride: usize, width: Width, l: Limit
 /// Filter the horizontal edge above pixel `at` of `px`, on the eight
 /// columns from it, its rows `stride` apart.
 fn horizontal_edge(px: &mut [u8], at: usize, stride: usize, width: Width, l: Limits) {
-    let reach = width.reach();
-    // As `vertical_edge`: columns that are one value across the edge.
-    let row = |j: usize| u64::from_le_bytes(px[at + j * stride - 8 * stride..][..8].try_into().expect("eight pixels"));
-    let first = row(8 - reach);
-    if (9 - reach..8 + reach).all(|j| row(j) == first) {
-        return;
+    if !even_columns(px, at, stride, width.reach()) {
+        horizontal_lines(px, at, stride, width, l);
     }
-    let mut t: Taps = [V::splat(0); 16];
+}
+
+/// `horizontal_edge` without its look for even lines.
+fn horizontal_lines(px: &mut [u8], at: usize, stride: usize, width: Width, l: Limits) {
+    let reach = width.reach();
+    let mut t: Taps<V> = [V::splat(0); 16];
     for j in 8 - reach..8 + reach {
         t[j] = V::from_u64(u64::from_le_bytes(px[at + j * stride - 8 * stride..][..8].try_into().expect("eight pixels")));
     }
-    filter_lines(&mut t, width, l);
+    filter_lines(&mut t, width, l.lanes());
     for j in 8 - reach..8 + reach {
         px[at + j * stride - 8 * stride..][..8].copy_from_slice(&t[j].to_u64().to_le_bytes());
+    }
+}
+
+/// Two vertical edges one under the other, before pixel `at` of `px` and
+/// eight rows down, each with its limits: sixteen lines a register on
+/// amd64.
+#[cfg(target_arch = "x86_64")]
+fn vertical_pair(px: &mut [u8], at: usize, stride: usize, width: Width, l: [Limits; 2]) {
+    use std::arch::x86_64::*;
+    let reach = width.reach();
+    let below = at + 8 * stride;
+    match [even_rows(px, at, stride, reach), even_rows(px, below, stride, reach)] {
+        [true, true] => return,
+        [false, true] => return vertical_lines(px, at, stride, width, l[0]),
+        [true, false] => return vertical_lines(px, below, stride, width, l[1]),
+        [false, false] => {}
+    }
+    let mut t: Taps<Pair> = [Pair::splat(0); 16];
+    for x in (8 - reach..8 + reach).step_by(8) {
+        let (a, b) = (turned(px, at + x - 8, stride), turned(px, below + x - 8, stride));
+        for c in 0..8 {
+            t[x + c] = Pair::from_bytes(unsafe { if c % 2 == 0 { _mm_unpacklo_epi64(a[c / 2], b[c / 2]) } else { _mm_unpackhi_epi64(a[c / 2], b[c / 2]) } });
+        }
+    }
+    filter_lines(&mut t, width, pair_lanes(l));
+    for x in (8 - reach..8 + reach).step_by(8) {
+        let columns: [__m128i; 8] = std::array::from_fn(|c| t[x + c].to_bytes());
+        put_turned(px, at + x - 8, stride, columns);
+        put_turned(px, below + x - 8, stride, columns.map(|c| unsafe { _mm_srli_si128::<8>(c) }));
+    }
+}
+
+/// Two horizontal edges side by side, above pixel `at` of `px` and eight
+/// columns on, each with its limits: sixteen lines a register on amd64.
+#[cfg(target_arch = "x86_64")]
+fn horizontal_pair(px: &mut [u8], at: usize, stride: usize, width: Width, l: [Limits; 2]) {
+    use std::arch::x86_64::*;
+    let reach = width.reach();
+    match [even_columns(px, at, stride, reach), even_columns(px, at + 8, stride, reach)] {
+        [true, true] => return,
+        [false, true] => return horizontal_lines(px, at, stride, width, l[0]),
+        [true, false] => return horizontal_lines(px, at + 8, stride, width, l[1]),
+        [false, false] => {}
+    }
+    let mut t: Taps<Pair> = [Pair::splat(0); 16];
+    for j in 8 - reach..8 + reach {
+        t[j] = Pair::from_bytes(unsafe { _mm_loadu_si128(px[at + j * stride - 8 * stride..][..16].as_ptr().cast()) });
+    }
+    filter_lines(&mut t, width, pair_lanes(l));
+    for j in 8 - reach..8 + reach {
+        unsafe { _mm_storeu_si128(px[at + j * stride - 8 * stride..][..16].as_mut_ptr().cast(), t[j].to_bytes()) };
+    }
+}
+
+/// The limits of two eights of lines, each in its half.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn pair_lanes(l: [Limits; 2]) -> [Pair; 3] {
+    let (a, b) = (l[0].lanes(), l[1].lanes());
+    std::array::from_fn(|i| Pair::of(a[i], b[i]))
+}
+
+/// Two vertical edges one under the other, as on amd64, where NEON's
+/// register holds the lines of one.
+#[cfg(target_arch = "aarch64")]
+fn vertical_pair(px: &mut [u8], at: usize, stride: usize, width: Width, l: [Limits; 2]) {
+    vertical_edge(px, at, stride, width, l[0]);
+    vertical_edge(px, at + 8 * stride, stride, width, l[1]);
+}
+
+/// Two horizontal edges side by side, as on amd64, where NEON's register
+/// holds the lines of one.
+#[cfg(target_arch = "aarch64")]
+fn horizontal_pair(px: &mut [u8], at: usize, stride: usize, width: Width, l: [Limits; 2]) {
+    horizontal_edge(px, at, stride, width, l[0]);
+    horizontal_edge(px, at + 8, stride, width, l[1]);
+}
+
+/// The edges `kinds` names of two 8×8s, the first's at `at` and the second's
+/// `step` on: as one where they are the same filter.
+#[inline(always)]
+fn edges(px: &mut [u8], at: usize, stride: usize, vertical: bool, kinds: [Option<Width>; 2], l: [Limits; 2]) {
+    let step = if vertical { 8 * stride } else { 8 };
+    match kinds {
+        [Some(a), Some(b)] if a == b && vertical => vertical_pair(px, at, stride, a, l),
+        [Some(a), Some(b)] if a == b => horizontal_pair(px, at, stride, a, l),
+        _ => {
+            for (i, kind) in kinds.into_iter().enumerate() {
+                let Some(width) = kind else { continue };
+                if vertical {
+                    vertical_edge(px, at + i * step, stride, width, l[i]);
+                } else {
+                    horizontal_edge(px, at + i * step, stride, width, l[i]);
+                }
+            }
+        }
     }
 }
 
@@ -573,25 +824,19 @@ pub(super) fn vertical(px: &mut [u8], at: usize, stride: usize, rows: usize, m: 
                 continue;
             }
             let limits = [Limits::of(m.levels[shift + c]), Limits::of(m.levels[shift + 8 + c])];
-            // The 8 rows of the 8×8 row `i` of the two, `offset` right of
-            // the 8×8 column's edge.
+            // The 8×8 column's edge in the two rows.
             let x = at + r * 8 * stride + c * 8;
-            let mut run = |i: usize, offset: usize, width: Width, limits: Limits| vertical_edge(px, x + i * 8 * stride + offset, stride, width, limits);
             // libvpx filters the two rows at 16 with the first's limits.
             let paired = m16 & both == both;
             if paired {
-                run(0, 0, Width::Sixteen, limits[0]);
-                run(1, 0, Width::Sixteen, limits[0]);
+                vertical_pair(px, x, stride, Width::Sixteen, [limits[0]; 2]);
             }
             for (mask, width, offset) in [(m16, Width::Sixteen, 0), (m8, Width::Eight, 0), (m4, Width::Four, 0), (inner, Width::Four, 4)] {
                 if paired && width == Width::Sixteen {
                     continue;
                 }
-                for (i, &limits) in limits.iter().enumerate() {
-                    if mask >> (c + 8 * i) & 1 != 0 {
-                        run(i, offset, width, limits);
-                    }
-                }
+                let kinds = [0, 1].map(|i| (mask >> (c + 8 * i) & 1 != 0).then_some(width));
+                edges(px, x + offset, stride, true, kinds, limits);
             }
         }
     }
@@ -608,32 +853,32 @@ pub(super) fn horizontal(px: &mut [u8], at: usize, stride: usize, rows: usize, m
         let (m16, m8, m4, inner) = (bits(m.above[2]), bits(m.above[1]), bits(m.above[0]), bits(m.inner));
         let mut c = 0;
         while c < 8 {
-            let bit = 1 << c;
-            let level = m.levels[shift + c];
-            // `len` columns of the 8×8 column's row `offset` down.
             let x = at + r * 8 * stride + c * 8;
-            let mut run = |offset: usize, len: usize, width: Width| {
-                for x in (x..x + len).step_by(8) {
-                    horizontal_edge(px, x + offset * stride, stride, width, Limits::of(level));
-                }
-            };
             // libvpx filters two 8×8s at 16 with the first's limits.
-            if m16 & (bit | bit << 1) == bit | bit << 1 {
-                run(0, 16, Width::Sixteen);
+            let double = |c: usize| m16 >> c & 3 == 3;
+            if double(c) {
+                horizontal_pair(px, x, stride, Width::Sixteen, [Limits::of(m.levels[shift + c]); 2]);
                 c += 2;
                 continue;
             }
-            if m16 & bit != 0 {
-                run(0, 8, Width::Sixteen);
-            } else if m8 & bit != 0 {
-                run(0, 8, Width::Eight);
-            } else if m4 & bit != 0 {
-                run(0, 8, Width::Four);
-            }
-            if inner & bit != 0 {
-                run(4, 8, Width::Four);
-            }
-            c += 1;
+            // The 8×8 after this one with it, unless it is the first of two
+            // at 16: columns apart share no pixel, so the order between them
+            // is free, and each still has its top edge before its inner one.
+            let n = if c + 1 < 8 && !double(c + 1) { 2 } else { 1 };
+            let on = |mask: u32, i: usize| i < n && mask >> (c + i) & 1 != 0;
+            let top = [0, 1].map(|i| {
+                if on(m16, i) {
+                    Some(Width::Sixteen)
+                } else if on(m8, i) {
+                    Some(Width::Eight)
+                } else {
+                    on(m4, i).then_some(Width::Four)
+                }
+            });
+            let limits = [0, 1].map(|i| Limits::of(m.levels[shift + (c + i).min(7)]));
+            edges(px, x, stride, false, top, limits);
+            edges(px, x + 4 * stride, stride, false, [0, 1].map(|i| on(inner, i).then_some(Width::Four)), limits);
+            c += n;
         }
     }
 }
@@ -709,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn eight_lines_at_once_are_the_scalar_reference() {
+    fn lines_at_once_are_the_scalar_reference() {
         let mut state = 0x2545_f491_u32;
         let mut next = move || {
             state ^= state << 13;
@@ -740,6 +985,21 @@ mod tests {
                 }
             }
             assert_eq!(lanes, reference, "round {round}, {width:?}");
+            // Sixteen lines, two eights with a level each.
+            let limits = [limits, Limits::of((next() % 64) as u8)];
+            let (mut lanes, mut reference) = (px.clone(), px.clone());
+            if round % 2 == 0 {
+                vertical_pair(&mut lanes, at, stride, width, limits);
+                for i in 0..16 {
+                    filter(&mut reference, at + i * stride, 1, width, limits[i / 8]);
+                }
+            } else {
+                horizontal_pair(&mut lanes, at, stride, width, limits);
+                for i in 0..16 {
+                    filter(&mut reference, at + i, stride, width, limits[i / 8]);
+                }
+            }
+            assert_eq!(lanes, reference, "round {round}, {width:?}, sixteen lines");
         }
     }
 

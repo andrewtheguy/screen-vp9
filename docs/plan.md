@@ -269,7 +269,9 @@ of its lines; every stream the same to the byte.
 
 | Change | Keyframes alone | Settles | Whole captures |
 |---|---|---|---|
-| A residual, its forward transform under 32×32 and the coefficients the quantizer reads in 16 bits a value: sixteen a register (`vpmaddwd` for a pair of products, `vpmulhuw` for a level), where they were eight of 32 with `vpmulld` | 0.87 to 0.92 | 0.92 to 0.95 | 0.91 to 1.01 |
+| A residual, its forward transform under 32×32 and the coefficients the quantizer reads in 16 bits a value: sixteen a register (`vpmaddwd` for a pair of products, `vpmulhuw` for a level), where they were eight of 32 with `vpmulld` | 0.85 to 0.95 | 0.93 to 0.98 | 0.94 to 0.98 |
+| An intra prediction's row above copied whole where the picture has it, and TM written a row at a time in 16 bits for the compiler to vectorize | 0.91 to 1.02 | 0.97 to 1.03 | 0.94 to 1.02 |
+| The loop filter's edges two at a time where two that lie one after the other take the same filter: sixteen lines an AVX2 register, each eight with its own level | 0.97 to 1.00 | 0.97 to 1.01 | 0.96 to 1.03 |
 
 The forward transforms are libvpx's to the bit as they were: the old ones
 and these gave the same coefficients for every size and type over the
@@ -300,10 +302,10 @@ On the floor, no stream changed:
    leave 16 bits are found before it is believed. With it the levels and
    what a decoder makes of them in 16 bits, which the token loops read.
    The 32×32 forward, whose second pass leaves 16 bits, is in 32 still.
-2. **The loop filter in an AVX2 register**: sixteen lines an edge, or two
-   edges of eight, where it is eight in SSE. On `terminal` and `flood`
-   first, with the first plan's never-measured filter in one and two
-   columns.
+2. **The loop filter in one and two columns**: the edges are two
+   to an AVX2 register, above, and it bought a keyframe 1 to 3% and
+   nothing else past what this machine moves by. What is left is the
+   first plan's never-measured filter in one and two columns.
 3. **The search's hashes in AVX2**: the row hashes are a polynomial of
    eight pixels taken one position at a time in scalar code, the window
    hashes rolled a column at a time, and the anchors picked by three
@@ -336,8 +338,9 @@ Then, as before:
    3% of its capture for 0.11 dB and `drag`'s capture 0.06 dB. Why
    `drag` loses is not known; a rounding by block size or by frame kind
    is untried.
-9. **arm64's floor**: the dot product for the moments and the hashes,
-   measured on the Mac inside the minute a measurement has there.
+9. **arm64's floor**: the dot product for the moments and the hashes.
+   No time is measured on arm64, where the tests alone are run, so a
+   floor there has nothing to be raised on yet.
 10. **The first keyframe of a stream runs on cold buffers** (130 ms against
     40 for the next at 1920×1080).
 11. **A gate that fails a build.** The comparison is in the tests again, so
