@@ -12,7 +12,10 @@
 //! vector of 16-bit values, and on amd64 two edges that lie one after the
 //! other and take the same filter are sixteen lines of one AVX2 register,
 //! each eight with its own level. Both are held by their tests to libvpx's C
-//! written out a line at a time.
+//! written out a line at a time. A line that is one value across an edge is
+//! what the filter leaves it, and a desktop is mostly those: a row of a
+//! superblock's edges is passed at once where all its lines are, and an edge
+//! alone after that.
 
 use super::Geometry;
 
@@ -647,6 +650,12 @@ fn filter_lines<L: Line>(t: &mut Taps<L>, width: Width, [limit, blimit, hev_limi
     }
 }
 
+/// Whether `line` is one value from end to end.
+#[inline(always)]
+fn even(line: &[u8]) -> bool {
+    line[1..] == line[..line.len() - 1]
+}
+
 /// Whether each of the eight rows from `at` is one value from `reach`
 /// before the vertical edge there to `reach` after it. Such lines are what
 /// the filter leaves them, and a desktop is mostly those: looked for before
@@ -818,6 +827,19 @@ pub(super) fn vertical(px: &mut [u8], at: usize, stride: usize, rows: usize, m: 
         let shift = r * 8;
         let bits = |mask: u64| (mask >> shift) as u32 & 0xffff;
         let (m16, m8, m4, inner) = (bits(m.left[2]), bits(m.left[1]), bits(m.left[0]), bits(m.inner));
+        let (left, all) = (m16 | m8 | m4, m16 | m8 | m4 | inner);
+        if all == 0 {
+            continue;
+        }
+        // The two rows' edges at once where every line across them is even.
+        let columns = all | all >> 8;
+        let (first, last) = (columns.trailing_zeros() as usize, 32 - (columns & 0xff).leading_zeros() as usize);
+        let before = if (left | left >> 8) >> first & 1 != 0 { 8 } else { 0 };
+        let lines = if all & 0xff == 0 { 8..16 } else if all >> 8 == 0 { 0..8 } else { 0..16 };
+        let from = at + r * 8 * stride + first * 8 - before;
+        if lines.into_iter().all(|y| even(&px[from + y * stride..][..(last - first) * 8 + before])) {
+            continue;
+        }
         for c in 0..8 {
             let both = 1 << c | 1 << (c + 8);
             if (m16 | m8 | m4 | inner) & both == 0 {
@@ -851,6 +873,17 @@ pub(super) fn horizontal(px: &mut [u8], at: usize, stride: usize, rows: usize, m
         let shift = r * 8;
         let bits = |mask: u64| (mask >> shift) as u32 & 0xff;
         let (m16, m8, m4, inner) = (bits(m.above[2]), bits(m.above[1]), bits(m.above[0]), bits(m.inner));
+        let (top, all) = (m16 | m8 | m4, m16 | m8 | m4 | inner);
+        if all == 0 {
+            continue;
+        }
+        // The row's edges at once where every column across them is even.
+        let (first, last) = (all.trailing_zeros() as usize, 32 - all.leading_zeros() as usize);
+        let from = at + r * 8 * stride + first * 8;
+        let line = |y: usize| &px[from + y * stride - 8 * stride..][..(last - first) * 8];
+        if (if top == 0 { 9..16 } else { 1..16 }).all(|y| line(y) == line(y - 1)) {
+            continue;
+        }
         let mut c = 0;
         while c < 8 {
             let x = at + r * 8 * stride + c * 8;

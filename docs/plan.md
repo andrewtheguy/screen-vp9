@@ -273,6 +273,7 @@ of its lines; every stream the same to the byte.
 | An intra prediction's row above copied whole where the picture has it, and TM written a row at a time in 16 bits for the compiler to vectorize | 0.91 to 1.02 | 0.97 to 1.03 | 0.94 to 1.02 |
 | The loop filter's edges two at a time where two that lie one after the other take the same filter: sixteen lines an AVX2 register, each eight with its own level | 0.97 to 1.00 | 0.97 to 1.01 | 0.96 to 1.03 |
 | The levels in 16 bits, and a block's tokens and the contexts they are coded at made sixteen coefficients at a time into a map (as far into the block as the scan reaches), which the loops that cost the tokens and record them only read | 0.91 to 1.03 | 0.92 to 1.00 | 0.95 to 1.02 |
+| The loop filter passes a row of a superblock's edges at once where every line across them is one value, before it looks at any one edge | 0.87 to 0.98 | 0.97 to 1.00 | 0.96 to 1.00 |
 
 The forward transforms are libvpx's to the bit as they were: the old ones
 and these gave the same coefficients for every size and type over the
@@ -315,10 +316,16 @@ On the floor, no stream changed:
    capture, so it is not written until something else has made that
    more. The 32×32 forward, whose second pass leaves 16 bits, is in 32
    still.
-2. **The loop filter in one and two columns**: the edges are two
-   to an AVX2 register, above, and it bought a keyframe 1 to 3% and
-   nothing else past what this machine moves by. What is left is the
-   first plan's never-measured filter in one and two columns.
+2. **The loop filter in one and two columns**: measured, and it stays.
+   Without it at 1280×800 (one column) and 1920×1080 (two) a whole
+   capture is 0.2 to 0.7 dB of luma further from its source (`walk`
+   alone not) at 0.93 to 1.05 of the bytes, and a keyframe that is not flat 0.25 to 0.3 dB
+   at the same bytes (`walk` alone not), for 0.85 to 0.99 of a capture's time. The filter
+   itself is two edges to an AVX2 register and passes a flat row of a
+   superblock's edges at once, above: a flat picture's keyframe was a
+   fifth in the filter finding each edge even, one at a time, and is
+   0.87 to 0.89 of what it was. On a keyframe that is not flat the
+   filter is still 4 to 11% of the time.
 3. **The search's hashes in AVX2**: the row hashes are a polynomial of
    eight pixels taken one position at a time in scalar code, the window
    hashes rolled a column at a time, and the anchors picked by three
@@ -336,8 +343,7 @@ On the floor, no stream changed:
 Then, as before:
 
 5. **Never measured, from the first plan's list**: the updates to the other
-   probabilities on frames of a line of text, the loop filter in one and
-   two columns on `terminal` and `flood`, `INTRA_MODE_GAIN`, vectors ranked
+   probabilities on frames of a line of text, `INTRA_MODE_GAIN`, vectors ranked
    by their residual's squares on `browser` and `drag`, and `terminal` and
    `flood` captured at quality 100.
 6. **The conversion is not the same on arm64 and amd64.** The `yuv`
