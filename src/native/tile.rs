@@ -542,7 +542,7 @@ struct Measure {
 /// the previous frame's quantization error, leaves a lone level deep in
 /// the scan of many a block, a hundred zero tokens for one coefficient.
 #[allow(clippy::too_many_arguments)]
-fn worth_coding(costs: &tokens::Costs, energy: &mut [u8; 1024], quantizer: &Quantizer, side: usize, kind: tokens::Kind, coeffs: &[i32], levels: &mut [i32], eob: usize, error: i64) -> (usize, u32, i64) {
+fn worth_coding(costs: &tokens::Costs, energy: &mut [u8; 1024], quantizer: &Quantizer, side: usize, kind: tokens::Kind, coeffs: &[i16], levels: &mut [i32], eob: usize, error: i64) -> (usize, u32, i64) {
     let bits = tokens::estimate(costs, kind, 0, levels, eob, energy);
     if eob == 0 {
         return (0, bits, error);
@@ -577,8 +577,9 @@ struct Scratch {
     best_levels: Vec<i32>,
     best_eobs: Vec<usize>,
     patch: Vec<u8>,
-    residual: Box<[i32; 1024]>,
-    coeffs: Box<[i32; 1024]>,
+    residual: Box<[i16; 1024]>,
+    coeffs: Box<[i16; 1024]>,
+    dequantized: Box<[i32; 1024]>,
     energy: Box<[u8; 1024]>,
     /// What the rows coded on the thread count, which each row's tape
     /// holds while the row is coded.
@@ -596,6 +597,7 @@ impl Scratch {
             patch: Vec::new(),
             residual: Box::new([0; 1024]),
             coeffs: Box::new([0; 1024]),
+            dequantized: Box::new([0; 1024]),
             energy: Box::new([0; 1024]),
             counts: Counts::new(),
         }
@@ -657,10 +659,11 @@ struct Tile<'a> {
     best_eobs: Vec<usize>,
     /// Scratch for a block of the previous frame copied out past its edges.
     patch: Vec<u8>,
-    /// Scratch for a transform block's residual and coefficients, and for
-    /// the token coder.
-    residual: Box<[i32; 1024]>,
-    coeffs: Box<[i32; 1024]>,
+    /// Scratch for a transform block's residual and coefficients, for the
+    /// coefficients a decoder makes of its levels, and for the token coder.
+    residual: Box<[i16; 1024]>,
+    coeffs: Box<[i16; 1024]>,
+    dequantized: Box<[i32; 1024]>,
     energy: Box<[u8; 1024]>,
     /// The tape's own counts, empty, while the tape holds the thread's.
     spare: Counts,
@@ -669,7 +672,7 @@ struct Tile<'a> {
 impl<'a> Tile<'a> {
     /// The coder of the superblock row `job`, working in `scratch`.
     fn new(frame: &Frame<'a>, job: Job<'a>, scratch: Scratch, failed: &'a AtomicBool) -> Self {
-        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy, counts: mut spare } = scratch;
+        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, dequantized, energy, counts: mut spare } = scratch;
         moved.clear();
         std::mem::swap(&mut job.tape.counts, &mut spare);
         let mi_col_start = job.x / 8;
@@ -704,6 +707,7 @@ impl<'a> Tile<'a> {
             patch,
             residual,
             coeffs,
+            dequantized,
             energy,
             spare,
         }
@@ -733,8 +737,8 @@ impl<'a> Tile<'a> {
             }
         }
         std::mem::swap(&mut self.contexts.tape.counts, &mut self.spare);
-        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy, spare: counts, .. } = self;
-        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, energy, counts }
+        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, dequantized, energy, spare: counts, .. } = self;
+        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, residual, coeffs, dequantized, energy, counts }
     }
 
     /// Wait for the row above to code the superblock above superblock
@@ -1677,8 +1681,8 @@ impl<'a> Tile<'a> {
                 // The transform blocks after this one predict from it.
                 if eob > 0 && i + 1 < blocks {
                     let levels = &self.levels[0][i * area..][..area];
-                    self.quantizer.dequantize(side, levels, scan.order, eob, &mut self.coeffs[..area]);
-                    transform::inverse_add(side, tx_type, &self.coeffs[..area], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
+                    self.quantizer.dequantize(side, levels, scan.order, eob, &mut self.dequantized[..area]);
+                    transform::inverse_add(side, tx_type, &self.dequantized[..area], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
                 }
             }
             let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
@@ -1767,8 +1771,8 @@ impl<'a> Tile<'a> {
             let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
             let (eob, _, _) = worth_coding(self.costs, &mut self.energy, self.quantizer, 4, kind, &self.coeffs[..16], levels, eob, error);
             if eob > 0 {
-                self.quantizer.dequantize(4, levels, scan.order, eob, &mut self.coeffs[..16]);
-                transform::inverse_add(4, tx_type, &self.coeffs[..16], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
+                self.quantizer.dequantize(4, levels, scan.order, eob, &mut self.dequantized[..16]);
+                transform::inverse_add(4, tx_type, &self.dequantized[..16], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
             }
             self.eobs[0].push(eob);
             let coded = u8::from(eob > 0);
@@ -1846,8 +1850,8 @@ impl<'a> Tile<'a> {
                     }
                     if eob > 0 && i + 1 < blocks {
                         let levels = &self.levels[plane][i * area..][..area];
-                        self.quantizer.dequantize(side, levels, scan.order, eob, &mut self.coeffs[..area]);
-                        transform::inverse_add(side, TxType::DctDct, &self.coeffs[..area], eob, &mut self.contexts.planes[plane][ly * stride + lx..], stride);
+                        self.quantizer.dequantize(side, levels, scan.order, eob, &mut self.dequantized[..area]);
+                        transform::inverse_add(side, TxType::DctDct, &self.dequantized[..area], eob, &mut self.contexts.planes[plane][ly * stride + lx..], stride);
                     }
                 }
             }
@@ -1979,7 +1983,7 @@ impl<'a> Tile<'a> {
                 let srow = src.row(plane, py + r);
                 let prow = &recon[(ly + r) * stride + lx..][..tx];
                 for c in 0..tx {
-                    residual[r * tx + c] = i32::from(srow[(px + c).min(src.width - 1)]) - i32::from(prow[c]);
+                    residual[r * tx + c] = i16::from(srow[(px + c).min(src.width - 1)]) - i16::from(prow[c]);
                 }
             }
         }
@@ -2048,8 +2052,8 @@ impl<'a> Tile<'a> {
                 };
                 if eob > 0 {
                     let levels = &self.levels[plane][i * area..][..area];
-                    self.quantizer.dequantize(tx, levels, scan.order, eob, &mut self.coeffs[..area]);
-                    transform::inverse_add(tx, tx_type, &self.coeffs[..area], eob, &mut self.contexts.planes[plane][ly * stride + lx..], stride);
+                    self.quantizer.dequantize(tx, levels, scan.order, eob, &mut self.dequantized[..area]);
+                    transform::inverse_add(tx, tx_type, &self.dequantized[..area], eob, &mut self.contexts.planes[plane][ly * stride + lx..], stride);
                 }
             }
         }

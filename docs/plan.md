@@ -261,6 +261,26 @@ hashes would take. Not measured, and not raised without it; open item 9.
 otherwise, and its own words for which processor the daemon and the
 gateway need.
 
+## Written on the floor
+
+Each against the build before it, turn about three times at 1920×1080 on
+four threads, a line's time its median and a capture's the geometric mean
+of its lines; every stream the same to the byte.
+
+| Change | Keyframes alone | Settles | Whole captures |
+|---|---|---|---|
+| A residual, its forward transform under 32×32 and the coefficients the quantizer reads in 16 bits a value: sixteen a register (`vpmaddwd` for a pair of products, `vpmulhuw` for a level), where they were eight of 32 with `vpmulld` | 0.87 to 0.92 | 0.92 to 0.95 | 0.91 to 1.01 |
+
+The forward transforms are libvpx's to the bit as they were: the old ones
+and these gave the same coefficients for every size and type over the
+residuals that reach furthest (±255 signed as each of a transform's own
+patterns, and as noise) and over noise, and the scalar reference panics on
+a sum or a rounded value past 16 bits, which the tests hold the vectors to.
+The 32×32 stays in 32 bits: its second pass leaves 16. NEON is the same
+kernel in eight `i16` (`vmlal`, `vqrshrn`), its tests run on the Mac and
+its time not measured. The quantizer on NEON reads the 16 bits and works in
+32 as before.
+
 ## What is open
 
 In the order it is taken up, set again on 2026-10-11 for the raised floor.
@@ -274,15 +294,12 @@ only about one still comes last.
 
 On the floor, no stream changed:
 
-1. **The transforms in sixteen `i16` a register**, as libvpx's are
-   (`vpmaddwd` and `vpmulhrsw`), where they are eight `i32` with
-   `vpmulld`, two multiplies of ten cycles on this machine. The forward
-   ones first, which no decoder reads and only this encoder's bytes hold;
-   the inverse has to stay the decoder's to the bit, with the sums that
-   leave sixteen bits found before it is believed. The transforms are 5
-   to 11% of a frame of `video` and `walk` and the time of a settle
-   (item 14). `lanes.rs` gets a second vector, and NEON the same
-   (`vqrdmulh`), so the two stay one kernel.
+1. **The inverse transforms in sixteen `i16` a register.** The forward
+   ones are, above. The inverse has to stay the decoder's to the bit,
+   and a decoder's wraps at 16 bits where libvpx's C does: the sums that
+   leave 16 bits are found before it is believed. With it the levels and
+   what a decoder makes of them in 16 bits, which the token loops read.
+   The 32×32 forward, whose second pass leaves 16 bits, is in 32 still.
 2. **The loop filter in an AVX2 register**: sixteen lines an edge, or two
    edges of eight, where it is eight in SSE. On `terminal` and `flood`
    first, with the first plan's never-measured filter in one and two
@@ -295,10 +312,11 @@ On the floor, no stream changed:
    walked with `tzcnt` and `blsr`. The search is 9 to 12% of a frame of
    `video` and `walk`, its hashing 0.3 to 0.45 ms of 11, and it runs on
    every frame of rectangles that is not small.
-4. **The intra predictions and the quantizer.** The predictions are
-   scalar loops the compiler is left to; the quantizer is eight `i32`
-   where the levels fit sixteen `i16`, which follows item 1's lanes.
-   The intra mode is 5 to 11% of a busy frame.
+4. **The intra predictions.** They are scalar loops the compiler is left
+   to, the row above gathered a pixel at a time, and the residual after
+   one reads eight pixels where it wrote one. The intra mode is 5 to 11%
+   of a busy frame. The quantizer on NEON in eight `i16`, as amd64's is
+   in sixteen, with item 9.
 
 Then, as before:
 
@@ -341,7 +359,7 @@ Of a very busy picture alone, and last:
    settle's 1.0 to 1.4 dB over libvpx's from 65; from 80 they buy 0.0 to
    0.2 dB. Untried: the smaller sizes only where the largest leaves more
    than some error, and what a settle from 80 or 89 needs of them at all.
-   Item 1 is the same time from the other end, with the picture kept.
+   The forward half of that time is taken above, with the picture kept.
 15. **The frames of `video` and `walk`**, 0.64 to 0.83 of libvpx's time, the
     nearest the line of the whole captures. Profiled: the token estimate,
     the block walk, the intra mode and the transforms 5 to 11% each, and

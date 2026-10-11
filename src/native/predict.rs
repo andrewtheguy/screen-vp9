@@ -128,13 +128,18 @@ fn fill<const N: usize>(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8],
     let mut top = [127u8; 1 + 64];
     let mut left = [129u8; 32];
     if let Some(row) = above {
-        let at = |i: usize| row[(x + i).min(edges.width - 1)];
-        for i in 0..size {
-            top[1 + i] = at(i);
+        // As far as the row is read, and its last pixel after that; a row
+        // short of the picture's edge is copied whole.
+        let read = if size == 4 && edges.right { 2 * size } else { size };
+        if x + read <= edges.width {
+            top[1..1 + read].copy_from_slice(&row[x..x + read]);
+        } else {
+            for i in 0..read {
+                top[1 + i] = row[(x + i).min(edges.width - 1)];
+            }
         }
-        for i in size..2 * size {
-            top[1 + i] = if size == 4 && edges.right { at(i) } else { top[size] };
-        }
+        let last = top[size];
+        top[1 + read..1 + 2 * size].fill(last);
         top[0] = if edges.left { row[x - 1] } else { 129 };
     }
     if edges.left {
@@ -172,9 +177,12 @@ fn fill<const N: usize>(mode: IntraMode, above: Option<&[u8]>, plane: &mut [u8],
             }
         }
         IntraMode::Tm => {
+            // A row at a time, for the compiler to take sixteen pixels of
+            // it a register.
             for r in 0..size {
-                for c in 0..size {
-                    out[at(r, c)] = (i32::from(l[r]) + i32::from(a[c]) - i32::from(corner)).clamp(0, 255) as u8;
+                let rise = i16::from(l[r]) - i16::from(corner);
+                for (px, &a) in out[at(r, 0)..at(r, size)].iter_mut().zip(&a[..size]) {
+                    *px = (rise + i16::from(a)).clamp(0, 255) as u8;
                 }
             }
         }

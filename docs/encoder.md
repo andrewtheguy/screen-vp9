@@ -195,7 +195,10 @@ The rules the encoder keeps to, in the order the users' frames come:
   x86-64-v3 on amd64, and the build is refused under them. Each kernel is
   written once over `lanes.rs` and tested against its scalar form, which
   nothing else runs on; on amd64 the kernels are AVX2 and what is around
-  them is compiled with the rest of the level.
+  them is compiled with the rest of the level. A residual, its forward
+  transform under 32×32 and the coefficients the quantizer reads are 16
+  bits a value, sixteen a register on amd64; the levels, what a decoder
+  makes of them and the inverse transforms are 32.
 
 ## What a stream is held to
 
