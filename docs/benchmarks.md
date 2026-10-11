@@ -129,7 +129,7 @@ Against libvpx, alpha.3's cells and alpha.4's over all ten sizes:
 | A keyframe inside a capture, time | 0.46–1.13 | 0.25–0.88 |
 | A settle from 20, time | 0.57–0.92 | 0.46–0.88 |
 
-After release 0.0.1-alpha.4, and in the tables below: the search was gone
+Release 0.0.1-alpha.5, which the tables below are of: the search was gone
 over, with every stream as it was (the 8×8s whose anchors are taken again
 are marked a row at a time, what they held is kept only when the tables
 are brought up to date by it, the tables are filled in one phase, a hash

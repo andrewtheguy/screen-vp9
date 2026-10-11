@@ -120,7 +120,7 @@ On the AVX2 machine, four threads, each run alone.
 | An intra block's coefficients are rounded up at 48/128 of a step, as libvpx's (`vpx_quantize_b`), where they were at an inter block's 42/128 (`vp9_quantize_fp`) | a keyframe 0.4 to 0.6 dB better at dials 65 to 90 for 0.1 to 0.4% more bytes, 0.35 to 0.47 at 40 for 1.3 to 2.1%; a whole capture 0.03 to 0.17 dB for −0.7 to +1.1%; a settle of one dial step 0.44 to 1.04 of libvpx's bytes at +0.2 to +0.8 dB, where it was 0.8 to 1.7 at −0.4 to +0.6 |
 
 The five rows before the last two are release 0.0.1-alpha.4 and the last
-two are after it; only the last changes a stream.
+two are 0.0.1-alpha.5; only the last changes a stream.
 Tile rows were out of the subset until now. A tile row splits the bool
 coder and nothing else, libvpx and ffvp9 decode every frame of the captures
 played through them this way, and vp9-wasm reads the header's tile rows;
