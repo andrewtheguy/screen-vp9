@@ -1,0 +1,8 @@
+# The Rust coder's kernels are AVX2 on amd64, which its baseline lacks; a user
+# building this crate with the `native` feature for amd64 sets the same (see `src/native/lanes.rs`).
+# Cargo cannot set a flag by feature, so a build here without the feature is
+# AVX2 as well: `RUSTFLAGS` and `RUSTDOCFLAGS` in the environment replace
+# these, which is how CI makes the build a machine without AVX2 takes.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-feature=+avx2"]
+rustdocflags = ["-C", "target-feature=+avx2"]

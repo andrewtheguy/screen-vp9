@@ -1,2 +1,5 @@
 /target
 /tmp
+/CLAUDE.local.md
+__pycache__/
+*.pyc

@@ -1,15 +1,16 @@
 [package]
 name = "screen-vp9"
-version = "0.0.15"
+version = "0.0.16"
 edition = "2024"
-license = "MIT"
+license = "MIT AND BSD-3-Clause"
 repository = "https://github.com/andrewtheguy/screen-vp9"
-description = "VP9 for a desktop picture, as wlshare and the remotex gateway both code it: libvpx pinned to a 1–100 quality dial, BT.601 4:4:4 planes in front of it, the decoder, what a frame says about itself, and the walk of the dial a link will bear"
+description = "VP9 for a desktop picture, as wlshare and the remotex gateway both code it: 8-bit 4:4:4 pinned to a 1–100 quality dial, coded by libvpx or by the encoder written here in Rust, BT.601 planes in front of it, the decoder, what a frame says about itself, and the walk of the dial a link will bear"
 
-# The one place libvpx is spoken to. Platform-independent and dependency-light on
-# purpose: the wlshare daemon and the remotex gateway both build it, each pinned to
-# a release tag of this repository, and a change to how a desktop is coded is made
-# here once for both.
+# The encoders both users code a desktop with, and the one place libvpx is
+# spoken to. Platform-independent and dependency-light on purpose: the wlshare
+# daemon and the remotex gateway both build it, each pinned to a release tag of
+# this repository, and a change to how a desktop is coded is made here once for
+# both.
 [dependencies]
 thiserror = "2"
 log = "0.4"
@@ -17,8 +18,17 @@ log = "0.4"
 # crate's build script — nothing to configure, assemble or install. The archives
 # cover macOS arm64, Linux x86_64 and aarch64 and Windows x86_64, which is every
 # place a user of this crate is built. VP9-only, built `--enable-realtime-only`.
+# Its encoder is one of the two coders, and its decoder the independent one
+# every frame the Rust coder makes in a test is held to.
 vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewtheguy/libvpx-prebuilt", tag = "v1.16.0-20260924182850-e78d74f" }
-# The conversions between packed RGB or BGRX and the planes libvpx takes and
-# gives back: pure Rust with AVX2 and NEON paths chosen at run time, three to
-# four times the speed of a scalar loop on a 4K frame.
+# The conversions between packed RGB or BGRX and the planes an encoder takes
+# and the decoder gives back: pure Rust with AVX2 and NEON paths chosen at run
+# time, three to four times the speed of a scalar loop on a 4K frame.
 yuv = "0.8"
+
+[features]
+# The encoder written here in Rust, `Coder::Native`. EXPERIMENTAL. Off unless
+# asked for, because its kernels are NEON on arm64 and AVX2 on amd64 and the
+# build is refused without them: a build without it is libvpx alone, for any
+# machine libvpx runs on.
+native = []
