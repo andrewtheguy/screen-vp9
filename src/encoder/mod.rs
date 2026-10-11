@@ -2049,6 +2049,8 @@ mod tests {
             let (w, h) = picture.size();
             println!("{} {w}x{h} on {threads}", capture_name(&path));
             for &(from, to) in &pairs {
+                let mut libvpx = Libvpx::new(w, h, from, threads);
+                let mut rust = Encoder::new(w, h, from, threads).expect("an encoder");
                 let mut result = [(0usize, f64::INFINITY, 0.0f64, 0.0f64); 2];
                 for _ in 0..passes {
                     for (c, r) in result.iter_mut().enumerate() {
@@ -2057,14 +2059,13 @@ mod tests {
                         }
                         let mut frames = [Vec::new(), Vec::new()];
                         let time = if c == 0 {
-                            let mut libvpx = Libvpx::new(w, h, from, threads);
+                            libvpx.set_quality(from);
                             libvpx.encode(&picture, true, None, &mut frames[0]).expect("a frame");
                             libvpx.set_quality(to);
                             let started = std::time::Instant::now();
                             libvpx.encode(&picture, false, None, &mut frames[1]).expect("a frame");
                             started.elapsed()
                         } else {
-                            let mut rust = Encoder::new(w, h, from, threads).expect("an encoder");
                             rust.encode(&picture, true, None, &mut frames[0]).expect("a keyframe");
                             let started = std::time::Instant::now();
                             rust.settle(&picture, to, false, &mut frames[1]).expect("a settle");
