@@ -72,7 +72,7 @@ All under `src/encoder/`.
 | `mv.rs` | Motion vectors: the clamping of a predicted vector and the coding of a new one |
 | `predict.rs` | Intra prediction as a decoder makes it, all ten modes |
 | `transform.rs`, `dct.rs` | Forward and inverse transforms, DCT and ADST; `dct.rs` is generated from libvpx |
-| `quantize.rs` | The fixed quantizer at libvpx's realtime rounding |
+| `quantize.rs` | The fixed quantizer at libvpx's realtime roundings, an inter block's and an intra block's |
 | `tokens.rs` | A transform block's levels as tokens: recorded, and costed beforehand |
 | `tape.rs` | A row's bools and tokens as recorded, coded once the probabilities are chosen |
 | `probs.rs` | The probabilities kept from frame to frame and the updates a header carries |

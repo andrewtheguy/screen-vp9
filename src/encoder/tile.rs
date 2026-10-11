@@ -1393,7 +1393,7 @@ impl<'a> Tile<'a> {
             for (i, (x, y)) in self.transform_blocks(mi_row, mi_col, n, tx).1.enumerate() {
                 self.transform(0, mi_col * 8 + x, mi_row * 8 + y, side, TxType::DctDct);
                 let levels = &mut self.levels[0][i * area..][..area];
-                let (eob, error) = self.quantizer.quantize_with_error(side, tokens::scan(tx, TxType::DctDct).inverse, &self.coeffs[..area], levels);
+                let (eob, error) = self.quantizer.quantize_with_error(side, false, tokens::scan(tx, TxType::DctDct).inverse, &self.coeffs[..area], levels);
                 let (eob, bits, error) = worth_coding(self.costs, &mut self.energy, self.quantizer, side, kind, &self.coeffs[..area], levels, eob, error);
                 // In 256000ths of the squared error on the coefficients'
                 // scale, which is 64 times that in pixels.
@@ -1627,7 +1627,7 @@ impl<'a> Tile<'a> {
                 }
                 self.transform(0, px, py, side, tx_type);
                 let levels = &mut self.levels[0][i * area..][..area];
-                let (eob, e) = self.quantizer.quantize_with_error(side, scan.inverse, &self.coeffs[..area], levels);
+                let (eob, e) = self.quantizer.quantize_with_error(side, true, scan.inverse, &self.coeffs[..area], levels);
                 error += e;
                 let (col4, row4) = (x / 4, y / 4);
                 let ctx = usize::from(above_nz[col4..col4 + n4].iter().any(|&a| a != 0)) + usize::from(left_nz[row4..row4 + n4].iter().any(|&l| l != 0));
@@ -1703,7 +1703,7 @@ impl<'a> Tile<'a> {
                 }
                 self.transform(0, px, py, 4, tx_type);
                 let levels = &mut self.levels[0][b * 16..][..16];
-                let (eob, error) = self.quantizer.quantize_with_error(4, scan.inverse, &self.coeffs[..16], levels);
+                let (eob, error) = self.quantizer.quantize_with_error(4, true, scan.inverse, &self.coeffs[..16], levels);
                 let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
                 let bits = bits + i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.energy));
                 let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
@@ -1728,7 +1728,7 @@ impl<'a> Tile<'a> {
             }
             self.transform(0, px, py, 4, tx_type);
             let levels = &mut self.levels[0][b * 16..][..16];
-            let (eob, error) = self.quantizer.quantize_with_error(4, scan.inverse, &self.coeffs[..16], levels);
+            let (eob, error) = self.quantizer.quantize_with_error(4, true, scan.inverse, &self.coeffs[..16], levels);
             let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
             let (eob, _, _) = worth_coding(self.costs, &mut self.energy, self.quantizer, 4, kind, &self.coeffs[..16], levels, eob, error);
             if eob > 0 {
@@ -1798,7 +1798,7 @@ impl<'a> Tile<'a> {
                     }
                     self.transform(plane, px, py, side, TxType::DctDct);
                     let levels = &mut self.levels[plane][i * area..][..area];
-                    let (eob, e) = self.quantizer.quantize_with_error(side, scan.inverse, &self.coeffs[..area], levels);
+                    let (eob, e) = self.quantizer.quantize_with_error(side, true, scan.inverse, &self.coeffs[..area], levels);
                     error += e;
                     let (col4, row4) = (x / 4, y / 4);
                     let ctx = usize::from(above_nz[col4..col4 + n4].iter().any(|&a| a != 0)) + usize::from(left_nz[row4..row4 + n4].iter().any(|&l| l != 0));
@@ -2003,8 +2003,8 @@ impl<'a> Tile<'a> {
                     }
                     self.transform(plane, px, py, tx, tx_type);
                     let levels = &mut self.levels[plane][i * area..][..area];
-                    let (eob, error) = self.quantizer.quantize_with_error(tx, scan.inverse, &self.coeffs[..area], levels);
                     let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: plane > 0, inter: !matches!(mode, Mode::Intra { .. } | Mode::Intra4 { .. }) };
+                    let (eob, error) = self.quantizer.quantize_with_error(tx, !kind.inter, scan.inverse, &self.coeffs[..area], levels);
                     let (eob, _, _) = worth_coding(self.costs, &mut self.energy, self.quantizer, tx, kind, &self.coeffs[..area], levels, eob, error);
                     self.eobs[plane].push(eob);
                     eob
