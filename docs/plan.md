@@ -232,7 +232,7 @@ result. The floor is raised for what can be written on it, not for this.
 | | Use here |
 |---|---|
 | AVX2, sixteen `i16` or thirty-two `u8` a register | The kernels are AVX2 already, but the transforms and the quantizer in eight `i32`, the loop filter in an SSE register of eight `i16`, and the search's hashes and the intra predictions not at all. This is where the time is: the open items 1 to 4 below |
-| `tzcnt`, `blsr`, `lzcnt`, `popcnt` | A vector compare taken as a mask and walked bit by bit: the search's anchors (item 3), a superblock's edges that are not flat in the loop filter (item 2) |
+| `tzcnt`, `blsr`, `lzcnt`, `popcnt` | A compare's flags walked bit by bit: the search's anchors (item 3) |
 | `shlx`, `shrx`, `mulx`, `andn`, `movbe` | The compiler's, taken already, above |
 | `pext`, `pdep` | Not used: they are microcoded on Excavator and on Zen before Zen 3, eighteen cycles and up, and those are inside the floor |
 | FMA, F16C | Nothing: the encoder has no floating point but a table of costs made once |
@@ -274,6 +274,7 @@ of its lines; every stream the same to the byte.
 | The loop filter's edges two at a time where two that lie one after the other take the same filter: sixteen lines an AVX2 register, each eight with its own level | 0.97 to 1.00 | 0.97 to 1.01 | 0.96 to 1.03 |
 | The levels in 16 bits, and a block's tokens and the contexts they are coded at made sixteen coefficients at a time into a map (as far into the block as the scan reaches), which the loops that cost the tokens and record them only read | 0.91 to 1.03 | 0.92 to 1.00 | 0.95 to 1.02 |
 | The loop filter passes a row of a superblock's edges at once where every line across them is one value, before it looks at any one edge | 0.87 to 0.98 | 0.97 to 1.00 | 0.96 to 1.00 |
+| The search's row hashes in three multiplies a position where they were eight (a hash of eight pixels made of two of four, each of two of two), its anchors picked from a row of flags walked eight at a time by `tzcnt`, and its scratch not cleared between rows | the same | the same | 0.98 to 1.02 |
 
 The forward transforms are libvpx's to the bit as they were: the old ones
 and these gave the same coefficients for every size and type over the
@@ -326,14 +327,13 @@ On the floor, no stream changed:
    fifth in the filter finding each edge even, one at a time, and is
    0.87 to 0.89 of what it was. On a keyframe that is not flat the
    filter is still 4 to 11% of the time.
-3. **The search's hashes in AVX2**: the row hashes are a polynomial of
-   eight pixels taken one position at a time in scalar code, the window
-   hashes rolled a column at a time, and the anchors picked by three
-   tests a position. Eight positions a register (`vpmaddwd` on the
-   pixels, `vpmulld` down the columns), and the anchors a compare's mask
-   walked with `tzcnt` and `blsr`. The search is 9 to 12% of a frame of
-   `video` and `walk`, its hashing 0.3 to 0.45 ms of 11, and it runs on
-   every frame of rectangles that is not small.
+3. **The search's hashes**: written, above, as loops the compiler makes
+   AVX2 and NEON of, and held to a window at a time by a test. The
+   anchors of a 1920×1080 frame take one thread 3.1 ms where they took
+   4.8 (`anchor_time`), which no frame of the captures shows: the
+   hashing was 8% of the coder's time on `drag` and 3% on `walk` and
+   `video`, and is spread over the threads. What is left of the search
+   is filling the tables again (4% of `drag`) and the projections (5%).
 4. **The intra predictions.** They are scalar loops the compiler is left
    to, the row above gathered a pixel at a time, and the residual after
    one reads eight pixels where it wrote one. The intra mode is 5 to 11%
