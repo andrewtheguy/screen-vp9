@@ -15,7 +15,7 @@ compile_error!("screen-vp9's Rust coder needs NEON on arm64: build for a target 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
 compile_error!("screen-vp9's Rust coder needs AVX2 on amd64: build with `-C target-feature=+avx2`, as its `.cargo/config.toml` does");
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-compile_error!("screen-vp9's Rust coder is for arm64 with NEON and amd64");
+compile_error!("screen-vp9's Rust coder is for arm64 with NEON and amd64 with AVX2 only");
 
 use std::ops::{Add, Mul, Neg, Sub};
 
