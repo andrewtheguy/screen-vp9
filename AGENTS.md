@@ -8,9 +8,14 @@
   (`src/libvpx.rs`, the one place libvpx is spoken to, its decoder with it),
   and the encoder written here in Rust (`src/native/`), which is EXPERIMENTAL
   and was `screen-vp9-native` until it came home here. The Rust coder is the
-  `native` feature, off unless asked for: its kernels need NEON or AVX2, and
-  a build without it is libvpx alone, for any machine libvpx runs on. Nothing
-  outside `src/native/` may need either. A libvpx setting, how
+  `native` feature, off unless asked for, and it has a floor and no ceiling:
+  it is built for x86-64-v3 on amd64 (AVX2, BMI1 and BMI2, LZCNT, MOVBE, FMA)
+  and for NEON on arm64, the build refused under either, and it may use
+  whatever its floor has. The floor is raised whenever a higher one is
+  measured to buy enough, and no processor under it is kept working: a build
+  without the feature is libvpx alone, for any machine libvpx runs on, which
+  is what an older processor is built for by hand. Nothing outside
+  `src/native/` may need more than its target's baseline. A libvpx setting, how
   the Rust coder codes, the conversion in front of them, the codec string or
   the quality walk changes here and reaches the users as a pin bump. Nothing
   about a wire belongs here: how a frame is framed, where a link's lag is read

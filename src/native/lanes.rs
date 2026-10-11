@@ -4,18 +4,33 @@
 //! vector's own operations differ from the scalar ones, which the tests of
 //! each kernel hold them to.
 //!
-//! The crate is built for NEON on arm64 and AVX2 on amd64, and refuses a
-//! build without them, so there is no choosing at run time and the scalar
-//! lane is only the reference. NEON is in every arm64 server's baseline. AVX2
-//! is not in amd64's: `-C target-feature=+avx2`, which this repository's
-//! `.cargo/config.toml` sets and a user's build sets the same way.
+//! The crate is built for NEON on arm64 and for x86-64-v3 on amd64, and
+//! refuses a build under them, so there is no choosing at run time and the
+//! scalar lane is only the reference. NEON is in every arm64 server's
+//! baseline. x86-64-v3 is above amd64's: `-C target-cpu=x86-64-v3`, which
+//! this repository's `.cargo/config.toml` sets and a user's build sets the
+//! same way. It is a floor and not a ceiling: the kernels are AVX2, the code
+//! around them is compiled with BMI1, BMI2, LZCNT, POPCNT and MOVBE, and
+//! anything the level has may be used here without asking the machine.
 
 #[cfg(all(target_arch = "aarch64", not(target_feature = "neon")))]
 compile_error!("screen-vp9's Rust coder needs NEON on arm64: build for a target that has it, such as aarch64-unknown-linux-gnu or aarch64-apple-darwin");
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
-compile_error!("screen-vp9's Rust coder needs AVX2 on amd64: build with `-C target-feature=+avx2`, as its `.cargo/config.toml` does");
+#[cfg(all(
+    target_arch = "x86_64",
+    not(all(
+        target_feature = "avx2",
+        target_feature = "bmi1",
+        target_feature = "bmi2",
+        target_feature = "f16c",
+        target_feature = "fma",
+        target_feature = "lzcnt",
+        target_feature = "movbe",
+        target_feature = "popcnt"
+    ))
+))]
+compile_error!("screen-vp9's Rust coder needs x86-64-v3 on amd64: build with `-C target-cpu=x86-64-v3`, as its `.cargo/config.toml` does");
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-compile_error!("screen-vp9's Rust coder is for arm64 with NEON and amd64 with AVX2 only");
+compile_error!("screen-vp9's Rust coder is for arm64 with NEON and amd64 at x86-64-v3 only");
 
 use std::ops::{Add, Mul, Neg, Sub};
 

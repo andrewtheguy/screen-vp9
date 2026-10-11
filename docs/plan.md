@@ -9,7 +9,10 @@ up to the commit that replaced it with this one.
 
 Replanned on 2026-10-10, at release 0.0.1-alpha.2, with the use and the
 scope final; the open items were taken up again the same day, after release
-0.0.1-alpha.3.
+0.0.1-alpha.3. Replanned again on 2026-10-11, when amd64's floor went from
+AVX2 to x86-64-v3 and stopped being a ceiling as well: what that bought and
+what it opens is [its own section](#the-floor-raised-on-2026-10-11), and the
+open items are in a new order for it.
 
 ## What it is for
 
@@ -40,9 +43,12 @@ desktop as drawn:
   that linked no libvpx outside its tests. libvpx's decoder holds every
   frame a test makes, and its encoder, the crate's other coder, is what the
   `*_against_libvpx` measurements play the captures into beside this one.
-- **NEON on arm64 and AVX2 on amd64 are the baseline**, the build refused
-  without them. The scalar lane is the reference the kernels are tested
-  against.
+- **NEON on arm64 and x86-64-v3 on amd64 are the floor**, the build refused
+  under them, and there is no ceiling: the encoder uses whatever its floor
+  has without asking the machine, and the floor goes up when a higher one
+  is measured to buy enough. No processor under it is kept working by this
+  encoder; it is built with libvpx alone, by hand. The scalar lane is the
+  reference the kernels are tested against.
 - **A frame told where the picture changed is in segments**, the blocks
   outside the rectangles a segment that skips and is not loop filtered:
   the stream vp9-wasm was built to decode and libvpx's active map makes.
@@ -79,7 +85,9 @@ desktop as drawn:
   libvpx's at the same dial, no more bytes, and less time, the frames of
   rectangles first. Luma PSNR is read before bytes and time: a stream
   coarser at the same dial is not at the same dial.
-- **The machine the tables are made on is the six-core AVX2 one.** The Mac
+- **The machine the tables are made on is the six-core AVX2 one**, an
+  i5-8500T, which is x86-64-v3 and has no AVX-512: a floor above v3 has
+  nothing here to be measured on, or to run its tests. The Mac
   runs the tests, for the NEON kernels; its own tables, in
   [benchmarks-m2-max.md](benchmarks-m2-max.md), are each line's median of
   three runs (`tools/median_of_runs.py`), its times moving by up to three
@@ -192,40 +200,139 @@ vp9-wasm has not been run on these streams.
   rectangles 0.17 dB less for their 4.2%. Where the decibels go is not
   known; a block coded intra offers the blocks after it no vector.
 
+## The floor, raised on 2026-10-11
+
+amd64 was built with `-C target-feature=+avx2`, the one feature its kernels
+are written in. It is built for `-C target-cpu=x86-64-v3` now, Haswell and
+Excavator on: AVX2 with BMI1, BMI2, LZCNT, POPCNT, MOVBE, FMA and F16C. Both users
+and this repository forbid a legacy path, and a processor under the floor
+has the build without the `native` feature, so nothing was weighed against
+it.
+
+**What the level buys with no line changed is a hundredth.** The same tree
+built three ways, each build played turn about with the others three times
+over the 1920×1080 captures, keyframes and settles, four threads, the
+machine idle; a line's time is its median of the three, a capture's the
+geometric mean of its lines, over the `+avx2` build's:
+
+| Build | Whole captures | Keyframes alone | Settles |
+|---|---|---|---|
+| `x86-64-v3` | 0.98 to 1.00 | 0.98 to 1.02 | 0.98 to 1.02 |
+| `skylake`, the machine's own | 0.98 to 1.00 | 0.98 to 1.00 | 0.98 to 1.05 |
+
+Every stream is the same to the byte in all three. The compiler did take
+the level up: of the encoder's 206 `bsr`, 202 are `lzcnt` (the bool
+coder's shift back to 128 among them), 607 shifts by a register are
+`shlx`, `shrx` and `sarx`, 64 multiplies `mulx`. That is 0 to 2% on a
+machine whose times move by a tenth, so it is on the line and not a
+result. The floor is raised for what can be written on it, not for this.
+
+**What x86-64-v3 has, and what this encoder can do with each:**
+
+| | Use here |
+|---|---|
+| AVX2, sixteen `i16` or thirty-two `u8` a register | The kernels are AVX2 already, but the transforms and the quantizer in eight `i32`, the loop filter in an SSE register of eight `i16`, and the search's hashes and the intra predictions not at all. This is where the time is: the open items 1 to 4 below |
+| `tzcnt`, `blsr`, `lzcnt`, `popcnt` | A vector compare taken as a mask and walked bit by bit: the search's anchors (item 3), a superblock's edges that are not flat in the loop filter (item 2) |
+| `shlx`, `shrx`, `mulx`, `andn`, `movbe` | The compiler's, taken already, above |
+| `pext`, `pdep` | Not used: they are microcoded on Excavator and on Zen before Zen 3, eighteen cycles and up, and those are inside the floor |
+| FMA, F16C | Nothing: the encoder has no floating point but a table of costs made once |
+
+**What the floor has nothing for**: the token loops, each token's context
+read from the two before it, and the bool coder, each bool's range from
+the last. They are chains, and were made shorter by tile rows and by tables, not
+by a wider register.
+
+**Not raised further, to x86-64-v4.** AVX-512 would give the 16×16 and
+32×32 transforms sixteen `i32` or thirty-two `i16` a register, masks for
+the quantizer's dead zone and `vpcompressd` for nothing the token chain
+can use. It is not measured, because the machine the tables are made on
+cannot run it, and a floor is raised on a measurement. It also leaves out every Intel desktop
+processor from Alder Lake on and every AMD one before Zen 4. It is taken
+up when a host that has it is one this is deployed on. Between the two
+levels there is no feature a codec reads: the `skylake` build above, which
+adds the machine's own tuning, ADX, AES and CLMUL, measures the same.
+
+**arm64's floor is where it was**, NEON. Its ceiling is gone the same way:
+the dot product (`sdot`, `udot`, Armv8.2's, in every Apple M) is what the moments and the search's
+hashes would take. Not measured, and not raised without it; open item 9.
+
+**What a user changes with the pin**: `-C target-cpu=x86-64-v3` where its
+`.cargo/config.toml` has `-C target-feature=+avx2`, the build refused
+otherwise, and its own words for which processor the daemon and the
+gateway need.
+
 ## What is open
 
-In the order it is taken up, set again on 2026-10-11: a very busy picture,
-the whole screen changing many times a second, is the edge of a remote
-desktop and not its middle, so what is only about one comes last.
+In the order it is taken up, set again on 2026-10-11 for the raised floor.
+What a kernel can be rewritten for comes first now, because it changes no
+stream: the tests hold the bytes, and the measurement is time alone. Each
+is measured against the build before it turn about, as the floor was, and
+taken only if it shows past the tenth this machine moves by on the frames
+it is for. A very busy picture, the whole screen changing many times a
+second, is the edge of a remote desktop and not its middle, so what is
+only about one still comes last.
 
-1. **Never measured, from the first plan's list**: the updates to the other
+On the floor, no stream changed:
+
+1. **The transforms in sixteen `i16` a register**, as libvpx's are
+   (`vpmaddwd` and `vpmulhrsw`), where they are eight `i32` with
+   `vpmulld`, two multiplies of ten cycles on this machine. The forward
+   ones first, which no decoder reads and only this encoder's bytes hold;
+   the inverse has to stay the decoder's to the bit, with the sums that
+   leave sixteen bits found before it is believed. The transforms are 5
+   to 11% of a frame of `video` and `walk` and the time of a settle
+   (item 14). `lanes.rs` gets a second vector, and NEON the same
+   (`vqrdmulh`), so the two stay one kernel.
+2. **The loop filter in an AVX2 register**: sixteen lines an edge, or two
+   edges of eight, where it is eight in SSE. On `terminal` and `flood`
+   first, with the first plan's never-measured filter in one and two
+   columns.
+3. **The search's hashes in AVX2**: the row hashes are a polynomial of
+   eight pixels taken one position at a time in scalar code, the window
+   hashes rolled a column at a time, and the anchors picked by three
+   tests a position. Eight positions a register (`vpmaddwd` on the
+   pixels, `vpmulld` down the columns), and the anchors a compare's mask
+   walked with `tzcnt` and `blsr`. The search is 9 to 12% of a frame of
+   `video` and `walk`, its hashing 0.3 to 0.45 ms of 11, and it runs on
+   every frame of rectangles that is not small.
+4. **The intra predictions and the quantizer.** The predictions are
+   scalar loops the compiler is left to; the quantizer is eight `i32`
+   where the levels fit sixteen `i16`, which follows item 1's lanes.
+   The intra mode is 5 to 11% of a busy frame.
+
+Then, as before:
+
+5. **Never measured, from the first plan's list**: the updates to the other
    probabilities on frames of a line of text, the loop filter in one and
    two columns on `terminal` and `flood`, `INTRA_MODE_GAIN`, vectors ranked
    by their residual's squares on `browser` and `drag`, and `terminal` and
    `flood` captured at quality 100.
-2. **The conversion is not the same on arm64 and amd64.** The `yuv`
+6. **The conversion is not the same on arm64 and amd64.** The `yuv`
    crate's NEON path makes a luma of 217 of an RGB grey of 235 where its
    AVX2 path makes 218. Which values and planes differ is not measured.
-3. **The 4×4 split threshold**: what makes it safe at 10 is a diagonal mode
+7. **The 4×4 split threshold**: what makes it safe at 10 is a diagonal mode
    for a 4×4 where the 8×8 would have taken one, and knowing why a churning
    picture costs more at a low dial with it.
-4. **An intra block's rounding past 48/128**: 56/128 buys a keyframe
+8. **An intra block's rounding past 48/128**: 56/128 buys a keyframe
    another 0.4 dB for 0.5% more bytes at dial 65 and up, and costs `walk`
    3% of its capture for 0.11 dB and `drag`'s capture 0.06 dB. Why
    `drag` loses is not known; a rounding by block size or by frame kind
    is untried.
-5. **The first keyframe of a stream runs on cold buffers** (130 ms against
-   40 for the next at 1920×1080).
-6. **A gate that fails a build.** The comparison is in the tests again, so
-   it can be one; its lines are not decided, and a time on this machine
-   moves by a tenth from run to run.
-7. **The transforms run in 32-bit lanes** (`vpmulld` on AVX2), where
-   libvpx's are 16-bit. Not measured.
-8. **`Speed::Fastest` was not measured in this replan.**
+9. **arm64's floor**: the dot product for the moments and the hashes,
+   measured on the Mac inside the minute a measurement has there.
+10. **The first keyframe of a stream runs on cold buffers** (130 ms against
+    40 for the next at 1920×1080).
+11. **A gate that fails a build.** The comparison is in the tests again, so
+    it can be one; its lines are not decided, and a time on this machine
+    moves by a tenth from run to run.
+12. **`Speed::Fastest` was not measured in this replan.**
+13. **x86-64-v4**, when a host with AVX-512 is one of the users': the
+    measurement of the floor above, on it, with the 32×32 transforms
+    written for it first.
 
 Of a very busy picture alone, and last:
 
-9. **A settle of a busy picture takes 1.1 to 1.8 of libvpx's time** from
+14. **A settle of a busy picture takes 1.1 to 1.8 of libvpx's time** from
    65 and from 80, more from 2048 wide than under it. libvpx's settle
    time read at two levels because the measurement made a fresh encoder a
    pass and its second frame paid page faults, or did not; on encoders
@@ -234,7 +341,8 @@ Of a very busy picture alone, and last:
    settle's 1.0 to 1.4 dB over libvpx's from 65; from 80 they buy 0.0 to
    0.2 dB. Untried: the smaller sizes only where the largest leaves more
    than some error, and what a settle from 80 or 89 needs of them at all.
-10. **The frames of `video` and `walk`**, 0.64 to 0.83 of libvpx's time, the
+   Item 1 is the same time from the other end, with the picture kept.
+15. **The frames of `video` and `walk`**, 0.64 to 0.83 of libvpx's time, the
     nearest the line of the whole captures. Profiled: the token estimate,
     the block walk, the intra mode and the transforms 5 to 11% each, and
     the search 9 to 12%, now gone over: its projections, its hashing and
@@ -242,8 +350,8 @@ Of a very busy picture alone, and last:
     none of them one thing. What is left untried in it: the row hashes of
     an 8×8 row taken once and not twice, the projections' sums in sixteen
     bits, a table of its own in place of the standard one; a hundredth of
-    a frame each.
-11. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
+    a frame each, and item 3 takes the first two with it.
+16. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
     four (27 ms of wall time for 86 of processor time at 1920×1080). No
     thread was found waiting; what is left is memory, and not looked into.
 

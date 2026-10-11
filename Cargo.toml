@@ -28,7 +28,7 @@ yuv = "0.8"
 
 [features]
 # The encoder written here in Rust, `Coder::Native`. EXPERIMENTAL. Off unless
-# asked for, because its kernels are NEON on arm64 and AVX2 on amd64 and the
-# build is refused without them: a build without it is libvpx alone, for any
-# machine libvpx runs on.
+# asked for, because it is built for NEON on arm64 and for x86-64-v3 on amd64
+# and the build is refused under them: a build without it is libvpx alone, for
+# any machine libvpx runs on.
 native = []

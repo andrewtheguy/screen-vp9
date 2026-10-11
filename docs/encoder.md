@@ -191,9 +191,11 @@ The rules the encoder keeps to, in the order the users' frames come:
 - **Tile columns are coded at once**, and within a column the superblock
   rows are a wavefront: a row codes a superblock once the row above has
   coded the one above it. The frame is the same on any number of threads.
-- **SIMD is the baseline**: NEON on arm64, AVX2 on amd64, and the build is
-  refused without them. Each kernel is written once over `lanes.rs` and
-  tested against its scalar form, which nothing else runs on.
+- **SIMD is the baseline, and the baseline is a floor**: NEON on arm64,
+  x86-64-v3 on amd64, and the build is refused under them. Each kernel is
+  written once over `lanes.rs` and tested against its scalar form, which
+  nothing else runs on; on amd64 the kernels are AVX2 and what is around
+  them is compiled with the rest of the level.
 
 ## What a stream is held to
 
