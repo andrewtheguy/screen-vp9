@@ -1547,6 +1547,31 @@ mod tests {
         }
     }
 
+    /// A flat picture a keyframe at a coarse dial left off by a value, as
+    /// the rounding of its first block's DC does to every block predicted
+    /// from it, settles exact in under half a byte a 32×32, where a
+    /// coefficient in each took one: each square is predicted from the ones
+    /// settled before it, with nothing to code. On one tile column and on
+    /// four, the last with a row of 8×8s the frame's edge leaves.
+    #[test]
+    fn a_settle_of_a_flat_picture_left_off_codes_next_to_nothing() {
+        for (w, h, threads) in [(640u16, 360u16, 1), (1283, 725, 2), (2048, 264, 4)] {
+            // A grey the keyframe leaves off and the settle's first block,
+            // which has a coefficient, lands on: which one it is depends on
+            // the conversion in front, as above.
+            let settled = |flat: &Vec<u8>| {
+                let mut stream = Stream::new(w, h, 20, threads);
+                let (_, _, coarse) = stream.frame(&picture(w, h, flat), true);
+                let (bytes, keyframe, mse) = stream.settle(&picture(w, h, flat), 90, false);
+                assert!(!keyframe);
+                (coarse > 0.0 && mse == 0.0).then_some(bytes)
+            };
+            let bytes = (0..=255u8).rev().find_map(|grey| settled(&vec![grey; usize::from(w) * usize::from(h) * 3])).expect("a grey a keyframe at this dial leaves off and a settle makes exact");
+            let squares = usize::from(w).div_ceil(32) * usize::from(h).div_ceil(32);
+            assert!(bytes * 2 < squares, "{w}x{h}: a settle of a flat picture took {bytes} bytes for {squares} 32×32s");
+        }
+    }
+
     /// A settle is one frame: whole and at the quality asked whatever the
     /// frames before it were told, an inter frame unless a keyframe is
     /// asked, and with the dial back where the link had it for the frame

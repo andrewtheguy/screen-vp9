@@ -123,7 +123,11 @@ In an inter frame a square is, in this order:
 2. **Settling**, where its source is still but the dial moved: the previous
    frame where it is, with its residual, which is that frame's quantization
    error. No vector is searched. An intra mode is taken only where DC's
-   residual is smaller.
+   residual is smaller. A square of one value a plane, with the pixels
+   coded above it and to its left that value too, is DC with nothing to
+   code (`dc_exact`): a flat desktop a coarse keyframe left a value off
+   settles exact from its first block on, each square predicted from the
+   ones before it.
 3. **Moved or new**: measured at the zero vector, at the two vectors a
    decoder predicts for it, and at the vectors the search offers its
    superblock, ranked by the squares of the residual. A searched vector has
