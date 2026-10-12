@@ -147,30 +147,78 @@ mod neon {
         }
     }
 
-    /// An 8×8 at a time: eight pixels are a register's worth here.
+    /// Two of the four a register, sixteen pixels: each 8×8's sum is its
+    /// pixels' in `a` less theirs in `b`, summed a pair at a time into 16
+    /// bits, and its squares are those of the differences' sizes, 16 bits
+    /// each and summed a pair at a time into 32.
     pub(super) fn difference_moments4(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> [(i32, i32); 4] {
-        std::array::from_fn(|i| difference_moments(&a[8 * i..], a_stride, &b[8 * i..], b_stride))
+        let sixteen = |p: &[u8], at: usize| {
+            let p = &p[at..][..16];
+            unsafe { vld1q_u8(p.as_ptr()) }
+        };
+        unsafe {
+            let (mut in_a, mut in_b, mut squares) = ([vdupq_n_u16(0); 2], [vdupq_n_u16(0); 2], [vdupq_n_u32(0); 4]);
+            for r in 0..8 {
+                for h in 0..2 {
+                    let (x, y) = (sixteen(a, r * a_stride + 16 * h), sixteen(b, r * b_stride + 16 * h));
+                    in_a[h] = vpadalq_u8(in_a[h], x);
+                    in_b[h] = vpadalq_u8(in_b[h], y);
+                    let d = vabdq_u8(x, y);
+                    squares[2 * h] = vpadalq_u16(squares[2 * h], vmull_u8(vget_low_u8(d), vget_low_u8(d)));
+                    squares[2 * h + 1] = vpadalq_u16(squares[2 * h + 1], vmull_high_u8(d, d));
+                }
+            }
+            // An 8×8's pixels in each are under 4096, so their difference
+            // is within 16 bits signed.
+            let sums = [0, 1].map(|h| vreinterpretq_s16_u16(vsubq_u16(in_a[h], in_b[h])));
+            std::array::from_fn(|i| {
+                let sum = if i % 2 == 0 { vget_low_s16(sums[i / 2]) } else { vget_high_s16(sums[i / 2]) };
+                (vaddlv_s16(sum), vaddvq_u32(squares[i]) as i32)
+            })
+        }
     }
 
     pub(super) fn subtract(n: usize, a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, out: &mut [i16]) {
-        if n == 4 {
-            // A row's four pixels each as the low half of a vector of eight.
-            let four = |p: &[u8], at: usize| u64::from(u32::from_le_bytes(p[at..at + 4].try_into().expect("four pixels")));
-            for r in 0..4 {
-                let o = &mut out[r * 4..][..4];
-                // SAFETY: `o` is four values.
+        match n {
+            4 => {
+                // The four rows' four pixels in one register, two rows a half.
+                let four = |p: &[u8], at: usize| u64::from(u32::from_le_bytes(p[at..at + 4].try_into().expect("four pixels")));
+                let rows = |p: &[u8], stride: usize| unsafe {
+                    let half = |r: usize| vcreate_u8(four(p, r * stride) | four(p, (r + 1) * stride) << 32);
+                    vcombine_u8(half(0), half(2))
+                };
+                let (x, y) = (rows(a, a_stride), rows(b, b_stride));
+                let o = &mut out[..16];
+                // SAFETY: `o` is sixteen values.
                 unsafe {
-                    let d = vreinterpretq_s16_u16(vsubl_u8(vcreate_u8(four(a, r * a_stride)), vcreate_u8(four(b, r * b_stride))));
-                    vst1_s16(o.as_mut_ptr(), vget_low_s16(d));
+                    vst1q_s16(o.as_mut_ptr(), vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(x), vget_low_u8(y))));
+                    vst1q_s16(o.as_mut_ptr().add(8), vreinterpretq_s16_u16(vsubl_high_u8(x, y)));
                 }
             }
-            return;
-        }
-        for r in 0..n {
-            for c in (0..n).step_by(8) {
-                let o = &mut out[r * n + c..][..8];
-                // SAFETY: `o` is eight values.
-                unsafe { vst1q_s16(o.as_mut_ptr(), vreinterpretq_s16_u16(vsubl_u8(eight(a, r * a_stride + c), eight(b, r * b_stride + c)))) };
+            8 => {
+                for r in 0..8 {
+                    let o = &mut out[r * 8..][..8];
+                    // SAFETY: `o` is eight values.
+                    unsafe { vst1q_s16(o.as_mut_ptr(), vreinterpretq_s16_u16(vsubl_u8(eight(a, r * a_stride), eight(b, r * b_stride)))) };
+                }
+            }
+            _ => {
+                // Sixteen pixels a register.
+                let sixteen = |p: &[u8], at: usize| {
+                    let p = &p[at..][..16];
+                    unsafe { vld1q_u8(p.as_ptr()) }
+                };
+                for r in 0..n {
+                    for c in (0..n).step_by(16) {
+                        let (x, y) = (sixteen(a, r * a_stride + c), sixteen(b, r * b_stride + c));
+                        let o = &mut out[r * n + c..][..16];
+                        // SAFETY: `o` is sixteen values.
+                        unsafe {
+                            vst1q_s16(o.as_mut_ptr(), vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(x), vget_low_u8(y))));
+                            vst1q_s16(o.as_mut_ptr().add(8), vreinterpretq_s16_u16(vsubl_high_u8(x, y)));
+                        }
+                    }
+                }
             }
         }
     }
