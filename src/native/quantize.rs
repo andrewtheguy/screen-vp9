@@ -35,7 +35,7 @@ impl Quantizer {
     /// return the end of block: one past the last nonzero level in the scan
     /// whose inverse is `iscan`.
     #[cfg(test)]
-    pub(super) fn quantize(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> usize {
+    pub(super) fn quantize(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i16], levels: &mut [i16]) -> usize {
         self.quantize_in::<false>(n, intra, iscan, coeffs, levels).0
     }
 
@@ -43,21 +43,21 @@ impl Quantizer {
     /// dequantizes them against `coeffs`, in the scale of a transform below
     /// 32×32: 64 times the squared error in pixels. A 32×32 transform's
     /// coefficients are half that scale.
-    pub(super) fn quantize_with_error(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {
+    pub(super) fn quantize_with_error(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i16], levels: &mut [i16]) -> (usize, i64) {
         let (eob, error) = self.quantize_in::<true>(n, intra, iscan, coeffs, levels);
         (eob, error << (2 * u32::from(n == 32)))
     }
 
     /// The squared error of coding nothing of the `n`×`n` `coeffs`, on the
     /// scale `quantize_with_error` gives an error.
-    pub(super) fn energy(n: usize, coeffs: &[i32]) -> i64 {
+    pub(super) fn energy(n: usize, coeffs: &[i16]) -> i64 {
         let sum: i64 = coeffs[..n * n].iter().map(|&c| i64::from(c) * i64::from(c)).sum();
         sum << (2 * u32::from(n == 32))
     }
 
     /// `quantize`, with the squared error on the coefficients' own scale
     /// where `ERROR`, otherwise 0.
-    fn quantize_in<const ERROR: bool>(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i32], levels: &mut [i32]) -> (usize, i64) {
+    fn quantize_in<const ERROR: bool>(&self, n: usize, intra: bool, iscan: &[u16], coeffs: &[i16], levels: &mut [i16]) -> (usize, i64) {
         // A block with nothing in it, a flat one predicted exactly, is
         // nothing quantized.
         if nothing(&coeffs[..n * n]) {
@@ -87,7 +87,7 @@ impl Quantizer {
     /// The error `quantize_with_error` gives, one coefficient at a time
     /// from the levels it left, the reference its kernels are held to.
     #[cfg(test)]
-    fn error(&self, n: usize, coeffs: &[i32], levels: &[i32]) -> i64 {
+    fn error(&self, n: usize, coeffs: &[i16], levels: &[i16]) -> i64 {
         let shift = u32::from(n == 32);
         // A coefficient of 8-bit pixels is within 32640 of zero, so an error
         // squares within 32 bits.
@@ -96,29 +96,29 @@ impl Quantizer {
             let e = c - if level < 0 { -v } else { v };
             i64::from(e * e)
         };
-        let dc = error(coeffs[0], levels[0], self.dequant[0]);
-        let ac: i64 = coeffs[1..n * n].iter().zip(&levels[1..n * n]).map(|(&c, &l)| error(c, l, self.dequant[1])).sum();
+        let dc = error(i32::from(coeffs[0]), i32::from(levels[0]), self.dequant[0]);
+        let ac: i64 = coeffs[1..n * n].iter().zip(&levels[1..n * n]).map(|(&c, &l)| error(i32::from(c), i32::from(l), self.dequant[1])).sum();
         (dc + ac) << (2 * shift)
     }
 
     /// What a decoder makes of `levels` (libvpx's `decode_coefs`): each
     /// times its step, halved at 32×32, as the 16 bits a decoder keeps it in.
-    pub(super) fn dequantize(&self, n: usize, levels: &[i32], scan: &[u16], eob: usize, coeffs: &mut [i32]) {
+    pub(super) fn dequantize(&self, n: usize, levels: &[i16], scan: &[u16], eob: usize, coeffs: &mut [i32]) {
         coeffs.fill(0);
         let shift = u32::from(n == 32);
         for &rc in &scan[..eob] {
             let rc = usize::from(rc);
-            let level = levels[rc];
+            let level = i32::from(levels[rc]);
             let v = (level.abs() * self.dequant[usize::from(rc != 0)]) >> shift;
             coeffs[rc] = i32::from((if level < 0 { -v } else { v }) as i16);
         }
     }
 }
 
-/// Whether every one of `values`, a multiple of eight of them, is zero,
-/// eight at a time.
-pub(super) fn nothing(values: &[i32]) -> bool {
-    values.as_chunks::<8>().0.iter().all(|eight| eight.iter().fold(0, |any, &v| any | v) == 0)
+/// Whether every one of `values`, a multiple of sixteen of them, is zero,
+/// sixteen at a time.
+pub(super) fn nothing(values: &[i16]) -> bool {
+    values.as_chunks::<16>().0.iter().all(|sixteen| sixteen.iter().fold(0, |any, &v| any | v) == 0)
 }
 
 /// How each coefficient is quantized, `[DC, AC]` each: below `least` it is
@@ -136,13 +136,13 @@ struct Terms {
 
 /// `Quantizer::quantize` one coefficient at a time, in raster order.
 #[cfg(test)]
-fn quantize_scalar(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> usize {
+fn quantize_scalar(terms: &Terms, coeffs: &[i16], iscan: &[u16], levels: &mut [i16]) -> usize {
     let mut eob = 0;
     for (rc, (&coeff, out)) in coeffs.iter().zip(levels).enumerate() {
         let k = usize::from(rc != 0);
-        let abs = coeff.abs();
+        let abs = i32::from(coeff).abs();
         let level = if abs < terms.least[k] { 0 } else { ((abs + terms.round[k]).min(i32::from(i16::MAX)) * terms.quant[k]) >> terms.shift };
-        *out = if coeff < 0 { -level } else { level };
+        *out = (if coeff < 0 { -level } else { level }) as i16;
         if level != 0 {
             eob = eob.max(usize::from(iscan[rc]));
         }
@@ -157,7 +157,7 @@ mod neon {
     use super::Terms;
 
     /// `Quantizer::quantize_in` four coefficients at a time.
-    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> (usize, i64) {
+    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i16], iscan: &[u16], levels: &mut [i16]) -> (usize, i64) {
         // The crate is built for NEON, and every load and store
         // is of four values inside slices of whole fours, `coeffs` and
         // `levels` as long as `iscan`.
@@ -172,11 +172,11 @@ mod neon {
             let (mut eob, mut error) = (vdupq_n_u32(0), vdupq_n_s64(0));
             for at in (0..iscan.len()).step_by(4) {
                 let first = at == 0;
-                let c = vld1q_s32(coeffs.as_ptr().add(at));
+                let c = vmovl_s16(vld1_s16(coeffs.as_ptr().add(at)));
                 let abs = vabsq_s32(c);
                 let level = vshlq_s32(vmulq_s32(vminq_s32(vaddq_s32(abs, lanes(terms.round, first)), most), lanes(terms.quant, first)), shift);
                 let level = vbicq_s32(level, vreinterpretq_s32_u32(vcltq_s32(abs, lanes(terms.least, first))));
-                vst1q_s32(levels.as_mut_ptr().add(at), vbslq_s32(vcltzq_s32(c), vnegq_s32(level), level));
+                vst1_s16(levels.as_mut_ptr().add(at), vmovn_s32(vbslq_s32(vcltzq_s32(c), vnegq_s32(level), level)));
                 let ends = vmovl_u16(vld1_u16(iscan.as_ptr().add(at)));
                 eob = vmaxq_u32(eob, vandq_u32(vtstq_s32(level, level), ends));
                 if ERROR {
@@ -199,46 +199,62 @@ mod avx2 {
 
     use super::Terms;
 
-    /// `Quantizer::quantize_in` eight coefficients at a time.
-    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i32], iscan: &[u16], levels: &mut [i32]) -> (usize, i64) {
+    /// `Quantizer::quantize_in` sixteen coefficients at a time, each in 16
+    /// bits: a magnitude and its rounding are held to 15, a step's
+    /// reciprocal is 14 at most, and what is kept of their product is its
+    /// high half.
+    pub(super) fn quantize<const ERROR: bool>(terms: &Terms, coeffs: &[i16], iscan: &[u16], levels: &mut [i16]) -> (usize, i64) {
         // The crate is built for AVX2, but its intrinsics are still `unsafe`
         // to call from a function not marked for it; and every load and store
-        // is of eight values inside slices of whole eights, `coeffs` and
+        // is of sixteen values inside slices of whole sixteens, `coeffs` and
         // `levels` as long as `iscan`.
-        assert!(coeffs.len() == iscan.len() && levels.len() == iscan.len() && iscan.len().is_multiple_of(8));
+        assert!(coeffs.len() == iscan.len() && levels.len() == iscan.len() && iscan.len().is_multiple_of(16));
         unsafe {
-            // The DC's terms in the first lane of the first eight, the rest the
-            // AC's.
-            let lanes = |t: [i32; 2], first: bool| if first { _mm256_blend_epi32::<1>(_mm256_set1_epi32(t[1]), _mm256_set1_epi32(t[0])) } else { _mm256_set1_epi32(t[1]) };
-            let shift = _mm_cvtsi32_si128(terms.shift as i32);
+            // The DC's terms in the first lane of the first sixteen, the rest
+            // the AC's.
+            let lanes = |t: [i32; 2], first: bool| {
+                let ac = _mm256_set1_epi16(t[1] as i16);
+                if first { _mm256_insert_epi16::<0>(ac, t[0] as i16) } else { ac }
+            };
+            // The product shifted right `shift`, 16 or 15, from its halves.
+            let high = _mm_cvtsi32_si128(16 - terms.shift as i32);
+            let low = _mm_cvtsi32_si128(terms.shift as i32);
             let half = _mm_cvtsi32_si128(terms.half as i32);
-            let most = _mm256_set1_epi32(i32::from(i16::MAX));
-            let (mut eob, mut error) = (_mm256_setzero_si256(), _mm256_setzero_si256());
-            for at in (0..iscan.len()).step_by(8) {
+            let most = _mm256_set1_epi16(i16::MAX);
+            let zero = _mm256_setzero_si256();
+            let (mut eob, mut error) = (zero, zero);
+            for at in (0..iscan.len()).step_by(16) {
                 let first = at == 0;
                 let c = _mm256_loadu_si256(coeffs.as_ptr().add(at).cast());
-                let abs = _mm256_abs_epi32(c);
-                let level = _mm256_sra_epi32(_mm256_mullo_epi32(_mm256_min_epi32(_mm256_add_epi32(abs, lanes(terms.round, first)), most), lanes(terms.quant, first)), shift);
-                let level = _mm256_andnot_si256(_mm256_cmpgt_epi32(lanes(terms.least, first), abs), level);
-                // The sign put back: negated where `c` is negative.
-                let sign = _mm256_srai_epi32::<31>(c);
-                _mm256_storeu_si256(levels.as_mut_ptr().add(at).cast(), _mm256_sub_epi32(_mm256_xor_si256(level, sign), sign));
-                let ends = _mm256_cvtepu16_epi32(_mm_loadu_si128(iscan.as_ptr().add(at).cast()));
-                eob = _mm256_max_epu32(eob, _mm256_andnot_si256(_mm256_cmpeq_epi32(level, _mm256_setzero_si256()), ends));
+                // Unsigned from here: the magnitude of −32768 is 32768.
+                let abs = _mm256_abs_epi16(c);
+                let (rounded, quant) = (_mm256_min_epu16(_mm256_adds_epu16(abs, lanes(terms.round, first)), most), lanes(terms.quant, first));
+                let level = _mm256_or_si256(_mm256_sll_epi16(_mm256_mulhi_epu16(rounded, quant), high), _mm256_srl_epi16(_mm256_mullo_epi16(rounded, quant), low));
+                // Nothing where the magnitude is under `least`.
+                let level = _mm256_and_si256(level, _mm256_cmpeq_epi16(_mm256_max_epu16(abs, lanes(terms.least, first)), abs));
+                // The sign put back.
+                _mm256_storeu_si256(levels.as_mut_ptr().add(at).cast(), _mm256_sign_epi16(level, c));
+                let ends = _mm256_loadu_si256(iscan.as_ptr().add(at).cast());
+                eob = _mm256_max_epu16(eob, _mm256_andnot_si256(_mm256_cmpeq_epi16(level, zero), ends));
                 if ERROR {
                     // A level has its coefficient's sign, so the error is
-                    // in the magnitudes; it squares within 32 bits and is
-                    // summed in 64, the even lanes and then the odd.
-                    let d = _mm256_sub_epi32(abs, _mm256_srl_epi32(_mm256_mullo_epi32(level, lanes(terms.dequant, first)), half));
-                    let odd = _mm256_srli_epi64::<32>(d);
-                    error = _mm256_add_epi64(error, _mm256_add_epi64(_mm256_mul_epi32(d, d), _mm256_mul_epi32(odd, odd)));
+                    // in the magnitudes. What a decoder makes of a level is
+                    // within 16 bits unsigned and the error within 16
+                    // signed; its squares are summed in pairs in 32 bits and
+                    // those in 64.
+                    let d = _mm256_sub_epi16(abs, _mm256_srl_epi16(_mm256_mullo_epi16(level, lanes(terms.dequant, first)), half));
+                    let squares = _mm256_madd_epi16(d, d);
+                    error = _mm256_add_epi64(error, _mm256_add_epi64(_mm256_unpacklo_epi32(squares, zero), _mm256_unpackhi_epi32(squares, zero)));
                 }
             }
             let error = _mm_add_epi64(_mm256_castsi256_si128(error), _mm256_extracti128_si256::<1>(error));
             let error = _mm_cvtsi128_si64(_mm_add_epi64(error, _mm_unpackhi_epi64(error, error)));
-            let eob = _mm_max_epu32(_mm256_castsi256_si128(eob), _mm256_extracti128_si256::<1>(eob));
-            let eob = _mm_max_epu32(eob, _mm_shuffle_epi32::<0b01_00_11_10>(eob));
-            (_mm_cvtsi128_si32(_mm_max_epu32(eob, _mm_shuffle_epi32::<0b10_11_00_01>(eob))) as usize, error)
+            let eob = _mm_max_epu16(_mm256_castsi256_si128(eob), _mm256_extracti128_si256::<1>(eob));
+            // The largest of the eight, by halves.
+            let eob = _mm_max_epu16(eob, _mm_unpackhi_epi64(eob, eob));
+            let eob = _mm_max_epu16(eob, _mm_shuffle_epi32::<0b01_01_01_01>(eob));
+            let eob = _mm_max_epu16(eob, _mm_srli_epi32::<16>(eob));
+            ((_mm_cvtsi128_si32(eob) & 0xffff) as usize, error)
         }
     }
 }
@@ -252,7 +268,7 @@ mod tests {
     fn the_error_is_what_dequantizing_leaves() {
         let q = Quantizer::new(60);
         for n in [4, 8, 16, 32] {
-            let coeffs: Vec<i32> = (0..n * n).map(|i| ((i * 7919) % 2001) as i32 - 1000).collect();
+            let coeffs: Vec<i16> = (0..n * n).map(|i| ((i * 7919) % 2001) as i16 - 1000).collect();
             let mut levels = vec![0; n * n];
             let iscan = match n {
                 4 => &ISCAN_4X4[..],
@@ -268,7 +284,7 @@ mod tests {
             }
             let mut back = vec![0; n * n];
             q.dequantize(n, &levels, &scan, n * n, &mut back);
-            let squared: i64 = coeffs.iter().zip(&back).map(|(&c, &b)| i64::from(c - b).pow(2)).sum();
+            let squared: i64 = coeffs.iter().zip(&back).map(|(&c, &b)| i64::from(i32::from(c) - b).pow(2)).sum();
             assert_eq!(q.error(n, &coeffs, &levels), if n == 32 { squared * 4 } else { squared }, "{n}x{n}");
             for intra in [false, true] {
                 assert_eq!(q.quantize_with_error(n, intra, iscan, &coeffs, &mut levels), (q.quantize(n, intra, iscan, &coeffs, &mut levels), q.error(n, &coeffs, &levels)), "{n}x{n}");
@@ -279,7 +295,7 @@ mod tests {
     #[test]
     fn a_coefficient_comes_back_within_its_rounding() {
         let q = Quantizer::new(120);
-        let coeffs: Vec<i32> = (0..16).map(|i| (i * 37 - 300) * if i % 3 == 0 { -1 } else { 1 }).collect();
+        let coeffs: Vec<i16> = (0..16).map(|i| (i * 37 - 300) * if i % 3 == 0 { -1 } else { 1 }).collect();
         for intra in [false, true] {
             let mut levels = vec![0; 16];
             let eob = q.quantize(4, intra, &ISCAN_4X4, &coeffs, &mut levels);
@@ -289,7 +305,7 @@ mod tests {
                 // Within the rounding, give or take the one level the step's
                 // reciprocal can lose.
                 let k = usize::from(rc != 0);
-                assert!((c - b).abs() <= q.dequant[k] + q.round[usize::from(intra)][k], "coefficient {rc}: {c} came back {b}");
+                assert!((i32::from(*c) - b).abs() <= q.dequant[k] + q.round[usize::from(intra)][k], "coefficient {rc}: {c} came back {b}");
             }
             // The end of block is one past the last level in scan order.
             let last = SCAN_4X4.iter().rposition(|&rc| levels[usize::from(rc)] != 0).map_or(0, |i| i + 1);
@@ -305,12 +321,12 @@ mod tests {
             for (n, iscan) in [(4, &ISCAN_4X4[..]), (8, &ISCAN_8X8), (16, &ISCAN_16X16), (32, &ISCAN_32X32)] {
                 for spread in [4, 64, 1024, 65536] {
                     // Mostly small coefficients, a few up to 16 bits.
-                    let coeffs: Vec<i32> = (0..n * n)
+                    let coeffs: Vec<i16> = (0..n * n)
                         .map(|_| {
                             state ^= state << 13;
                             state ^= state >> 17;
                             state ^= state << 5;
-                            (state % spread) as i32 - spread as i32 / 2
+                            ((state % spread) as i32 - spread as i32 / 2) as i16
                         })
                         .collect();
                     for intra in [false, true] {

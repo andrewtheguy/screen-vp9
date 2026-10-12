@@ -167,6 +167,10 @@ struct Shape {
 struct Scratch {
     rows: Vec<u32>,
     windows: Vec<u32>,
+    /// A row's hashes of two pixels and of four, and its windows' flags.
+    pairs: Vec<u32>,
+    fours: Vec<u32>,
+    flags: Vec<u8>,
     patch: Vec<u8>,
 }
 
@@ -468,25 +472,37 @@ impl Shape {
         // Row hashes of the 8 pixels from each x in x0..=x1, rows y0..y1 + 8.
         let across = x1 + 1 - x0;
         let row_count = y1 + 8 - y0;
-        let Scratch { rows, windows, .. } = scratch;
-        rows.clear();
+        let Scratch { rows, windows, pairs, fours, flags, .. } = scratch;
+        // Every value of these is written before it is read: nothing is
+        // cleared but the first windows, which are summed into.
         rows.resize(across * row_count, 0);
-        // Each the polynomial of its eight pixels, taken whole rather than
-        // rolled, so that neighbouring ones are taken at once.
-        let powers: [u32; 8] = std::array::from_fn(|i| ACROSS.wrapping_pow(7 - i as u32));
+        // Each the polynomial of its eight pixels, made of two of four pixels,
+        // which are each made of two of two: three multiplies a hash where
+        // a term at a time is eight, and every position's at once.
+        let [by2, by4] = [ACROSS.wrapping_pow(2), ACROSS.wrapping_pow(4)];
+        pairs.resize(across + 6, 0);
+        fours.resize(across + 4, 0);
         for (k, row) in rows.chunks_exact_mut(across).enumerate() {
             let pixels = &luma[(y0 + k) * width + x0..][..across + 7];
-            for (j, out) in row.iter_mut().enumerate() {
-                *out = powers.iter().zip(&pixels[j..j + 8]).fold(0u32, |h, (&p, &v)| h.wrapping_add(p.wrapping_mul(u32::from(v))));
+            for ((out, &a), &b) in pairs.iter_mut().zip(pixels).zip(&pixels[1..]) {
+                *out = ACROSS.wrapping_mul(u32::from(a)).wrapping_add(u32::from(b));
+            }
+            for ((out, &a), &b) in fours.iter_mut().zip(&pairs[..]).zip(&pairs[2..]) {
+                *out = by2.wrapping_mul(a).wrapping_add(b);
+            }
+            for ((out, &a), &b) in row.iter_mut().zip(&fours[..]).zip(&fours[4..]) {
+                *out = by4.wrapping_mul(a).wrapping_add(b);
             }
         }
         // Window hashes at y0..=y1 from the row hashes, rolled down each
         // column as the row hashes are rolled across.
         let down = y1 + 1 - y0;
-        windows.clear();
         windows.resize(across * down, 0);
-        for (j, w) in windows[..across].iter_mut().enumerate() {
-            *w = (0..8).fold(0u32, |h, d| h.wrapping_mul(DOWN).wrapping_add(rows[d * across + j]));
+        windows[..across].fill(0);
+        for row in rows.chunks_exact(across).take(8) {
+            for (w, &h) in windows[..across].iter_mut().zip(row) {
+                *w = w.wrapping_mul(DOWN).wrapping_add(h);
+            }
         }
         let top = DOWN.wrapping_pow(8);
         for k in 1..down {
@@ -497,18 +513,28 @@ impl Shape {
                 *w = above[j].wrapping_mul(DOWN).wrapping_add(entering[j]).wrapping_sub(top.wrapping_mul(leaving[j]));
             }
         }
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let (j, k) = (x - x0, y - y0);
-                let h = windows[k * across + j];
-                if h.wrapping_mul(SCRAMBLE) >> (32 - ANCHOR_BITS) != 0 || h == windows[k * across + j + 1] || h == windows[(k + 1) * across + j] {
-                    continue;
-                }
-                let c = x / 8;
-                let n = usize::from(counts[c]);
-                if n < PER_8X8 {
-                    anchors[c][n] = (h, ((y % 8) * 8 + x % 8) as u8);
-                    counts[c] += 1;
+        // Which windows are anchors, a flag each for the whole row at once,
+        // and then only the few that are, found eight flags at a time.
+        let n = x1 - x0;
+        flags.clear();
+        flags.resize(n.next_multiple_of(8), 0);
+        for (k, y) in (y0..y1).enumerate() {
+            let (row, below) = (&windows[k * across..][..across], &windows[(k + 1) * across..][..n]);
+            for (((flag, &h), &right), &below) in flags.iter_mut().zip(row).zip(&row[1..]).zip(below) {
+                *flag = u8::from((h.wrapping_mul(SCRAMBLE) >> (32 - ANCHOR_BITS) == 0) & (h != right) & (h != below));
+            }
+            for (e, eight) in flags.as_chunks::<8>().0.iter().enumerate() {
+                let mut set = u64::from_le_bytes(*eight);
+                while set != 0 {
+                    let j = e * 8 + set.trailing_zeros() as usize / 8;
+                    set &= set - 1;
+                    let x = x0 + j;
+                    let c = x / 8;
+                    let count = usize::from(counts[c]);
+                    if count < PER_8X8 {
+                        anchors[c][count] = (row[j], ((y % 8) * 8 + x % 8) as u8);
+                        counts[c] += 1;
+                    }
                 }
             }
         }
@@ -565,6 +591,83 @@ mod tests {
             .collect();
         all.sort_unstable();
         all
+    }
+
+    /// The anchors of a frame are those a window at a time gives, its hash
+    /// the polynomial of its pixels a term at a time: in noise, where hashes
+    /// are anchors by chance, in a picture of few values, where windows are
+    /// the same as their neighbours, and at widths that end inside an 8×8.
+    #[test]
+    fn the_anchors_are_what_a_window_at_a_time_gives() {
+        for (width, height, seed) in [(64, 64, 1), (77, 43, 2), (129, 70, 3), (200, 33, 4), (16, 9, 5), (9, 16, 6)] {
+            let mut luma = noise(width, height, seed);
+            if seed % 2 == 0 {
+                luma.iter_mut().for_each(|v| *v = if *v < 200 { 16 } else { *v & 1 });
+            }
+            let shape = Shape { width, height, mi_cols: width.div_ceil(8), mi_rows: height.div_ceil(8), sb_cols: width.div_ceil(64), sb_rows: height.div_ceil(64) };
+            let window = |x: usize, y: usize| {
+                (0..8).fold(0u32, |h, d| {
+                    let row = luma[(y + d) * width + x..][..8].iter().fold(0u32, |h, &v| h.wrapping_mul(ACROSS).wrapping_add(u32::from(v)));
+                    h.wrapping_mul(DOWN).wrapping_add(row)
+                })
+            };
+            let mut scratch = Scratch::default();
+            for r in 0..shape.mi_rows {
+                let mut expected = vec![(Anchors::default(), 0u8); shape.mi_cols];
+                for y in r * 8..(r * 8 + 8).min(height.saturating_sub(8)) {
+                    for x in 0..width - 8 {
+                        let h = window(x, y);
+                        let (kept, count) = &mut expected[x / 8];
+                        if h.wrapping_mul(SCRAMBLE) >> (32 - ANCHOR_BITS) == 0 && h != window(x + 1, y) && h != window(x, y + 1) && usize::from(*count) < PER_8X8 {
+                            kept[usize::from(*count)] = (h, ((y % 8) * 8 + x % 8) as u8);
+                            *count += 1;
+                        }
+                    }
+                }
+                // In one run, and in two that meet inside the row.
+                for split in [0, shape.mi_cols / 2] {
+                    let (mut anchors, mut counts) = (vec![Anchors::default(); shape.mi_cols], vec![9u8; shape.mi_cols]);
+                    shape.hash_run(&luma, r, 0..split, &mut scratch, &mut anchors, &mut counts);
+                    shape.hash_run(&luma, r, split..shape.mi_cols, &mut scratch, &mut anchors, &mut counts);
+                    for (c, (kept, count)) in expected.iter().enumerate() {
+                        let n = usize::from(*count);
+                        assert_eq!((counts[c], &anchors[c][..n]), (*count, &kept[..n]), "{width}x{height}, row {r}, 8x8 {c}, split at {split}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The time one thread takes over the anchors of a 1920×1080 frame, of
+    /// noise and of a picture of few values. A measurement, not a check; run
+    /// it in release:
+    ///
+    /// ```text
+    /// cargo test --release --features native anchor_time -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement that wants a release build"]
+    fn anchor_time() {
+        let (width, height) = (1920, 1080);
+        let shape = Shape { width, height, mi_cols: width / 8, mi_rows: height / 8, sb_cols: width / 64, sb_rows: height.div_ceil(64) };
+        for (name, few) in [("noise", false), ("few values", true)] {
+            let mut luma = noise(width, height, 7);
+            if few {
+                luma.iter_mut().for_each(|v| *v = if *v < 200 { 16 } else { *v & 1 });
+            }
+            let (mut anchors, mut counts) = (vec![Anchors::default(); shape.mi_cols], vec![0u8; shape.mi_cols]);
+            let mut scratch = Scratch::default();
+            let least = (0..20)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    for r in 0..shape.mi_rows {
+                        shape.hash_run(&luma, r, 0..shape.mi_cols, &mut scratch, &mut anchors, &mut counts);
+                    }
+                    started.elapsed().as_secs_f64() * 1000.0
+                })
+                .fold(f64::INFINITY, f64::min);
+            println!("{name}: {least:.2} ms");
+        }
     }
 
     /// A frame that changes nothing takes no anchor and searches nothing,

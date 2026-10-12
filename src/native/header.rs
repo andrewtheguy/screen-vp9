@@ -503,9 +503,9 @@ mod tests {
         let mut tape = Tape::new();
         let mut levels = [0; 64];
         levels[0] = 3;
-        let mut energy = [0; 1024];
+        let mut map = [0; 1024];
         for _ in 0..2000 {
-            tokens::write(&mut tape, tokens::Kind { tx: 1, tx_type: TxType::DctDct, chroma: false, inter: false }, 0, &levels, 1, &mut energy);
+            tokens::write(&mut tape, tokens::Kind { tx: 1, tx_type: TxType::DctDct, chroma: false, inter: false }, 0, &levels, 1, &mut map);
         }
         let before = Probs::default();
         let mut probs = before.clone();

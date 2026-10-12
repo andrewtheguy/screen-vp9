@@ -7,7 +7,7 @@
 //! does not guess. It is coded by one of two coders, which its maker names
 //! ([`Coder`]): libvpx set up that way, or the encoder written here in Rust,
 //! which is EXPERIMENTAL and built only with the `native` feature, since its
-//! kernels need NEON or AVX2 and a build without it is for any machine
+//! build is for NEON or x86-64-v3 and one without it is for any machine
 //! libvpx is. The stream is the same kind either way, and nothing
 //! else a user calls differs. In front of it a [`Picture`] holds the planes it
 //! reads — BT.601 at studio swing, a sample per pixel in each — converted from
@@ -82,8 +82,8 @@ pub enum Coder {
     #[default]
     Libvpx,
     /// The encoder written here in Rust. EXPERIMENTAL, and there only in a
-    /// build with the `native` feature, which needs NEON or AVX2 of the
-    /// machine it is built for.
+    /// build with the `native` feature, which needs NEON or x86-64-v3 of
+    /// the machine it is built for.
     #[cfg(feature = "native")]
     Native,
 }

@@ -2,8 +2,8 @@
 
     python3 -I tools/vp9_dct.py LIBVPX_DIR > src/native/dct.rs
 
-The one-dimensional inverse DCTs and ADSTs a decoder runs, the 32-point
-forward DCT and the forward ADSTs are long straight-line C. They are
+The one-dimensional inverse DCTs and ADSTs a decoder runs and the 32-point
+forward DCT are long straight-line C. They are
 translated statement by statement rather than retyped: casts dropped, the
 rounding helpers renamed, constant indices folded, a constant's product
 turned round so the constant comes second, an all-zero input's early return
@@ -147,7 +147,6 @@ def main():
     common = open(f"{root}/vpx_dsp/txfm_common.h").read()
     cospi = dict((int(i), int(v)) for i, v in re.findall(r"cospi_(\d+)_64 = (\d+);", common))
     sinpi = dict((int(i), int(v)) for i, v in re.findall(r"sinpi_(\d)_9 = (\d+);", common))
-    vp9_fwd = open(f"{root}/vp9/encoder/vp9_dct.c").read()
 
     print("//! VP9's one-dimensional DCTs and ADSTs, translated by `tools/vp9_dct.py` from libvpx at")
     print(f"//! commit `{commit}`; not edited by hand. Copyright the WebM")
@@ -181,8 +180,6 @@ def main():
     emit(fwd, "void vpx_fdct32", "fdct32", 32, False, "libvpx's `vpx_fdct32`, without the rounding its rate-distortion\nvariant asks for.")
     for n in (4, 8, 16):
         emit_scalars(inv, f"void iadst{n}_c", f"iadst{n}", n, True, f"libvpx's `iadst{n}_c`.")
-    for n in (4, 8, 16):
-        emit_scalars(vp9_fwd, f"static void fadst{n}", f"fadst{n}", n, False, f"libvpx's `fadst{n}`, the encoder's.")
 
 
 main()

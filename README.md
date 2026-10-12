@@ -51,12 +51,15 @@ The stream is the same kind either way and nothing else a user calls differs.
   the same way. It is told what each frame left the client holding and says
   when a quiet desktop is owed its settle, half a second on.
 
-The Rust coder's kernels are NEON on arm64 and AVX2 on amd64, and a build
-with the `native` feature is refused without them. NEON is in every arm64
-target's baseline; AVX2 is not in amd64's, so a user's amd64 build with the
-feature sets `-C target-feature=+avx2`, as this repository's
-`.cargo/config.toml` does. Without the feature the crate is libvpx alone and
-asks nothing of the machine that libvpx does not.
+The Rust coder is built for NEON on arm64 and for x86-64-v3 on amd64 (AVX2,
+BMI1 and BMI2, LZCNT, MOVBE, FMA: Haswell and Excavator on), and a build with
+the `native` feature is refused under them. NEON is in every arm64 target's
+baseline; x86-64-v3 is above amd64's, so a user's amd64 build with the
+feature sets `-C target-cpu=x86-64-v3`, as this repository's
+`.cargo/config.toml` does. That is a floor, raised when a higher one is
+measured to buy enough, and no processor under it is kept working. Without
+the feature the crate is libvpx alone and asks nothing of the machine that
+libvpx does not, which is the build for an older processor.
 
 libvpx is [libvpx-prebuilt](https://github.com/andrewtheguy/libvpx-prebuilt)'s
 static archive, which the build fetches: one of the two coders, and the
@@ -69,7 +72,7 @@ decided in [docs/plan.md](docs/plan.md).
 Use it by release tag:
 
 ```toml
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.16" }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.17" }
 # and with the Rust coder:
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.16", features = ["native"] }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.17", features = ["native"] }
 ```

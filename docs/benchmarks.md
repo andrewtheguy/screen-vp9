@@ -18,7 +18,10 @@ five passes, each on one encoder kept across them, as a session's is. `tools/tab
 
 They were run on 2026-10-10 on a six-core Intel i5-8500T (AVX2) under WSL2,
 four threads, the machine idle and one measurement at a time, on the encoder
-of commit `29a7849`. A time on this machine moves by a tenth from one run to
+of commit `29a7849`, built with `-C target-feature=+avx2`; amd64's floor is
+x86-64-v3 since 2026-10-11, a build that measured 0.98 to 1.02 of that one's
+time at 1920×1080 and the same bytes ([plan.md](plan.md#the-floor-raised-on-2026-10-11)).
+A time on this machine moves by a tenth from one run to
 the next, so a ratio within a tenth of 1.00 is on the line. The same
 measurements on an Apple M2 Max, the NEON kernels against libvpx there, are
 in [benchmarks-m2-max.md](benchmarks-m2-max.md): the two are not to be read
