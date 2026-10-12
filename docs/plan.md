@@ -12,7 +12,8 @@ scope final; the open items were taken up again the same day, after release
 0.0.1-alpha.3. Replanned again on 2026-10-11, when amd64's floor went from
 AVX2 to x86-64-v3 and stopped being a ceiling as well: what that bought and
 what it opens is [its own section](#the-floor-raised-on-2026-10-11), and the
-open items are in a new order for it.
+open items are in a new order for it. arm64's open items were taken up the
+same day on the M2 Max, [in a section of their own](#arm64-on-2026-10-11).
 
 ## What it is for
 
@@ -87,7 +88,8 @@ desktop as drawn:
   coarser at the same dial is not at the same dial.
 - **The machine the tables are made on is the six-core AVX2 one**, an
   i5-8500T, which is x86-64-v3, the floor. The Mac
-  runs the tests, for the NEON kernels; its own tables, in
+  runs the tests, for the NEON kernels, and a NEON kernel is measured on it
+  as an AVX2 one is there, each build turn about with the one before; its own tables, in
   [benchmarks-m2-max.md](benchmarks-m2-max.md), are each line's median of
   three runs (`tools/median_of_runs.py`), its times moving by up to three
   fifths from one run to the next on a desktop in use.
@@ -254,9 +256,10 @@ two levels there is no feature a codec reads: the `skylake` build above,
 which adds the machine's own tuning, ADX, AES and CLMUL, measures the
 same.
 
-**arm64's floor is where it was**, NEON. Its ceiling is gone the same way:
-the dot product (`sdot`, `udot`, Armv8.2's, in every Apple M) is what the moments and the search's
-hashes would take. Not measured, and not raised without it; open item 9.
+**arm64's floor is where it was**, NEON. Its ceiling is gone the same way,
+and the dot product (`sdot`, `udot`, Armv8.2's, in every Apple M) was
+measured as the next floor and is not worth one:
+[arm64, on 2026-10-11](#arm64-on-2026-10-11).
 
 **What a user changes with the pin**: `-C target-cpu=x86-64-v3` where its
 `.cargo/config.toml` has `-C target-feature=+avx2`, the build refused
@@ -288,7 +291,7 @@ a sum or a rounded value past 16 bits, which the tests hold the vectors to.
 The 32×32 stays in 32 bits: its second pass leaves 16. NEON is the same
 kernel in eight `i16` (`vmlal`, `vqrshrn`), its tests run on the Mac and
 its time not measured. The quantizer on NEON reads the 16 bits and works in
-32 as before.
+32 as before: in eight `i16` it measured nothing, below.
 
 The token map is held to coding a token at a time from the scan's own
 neighbour tables, over every size, type and context. Costing the tokens
@@ -298,6 +301,63 @@ blocks. On keyframes five of the seven captures are 0.91 to 0.96, and
 1.00 and 1.03, inside what this machine moves by: with the whole block
 mapped whatever the scan reached, one or the other was 1.02 in each of
 two runs.
+
+## arm64, on 2026-10-11
+
+On the M2 Max, each build turn about with the one before three times over
+the 1920×1080 captures, keyframes and settles, four threads. A desktop in
+use moves its times too much for a line's milliseconds to be read, so a
+line's time is its ratio to libvpx's in the same run, the median of the
+three, over the build before's; a capture's is the geometric mean of its
+lines. Every stream the same to the byte.
+
+| Change | Keyframes alone | Settles | Whole captures |
+|---|---|---|---|
+| A block's residual against the previous frame measured two 8×8s a register, sixteen pixels (`vabd` for the differences' sizes, `vpadal` for the sums), where it was an 8×8 at a time | 0.99 to 1.00 | 0.97 to 1.01 | 0.97 to 1.00 |
+| A residual sixteen pixels a register (`vsubl` and `vsubl2` of one load), and a 4×4's in one, where it was eight and a row of four | 0.94 to 0.99 | 0.98 to 1.01 | 0.96 to 1.00 |
+
+Tried and not taken: **the quantizer in eight `i16`**, as amd64's is in
+sixteen, `sqdmulh` for the product shifted right 15: 0.97 to 1.00 on
+keyframes and settles and 0.97 to 1.02 on whole captures, nothing past
+what the machine moves by. Its kernel is 2.6% of a keyframe's samples.
+
+**Where arm64's time is**, by samples under the pool's threads with the
+first row above in (`samply`): on keyframes the bool coder 12%, the token
+estimate 10%, the block walk 9%, the residual 6% before the second row,
+the intra mode 5%, the forward transform and the intra predictions 4 to
+5% each, the loop filter's edges 4%, and threads parked 15%. On the
+captures the threads are parked 29% of the samples, the bool coder 14%,
+the token estimate 6%.
+
+**The dot product is not worth a floor.** What it would take is the moments
+(1.8% of a keyframe's samples), the line sums (1.3%) and the residual
+against the previous frame (2.1% of the captures'). The search's hashes are
+polynomials with 32-bit multipliers, which `udot`'s 8-bit weights cannot
+make without a different hash and so a different stream. Halved, that is a
+hundredth or a hundredth and a half, under what this machine moves by; and
+a floor of Armv8.2 with the dot product would have both users build their
+Linux arm64 with it and leave the Cortex-A72 (the Raspberry Pi 4, the first
+Graviton) under it. NEON stays the floor.
+
+**The loop filter on NEON** is eight lines a register in `i16`, where
+AVX2's pairs two edges for sixteen; libvpx's NEON filters sixteen lines in
+`u8`. It is 4% of a keyframe's samples, so a rewrite would buy at most two
+hundredths there. Not written.
+
+**The conversion is one formula on every machine now.** All 2^24 colours
+through `yuv`'s Balanced mode, on each of its paths: NEON made a luma one
+under AVX2's in 41% of colours and never over, and the chroma of the two
+differed by one in 17%. Balanced is three conversions, not two: NEON with
+RDM (every Apple M, Graviton 2 on), NEON without it, which is the scalar
+path's, and AVX2 and SSE's. Within one machine a colour converts the same
+wherever it lies in a row. Its professional mode, 15 bits a coefficient,
+makes the same planes on all five paths, within 0.51 of a code value of
+BT.601's for every colour, where Balanced was up to 1.2 off on each path; a test
+holds the conversion to its integer formula on every target. On the M2 Max
+it is 1.6 times Balanced's time on one thread (0.77 ms a 1920×1080 against
+0.49) and on four, as a whole picture is converted, 0.23 ms against 0.18,
+and 0.97 a 3840×2160 against 0.96. Every stream of both coders changes with
+it. The i5's times for it are not measured.
 
 ## What is open
 
@@ -348,8 +408,9 @@ On the floor, no stream changed:
    along the edge and every row a stretch of it, held to the pixel at a
    time by a test. Six of seven keyframes are 0.95 to 0.98 of the build
    before and `walk`'s the same; the settles and the captures are within
-   the run's noise. Left: the quantizer on NEON in eight `i16`, as
-   amd64's is in sixteen, with item 9.
+   the run's noise. The quantizer on NEON in eight `i16`, as amd64's is in
+   sixteen, was tried and measured nothing:
+   [arm64, on 2026-10-11](#arm64-on-2026-10-11).
 
 And one the list did not have, found when the four were done and the
 captures profiled by line: **the residual against the previous frame**,
@@ -361,8 +422,8 @@ the zero vector is. Four side by side are now one read and one kernel,
 where a row of a square has four not yet measured and the picture holds
 them. `browser`'s capture is 0.83 of the build before, `drag`'s frames
 0.89, the other captures 0.96 to 0.98 but `terminal`'s, which measures
-few, and the settles 0.94 to 0.98. On arm64 the four are still an 8×8
-at a time behind the one read. Looked at with it and left: the scan for
+few, and the settles 0.94 to 0.98. On arm64 they are two 8×8s a
+register now, [above](#arm64-on-2026-10-11). Looked at with it and left: the scan for
 what has not changed is 32 pixels a register already, the compiler's,
 and waits on memory; and no kernel of a keyframe is over 7% of it, the
 bool coder's chain 10%.
@@ -373,9 +434,10 @@ Then, as before:
    probabilities on frames of a line of text, `INTRA_MODE_GAIN`, vectors ranked
    by their residual's squares on `browser` and `drag`, and `terminal` and
    `flood` captured at quality 100.
-6. **The conversion is not the same on arm64 and amd64.** The `yuv`
-   crate's NEON path makes a luma of 217 of an RGB grey of 235 where its
-   AVX2 path makes 218. Which values and planes differ is not measured.
+6. **The conversion was not the same on arm64 and amd64**: measured and
+   made one, [above](#arm64-on-2026-10-11). Left: the decoder's conversion
+   back to `B, G, R, X` differs by path as well, and `yuv` has no mode for
+   it that does not; that is a viewer's pixels and not a stream.
 7. **The 4×4 split threshold**: what makes it safe at 10 is a diagonal mode
    for a 4×4 where the 8×8 would have taken one, and knowing why a churning
    picture costs more at a low dial with it.
@@ -384,9 +446,8 @@ Then, as before:
    3% of its capture for 0.11 dB and `drag`'s capture 0.06 dB. Why
    `drag` loses is not known; a rounding by block size or by frame kind
    is untried.
-9. **arm64's floor**: the dot product for the moments and the hashes.
-   No time is measured on arm64, where the tests alone are run, so a
-   floor there has nothing to be raised on yet.
+9. **arm64's floor**: measured, and NEON stays the floor,
+   [above](#arm64-on-2026-10-11).
 10. **The first keyframe of a stream runs on cold buffers** (130 ms against
     40 for the next at 1920×1080).
 11. **A gate that fails a build.** The comparison is in the tests again, so

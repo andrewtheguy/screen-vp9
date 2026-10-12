@@ -428,9 +428,11 @@ fn convert_band(pixels: &[u8], stride: usize, packed: Packed, planes: [&mut [u8]
     // path makes the same planes, so that a picture is the same stream on
     // arm64 and amd64. Balanced's NEON made a luma one under its AVX2's in
     // two colours of five, and each path's chroma differed by one in a
-    // sixth; this is within 0.51 of a code value of BT.601's for every colour,
-    // for 1.6 times Balanced's time on NEON (0.71 ms a 1920×1080 on a thread
-    // of an M2 Max, against 0.45).
+    // sixth; this is within 0.51 of a code value of BT.601's for every colour.
+    // On an M2 Max it is 1.6 times Balanced's time on one thread, 0.77 ms a
+    // 1920×1080 against 0.49, and on four, as a whole picture is converted,
+    // 0.23 against 0.18 and 0.97 a 3840×2160 against 0.96, which waits on
+    // memory.
     let (range, matrix, mode) = (YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Professional);
     match packed {
         Packed::Rgb => yuv::rgb_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
