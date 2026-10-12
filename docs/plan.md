@@ -243,9 +243,12 @@ by a wider register.
 
 **The floor is x86-64-v3 for now.** It moves up only where a higher one
 is measured to buy enough to justify it, and nothing is: AVX-512 was
-dropped from the open items on 2026-10-11. x86-64-v4 leaves out every
-Intel desktop and laptop processor from Alder Lake on and every AMD one
-before Zen 4, and the machine the tables are made on cannot run it, so
+dropped from the open items on 2026-10-11. x86-64-v4 runs only where
+the processor and the operating system both expose AVX512F, AVX512BW,
+AVX512CD, AVX512DQ and AVX512VL, which is by machine and not by
+generation: Intel's desktop and laptop processors from Alder Lake on
+ship without them as a rule, and no AMD one before Zen 4 has them. The
+machine the tables are made on does not, so
 nothing written for it could be measured or tested here. Between the
 two levels there is no feature a codec reads: the `skylake` build above,
 which adds the machine's own tuning, ADX, AES and CLMUL, measures the
