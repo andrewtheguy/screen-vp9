@@ -1,6 +1,6 @@
 [package]
 name = "screen-vp9"
-version = "0.0.17"
+version = "0.0.18"
 edition = "2024"
 license = "MIT AND BSD-3-Clause"
 repository = "https://github.com/andrewtheguy/screen-vp9"
@@ -23,8 +23,10 @@ log = "0.4"
 vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewtheguy/libvpx-prebuilt", tag = "v1.16.0-20260924182850-e78d74f" }
 # The conversions between packed RGB or BGRX and the planes an encoder takes
 # and the decoder gives back: pure Rust with AVX2 and NEON paths chosen at run
-# time, three to four times the speed of a scalar loop on a 4K frame.
-yuv = "0.8"
+# time, three to four times the speed of a scalar loop on a 4K frame. Its
+# professional mode is the one to the planes whose every path, NEON with and
+# without RDM, AVX2, SSE and scalar, makes the same planes of a colour.
+yuv = { version = "0.8", features = ["professional_mode"] }
 
 [features]
 # The encoder written here in Rust, `Coder::Native`. EXPERIMENTAL. Off unless

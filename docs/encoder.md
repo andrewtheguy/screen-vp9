@@ -197,8 +197,9 @@ The rules the encoder keeps to, in the order the users' frames come:
   nothing else runs on; on amd64 the kernels are AVX2 and what is around
   them is compiled with the rest of the level. A residual, its forward
   transform under 32×32 and the coefficients the quantizer reads are 16
-  bits a value, sixteen a register on amd64; the levels, what a decoder
-  makes of them and the inverse transforms are 32.
+  bits a value, sixteen a register on amd64 and eight on arm64, whose
+  quantizer works on them in 32; the levels, what a decoder makes of them
+  and the inverse transforms are 32.
 
 ## What a stream is held to
 

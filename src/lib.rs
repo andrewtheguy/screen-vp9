@@ -424,7 +424,16 @@ fn convert_band(pixels: &[u8], stride: usize, packed: Packed, planes: [&mut [u8]
         width: size.0 as u32,
         height: size.1 as u32,
     };
-    let (range, matrix, mode) = (YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Balanced);
+    // Professional: 15 bits a coefficient, and the one mode whose every
+    // path makes the same planes, so that a picture is the same stream on
+    // arm64 and amd64. Balanced's NEON made a luma one under its AVX2's in
+    // two colours of five, and each path's chroma differed by one in a
+    // sixth; this is within 0.51 of a code value of BT.601's for every colour.
+    // On an M2 Max it is 1.6 times Balanced's time on one thread, 0.77 ms a
+    // 1920×1080 against 0.49, and on four, as a whole picture is converted,
+    // 0.23 against 0.18 and 0.97 a 3840×2160 against 0.96, which waits on
+    // memory.
+    let (range, matrix, mode) = (YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Professional);
     match packed {
         Packed::Rgb => yuv::rgb_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
         Packed::Bgrx => yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
@@ -1296,6 +1305,41 @@ mod tests {
         close(v[0], 240, "red pixel V");
         close(u[1], 240, "blue pixel U");
         close(v[1], 110, "blue pixel V");
+    }
+
+    /// The conversion is one integer formula on every machine: `yuv`'s
+    /// professional mode, 15 bits a coefficient, which every one of its paths
+    /// makes to the code value (NEON with and without RDM, AVX2, SSE and
+    /// scalar were each run over all 2^24 colours), so that a picture is the
+    /// same planes on arm64 and on amd64. Its coefficients are BT.601's at
+    /// studio swing, `kr` and `kb` in `f32` times 2^15, rounded.
+    #[test]
+    fn the_conversion_is_the_same_integer_formula_everywhere() {
+        const Y: [i32; 3] = [8414, 16519, 3208];
+        const U: [i32; 3] = [-4857, -9535, 14392];
+        const V: [i32; 3] = [14392, -12052, -2341];
+        let formula = |[r, g, b]: [u8; 3], k: [i32; 3], bias: i32| {
+            let [r, g, b] = [r, g, b].map(i32::from);
+            ((r * k[0] + g * k[1] + b * k[2] + (bias << 15) + (1 << 14) - 1) >> 15) as u8
+        };
+        // Every seventh value of each channel and its last, a row of the
+        // picture per red: wide enough for every path's vectors and a tail.
+        let values: Vec<u8> = (0..=255u8).step_by(7).chain([255]).collect();
+        let w = values.len() * values.len();
+        let mut picture = Picture::new(w as u16, values.len() as u16, 1).expect("a picture");
+        let colours: Vec<[u8; 3]> = values.iter().flat_map(|&r| values.iter().map(move |&g| (r, g))).flat_map(|(r, g)| values.iter().map(move |&b| [r, g, b])).collect();
+        let want: Vec<[u8; 3]> = colours.iter().map(|&c| [formula(c, Y, 16), formula(c, U, 128), formula(c, V, 128)]).collect();
+        let held = |picture: &Picture, read: &str| {
+            let [y, u, v] = picture.planes();
+            for (i, (colour, want)) in colours.iter().zip(&want).enumerate() {
+                assert_eq!([y[i], u[i], v[i]], *want, "RGB {colour:?} read as {read}");
+            }
+        };
+        let bgrx: Vec<u8> = colours.iter().flat_map(|&[r, g, b]| [b, g, r, 0]).collect();
+        picture.read_bgrx(&bgrx, w * 4).expect("the picture");
+        held(&picture, "BGRX");
+        picture.read_rgb(colours.as_flattened()).expect("the picture");
+        held(&picture, "RGB");
     }
 
     /// The two conversions are each other's inverse to within the rounding a
