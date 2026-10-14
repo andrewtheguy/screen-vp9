@@ -1827,12 +1827,12 @@ mod tests {
         let mut stream: Option<(Libvpx, Encoder, [Decoder; 2], Picture)> = None;
         let mut tallies: std::collections::BTreeMap<Kind, Tally> = std::collections::BTreeMap::new();
         let (mut n, mut size, mut libvpx_carried) = (0usize, (0u16, 0u16), false);
-        // With `IVF` set to a directory, this encoder's stream is kept and
-        // written there as `<capture>-<WxH>.ivf`, a file per size.
+        // With `IVF` set to a directory, both streams are kept and written
+        // there as `<capture>-<WxH>-<encoder>.ivf`, a file per size.
         let ivf = std::env::var_os("IVF").map(std::path::PathBuf::from);
         let frames = std::env::var_os("FRAMES").is_some();
         let fastest = std::env::var("SPEED").is_ok_and(|s| s == "fastest");
-        type Kept = ((u16, u16), Vec<Vec<u8>>);
+        type Kept = ((u16, u16), [Vec<Vec<u8>>; 2]);
         let mut kept: Vec<Kept> = Vec::new();
         each_captured(path, |frame| {
             let (w, h) = frame.size;
@@ -1932,16 +1932,22 @@ mod tests {
             }
             if ivf.is_some() {
                 if fresh {
-                    kept.push(((w, h), Vec::new()));
+                    kept.push(((w, h), [Vec::new(), Vec::new()]));
                 }
-                kept.last_mut().expect("pushed above").1.push(std::mem::take(&mut out[1]));
+                let streams = &mut kept.last_mut().expect("pushed above").1;
+                if against && produced {
+                    streams[0].push(std::mem::take(&mut out[0]));
+                }
+                streams[1].push(std::mem::take(&mut out[1]));
             }
             n += 1;
             true
         });
         if let Some(dir) = ivf {
-            for ((w, h), stream) in &kept {
-                write_ivf(&dir.join(format!("{}-{w}x{h}.ivf", capture_name(path))), (*w, *h), stream);
+            for ((w, h), streams) in &kept {
+                for (stream, coder) in streams.iter().zip(["libvpx", "rust"]).filter(|(stream, _)| !stream.is_empty()) {
+                    write_ivf(&dir.join(format!("{}-{w}x{h}-{coder}.ivf", capture_name(path))), (*w, *h), stream);
+                }
             }
         }
         (tallies, size, n)
@@ -2129,8 +2135,8 @@ mod tests {
     /// and the ratios `tools/tables.py` makes the tables of
     /// `docs/benchmarks.md` from. `ALONE` leaves libvpx out, `FRAMES`
     /// prints every frame, `SPEED=fastest` codes both at their fastest.
-    /// With `IVF` set to a directory, this encoder's stream of each capture
-    /// is written there too, for the browsers' own decoders to read through
+    /// With `IVF` set to a directory, both encoders' streams of each capture
+    /// are written there too, for the browsers' own decoders to read through
     /// ffmpeg (`-c:v libvpx-vp9` is Chrome's, `-c:v vp9` Firefox's;
     /// `-f framemd5` of each should agree), one file per size the capture
     /// runs at, since ffmpeg rescales every frame after a size change to

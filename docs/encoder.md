@@ -207,8 +207,9 @@ The rules the encoder keeps to, in the order the users' frames come:
   and the decode is held to the encoder's own reconstruction pixel for
   pixel. libvpx is Chrome's decoder.
 - **ffvp9, Firefox's**, by hand: the measuring harness writes each capture's
-  stream as IVF when `IVF` names a directory, one file per picture size, and
-  `ffmpeg -c:v vp9 -f framemd5` of it should agree with `-c:v libvpx-vp9`.
+  stream as IVF when `IVF` names a directory, libvpx's beside it, one file
+  per picture size and encoder, and `ffmpeg -c:v vp9 -f framemd5` of this
+  encoder's should agree with `-c:v libvpx-vp9`.
 - **Scalar, NEON and AVX2 code the same stream to the byte.** arm64 is run
   on a Mac; amd64 here.
 
@@ -220,7 +221,10 @@ capture as its session played it, `keyframes_against_libvpx` codes each
 capture's first picture at a row of dials, and `settles_against_libvpx`
 settles it from one dial to another. Each wants a release build and an idle
 machine; `ALONE` leaves libvpx out. `tools/tables.py` makes the tables of
-[benchmarks.md](benchmarks.md) from their logs.
+[benchmarks.md](benchmarks.md) from their logs. `tools/vpxinspect/` builds
+libvpx with a decoder that says where a stream's bytes go and an encoder
+that can be held to whole pixels, half pixels, one filter or the last
+frame, for the harness to be linked against through `LIBVPX_PREBUILT_DIR`.
 
 ## Reuse and licence
 
