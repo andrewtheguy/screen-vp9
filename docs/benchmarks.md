@@ -773,6 +773,22 @@ backup (`/Volumes/dasdata/backup/vp9-artifacts/frame-captures/`, 70
 files), copied to `tmp/captures/`. Each is measured at quality 90, the
 dial the captures were made at, on four threads.
 
+For a quick A/B there are the same captures cut to 120 frames each, under
+the same names, read with `CAPTURES` naming their directory. wlshare's
+`scripts/capture-samples.sh` cuts them (`vp9cap trim --frames`) from each
+capture's longest run of a size as vp9-wasm's samples are cut: a quiet
+scenario's first 120 frames, a busy one's the 120 in a row whose frames
+said the most pixels changed, the earliest where several tie; `still` and
+`uncover` are shorter and kept whole. A cut's first frame is the picture
+as it stood, whole, with a keyframe asked: most cuts begin where their
+capture does, which is that already, and only `flood`'s (frame 4 to 6 on)
+and `browser` at 1600×1000's (frame 97 on) are a keyframe the session never
+asked for, which `Key` counts apart. A cut keeps nothing of what comes
+later in its capture: `video`'s keyframe at 10 s, `walk`'s climb back to 90
+from the 20 it walks down to, and its settle. It judges a change to how
+frames are coded, on a third to a half of the frames; the tables here are
+of the captures whole.
+
 The eighteen decoded samples the first gate read, and the libvpx-coded
 samples `vp9-samples.sh` makes for vp9-wasm, are not encoder material: the
 first are decodes of decodes, the second are coded by the encoder under
