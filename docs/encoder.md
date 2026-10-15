@@ -229,7 +229,7 @@ The rules the encoder keeps to, in the order the users' frames come:
   on a Mac; amd64 here.
 
 The measuring harness is three ignored tests in `src/native/mod.rs` that
-read the captures in `tmp/captures/` (or the directory `CAPTURES` names) and
+read the captures in `tmp/samples/` (or the directory `CAPTURES` names) and
 code each with this encoder and with libvpx's, the crate's other coder (`src/libvpx.rs`)
 as `screen-vp9` sets it up, turn about: `captures_against_libvpx` plays each
 capture as its session played it, `keyframes_against_libvpx` codes each

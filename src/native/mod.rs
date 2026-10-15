@@ -1983,10 +1983,10 @@ mod tests {
         (tallies, size, n)
     }
 
-    /// The captures in the directory `CAPTURES` names (`tmp/captures` if
-    /// unset), in name order.
+    /// The captures in the directory `CAPTURES` names (`tmp/samples` if
+    /// unset, the cut captures the tables are measured on), in name order.
     fn captures() -> Vec<std::path::PathBuf> {
-        let dir = std::env::var_os("CAPTURES").map_or_else(|| std::path::PathBuf::from("tmp/captures"), std::path::PathBuf::from);
+        let dir = std::env::var_os("CAPTURES").map_or_else(|| std::path::PathBuf::from("tmp/samples"), std::path::PathBuf::from);
         let only = std::env::var("ONLY").ok();
         let mut paths: Vec<_> = std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
@@ -2056,7 +2056,7 @@ mod tests {
     /// ONLY=1920 cargo test --release keyframes_against_libvpx -- --ignored --nocapture
     /// ```
     #[test]
-    #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
+    #[ignore = "reads the captures in tmp/samples/ and wants a release build"]
     fn keyframes_against_libvpx() {
         let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
         let dials: Vec<u8> = std::env::var("DIALS").map_or_else(|_| vec![40, 65, 90], |d| d.split(',').map(|v| v.parse().expect("a dial")).collect());
@@ -2123,7 +2123,7 @@ mod tests {
     /// ONLY=1920 cargo test --release settles_against_libvpx -- --ignored --nocapture
     /// ```
     #[test]
-    #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
+    #[ignore = "reads the captures in tmp/samples/ and wants a release build"]
     fn settles_against_libvpx() {
         let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
         let pairs: Vec<(u8, u8)> = std::env::var("SETTLES").map_or_else(
@@ -2172,7 +2172,7 @@ mod tests {
         }
     }
 
-    /// Every frame of each wlshare capture in `tmp/captures/` (or the
+    /// Every frame of each wlshare capture in `tmp/samples/` (or the
     /// directory `CAPTURES` names; `ONLY` keeps the captures whose name
     /// holds it), played into this encoder and into libvpx as the session
     /// played it into its stream, on `THREADS` threads (4 if unset),
@@ -2195,7 +2195,7 @@ mod tests {
     /// ONLY=terminal cargo test --release captures_against_libvpx -- --ignored --nocapture
     /// ```
     #[test]
-    #[ignore = "reads the captures in tmp/captures/ and wants a release build"]
+    #[ignore = "reads the captures in tmp/samples/ and wants a release build"]
     fn captures_against_libvpx() {
         let threads: usize = std::env::var("THREADS").map_or(4, |t| t.parse().expect("a thread count"));
         let passes: usize = std::env::var("PASSES").map_or(1, |p| p.parse().expect("a pass count"));

@@ -834,7 +834,7 @@ The captures are what a wlshare session handed `Stream`, written by its own
 rectangles each frame came with, `zstd` compressed: `<scenario>-<WxH>[@2].wlcap.zst`,
 `@2` a desktop drawn at scale 2, as the README.md beside them says. Where
 a machine keeps them is in its `CLAUDE.local.md`, not here; the harness
-reads `tmp/captures/` or the directory `CAPTURES` names, and `ONLY` keeps
+reads `tmp/samples/` or the directory `CAPTURES` names, and `ONLY` keeps
 the captures whose name holds it.
 
 | Scenario | Kind | What a frame names |
