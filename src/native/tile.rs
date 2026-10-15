@@ -29,13 +29,12 @@ use super::motion;
 use super::mv::{self, Mv};
 use super::pool::Pool;
 use super::predict::{self, Edges, IntraMode};
-use super::probs::{Counts, skip_slot, tx_slot};
+use super::probs::{Counts, inter_mode_slot, intra_inter_slot, mv_slot, partition_slot, single_ref_slot, skip_slot, tx_slot, y_mode_slot};
 use super::quantize::{self, Quantizer};
 use super::tape::Tape;
 use super::transform::TxType;
 use super::tables::{
-    INTER_MODE_PROBS, INTRA_INTER_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, MV_REF_BLOCKS, PARTITION_PROBS, SINGLE_REF_PROBS,
-    UV_MODE_PROBS, Y_MODE_PROBS,
+    INTER_MODE_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, MV_REF_BLOCKS, UV_MODE_PROBS, Y_MODE_PROBS,
 };
 use super::{Column, Geometry, Reconstruction, loopfilter, pixels, tokens, transform};
 
@@ -75,6 +74,16 @@ const INTRA_BITS: i64 = 24;
 /// better but `terminal`'s lines of text at −0.1 dB, at its bytes or
 /// fewer but `uncover`'s at 1.01×.
 const RATE_WEIGHT: i64 = 35;
+
+/// How many times the cost of a whole vector's prediction the whole
+/// vectors around it each cost more for nothing to be looked for between
+/// pixels (`refine`). The search found nothing on seven tenths of `drag`'s
+/// and `browser`'s area at 2048×1536, nearly all of it where the four
+/// cost more than four times as much; at 7, turn about over every cut
+/// capture, `drag`, `browser` and `uncover` take 0.84 to 0.93 of the time
+/// at their bytes and picture, and the rest within 0.3% of their bytes and
+/// 0.03 dB. At 3 `browser` at 2048×1536 lost 0.14 dB.
+const SHARP: i64 = 7;
 
 /// A vector the search offers is taken over the vectors a decoder predicts
 /// only where its residual's squares are `1 / NEW_VECTOR_GAIN` less than
@@ -862,7 +871,7 @@ impl<'a> Tile<'a> {
         let (w, col) = (self.contexts.width, mi_col - self.mi_col_start);
         let (rows, cols) = (mi_row..(mi_row + 8).min(g.mi_rows), 8.min(w - col));
         let ctx = self.partition_context(mi_row, mi_col, SB_LOG2);
-        self.contexts.tape.write(false, PARTITION_PROBS[ctx][0]);
+        self.contexts.tape.put(false, partition_slot(ctx));
         let above = (mi_row > 0).then(|| self.mode_info(mi_row - 1, mi_col));
         let left = (mi_col > self.mi_col_start).then(|| self.mode_info(mi_row, mi_col - 1));
         let before = self.contexts.quiet[sb_col];
@@ -1424,20 +1433,24 @@ impl<'a> Tile<'a> {
         let mode = if has_rows && has_cols { self.choose(mi_row, mi_col, n) } else { None };
         let split = mode.is_none_or(|(mode, _)| matches!(mode, Mode::Intra4 { .. }));
         let ctx = self.partition_context(mi_row, mi_col, n);
-        let probs = if self.previous.is_some() { PARTITION_PROBS[ctx] } else { KF_PARTITION_PROBS[ctx] };
+        // An inter frame's at the probabilities it updates, a keyframe's at
+        // its own.
+        let inter = self.previous.is_some();
+        let tape = &mut self.contexts.tape;
+        let mut put = |bit: bool, node: usize| if inter { tape.put(bit, partition_slot(ctx) + node) } else { tape.write(bit, KF_PARTITION_PROBS[ctx][node]) };
         match (has_rows, has_cols) {
             // PARTITION_NONE is the tree's first leaf; PARTITION_SPLIT its last.
             (true, true) => {
-                self.contexts.tape.write(split, probs[0]);
+                put(split, 0);
                 if split {
-                    self.contexts.tape.write(true, probs[1]);
-                    self.contexts.tape.write(true, probs[2]);
+                    put(true, 1);
+                    put(true, 2);
                 }
             }
             // Split, or a horizontal half the frame cuts.
-            (false, true) => self.contexts.tape.write(split, probs[1]),
+            (false, true) => put(split, 1),
             // Split, or a vertical half the frame cuts.
-            (true, false) => self.contexts.tape.write(split, probs[2]),
+            (true, false) => put(split, 2),
             // Split, and the decoder knows it.
             (false, false) => {}
         }
@@ -1507,11 +1520,14 @@ impl<'a> Tile<'a> {
     /// coded intra, whose source has `moments` over its `count` pixels: 4×4
     /// in an 8×8 whose pixels deviate by more than two steps, where a mode
     /// predicted from nearer pixels does better, and otherwise the largest
-    /// that fits up to 16×16 (libvpx's keyframe `ALLOW_16X16`, which keeps
-    /// an 8×8 at 8×8). Measured on the captures' keyframes at 1920×1080:
-    /// at dial 40 the 4×4s are never taken, at dial 90 they save `walk`'s
-    /// keyframe 3% of its bytes and 0.15 dB and `browser`'s a little; the
-    /// same rule on a 16×16 changed nothing.
+    /// that fits. Measured on the captures' keyframes at 1920×1080: at dial
+    /// 40 the 4×4s are never taken, at dial 90 they save `walk`'s keyframe
+    /// 3% of its bytes and 0.15 dB and `browser`'s a little; the same rule
+    /// on a 16×16 changed nothing. Held to 16×16, as libvpx's keyframe
+    /// (`ALLOW_16X16`), a flat ground a level off stays off: at dial 40 a
+    /// 16×16's DC moves its mean two grey levels and a 32×32's, at half
+    /// the step, one, and `terminal`'s keyframe, its ground 47 coded 48
+    /// from the first block on, was 6 dB of luma under libvpx's.
     fn intra_transform_size(&self, n: u32, moments: &Moments, count: i64) -> usize {
         let ac = i64::from(self.quantizer.ac_step());
         // The variance per pixel and plane against two steps squared, a step
@@ -1519,7 +1535,7 @@ impl<'a> Tile<'a> {
         if n == 0 && moments.variance(count) * 16 > ac * ac * 3 * count * count {
             0
         } else {
-            (n as usize + 1).min(2)
+            (n as usize + 1).min(3)
         }
     }
 
@@ -1726,7 +1742,7 @@ impl<'a> Tile<'a> {
                     (Some(m), None) | (None, Some(m)) => 2 * usize::from(is_intra(&m)),
                     (None, None) => 0,
                 };
-                self.contexts.tape.write(inter.is_some(), INTRA_INTER_PROBS[ctx]);
+                self.contexts.tape.put(inter.is_some(), intra_inter_slot(ctx));
                 if (!skip || inter.is_none()) && !matches!(mode, Mode::Intra4 { .. }) {
                     self.write_tx(n, tx, above, left);
                 }
@@ -1735,15 +1751,15 @@ impl<'a> Tile<'a> {
                     // `vp9_get_pred_context_single_ref_p1` when LAST is the only
                     // reference: 4 beside an inter block, 2 otherwise.
                     let ctx = if above.is_some_and(|m| !is_intra(&m)) || left.is_some_and(|m| !is_intra(&m)) { 4 } else { 2 };
-                    self.contexts.tape.write(false, SINGLE_REF_PROBS[ctx][0]);
-                    let probs = INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)];
+                    self.contexts.tape.put(false, single_ref_slot(ctx));
+                    let slot = inter_mode_slot(self.mode_context(mi_row, mi_col, n));
                     for (b, node) in mode.bits() {
-                        self.contexts.tape.write(b, probs[node]);
+                        self.contexts.tape.put(b, slot + node);
                     }
                     if mode == InterMode::New {
                         let nearest = self.candidates(mi_row, mi_col, n)[0];
                         let tape = &mut self.contexts.tape;
-                        mv::code(mv - nearest, |b, p| tape.write(b, p));
+                        mv::code(mv - nearest, |b, i| tape.put(b, mv_slot(i)));
                     }
                 } else {
                     self.write_modes(mode, sub, n, above, left);
@@ -2047,6 +2063,15 @@ impl<'a> Tile<'a> {
         let (keyframe, uv) = (self.previous.is_none(), Self::intra_of(mode, 1, 0).expect("an intra block"));
         let split4 = matches!(mode, Mode::Intra4 { .. });
         for b in 0..if split4 { 4 } else { 1 } {
+            // An inter frame's by size group, at the probabilities it
+            // updates.
+            if !keyframe {
+                let slot = y_mode_slot(if split4 { 0 } else { (n as usize + 1).min(3) });
+                for &(bit, node) in sub[b].bits() {
+                    self.contexts.tape.put(bit, slot + node);
+                }
+                continue;
+            }
             let probs = self.y_mode_probs(&sub, b, split4, n, above, left);
             for &(bit, node) in sub[b].bits() {
                 self.contexts.tape.write(bit, probs[node]);
@@ -2174,9 +2199,13 @@ impl<'a> Tile<'a> {
         // From a vector of whole pixels that predicts better than the whole
         // pixels around it, a half pixel only where those say the least
         // lies, fitting a parabola through them (libvpx's
-        // `get_cost_surf_min`); otherwise each way.
+        // `get_cost_surf_min`); otherwise each way. Where each of them costs
+        // more than `SHARP` times as much again, the picture sits on whole
+        // pixels, as text and a page moved by whole ones do, and a filtered
+        // prediction only blurs it: nothing is looked for between them.
         let mut whole = |row: i32, col: i32| cost(Mv { row: mv.row + row, col: mv.col + col }).0;
         match (mv.split().1 == (0, 0)).then(|| [whole(0, -8), whole(0, 8), whole(-8, 0), whole(8, 0)]) {
+            Some(around) if around.iter().all(|&c| c - first.0 > SHARP * first.0) => return None,
             Some([left, right, up, down]) if [left, right, up, down].iter().all(|&c| c > first.0) => {
                 let towards = |less: i64, more: i64| rounded(less - more, less - 2 * first.0 + more) as i32;
                 let (col, row) = (towards(left, right), towards(up, down));

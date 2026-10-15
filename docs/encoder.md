@@ -103,7 +103,7 @@ The least VP9 that a decoder accepts and that a desktop is coded well with.
 | Inter modes | Zero, nearest, near and new vectors to a quarter pixel, predicted at EIGHTTAP_SMOOTH, the frame's one filter, which the header names | The switchable per-block filter; eighth-pixel vectors (high precision) |
 | Transforms | A size per block, 4×4 to 32×32, which the block signals; an intra block's luma below 32×32 in the DCT/ADST hybrid its mode pairs | Lossless (the WHT) |
 | Loop filter | libvpx's level from the quantizer, in one and two tile columns; none in four or more | Per-segment or per-mode deltas beyond the inactive segment's |
-| Probabilities | Coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools | Updates to the other probabilities; backward adaptation |
+| Probabilities | Updated in each frame's header from the frame's own bools where an update saves more than it costs: coefficients, transform sizes and skips, and in an inter frame its inter modes, intra or inter, the reference, the luma intra modes, the partitions and the vectors; the segmentation's in the frame header | Backward adaptation |
 | Tiles | Tile columns by the width and the threads: one under 1440 wide, two from 1440, four from 2048, eight from 5760, never more than the threads. Tile rows, two or four, on a frame whose heaviest tile column recorded enough that its bools are worth a coder each: a tile row splits the bool coder and nothing else | |
 | Frame | — | Resizing, error-resilient mode |
 
@@ -139,7 +139,9 @@ In an inter frame a square is, in this order:
 A vector between pixels is measured in this choice at its nearest whole
 pixels. Once a square is coded inter, other than where it settles, its
 vector is refined between pixels (`refine`): libvpx's pruned search, a half
-pixel and then a quarter, on its luma at the filter it is coded with. Where
+pixel and then a quarter, on its luma at the filter it is coded with; not
+where each whole vector around a whole one costs more than `SHARP` times as
+much again, the picture sitting on whole pixels. Where
 it finds another vector, the block's luma is coded at both by `trial`, each
 with its mode's and its vector's bits at `RATE_WEIGHT`, and the block takes
 the one that costs less (`inter`); the chroma is predicted once, at the
@@ -162,7 +164,8 @@ whose four quarters' means differ is four 4×4s, each with a mode of its own
 An inter block's transform size is tried from the largest down until a size
 costs more than the one above it (`trial`), error and bits weighed at
 `RATE_WEIGHT`. A transform block whose levels are not worth their bits codes
-nothing (`worth_coding`). An intra block's size is by rule.
+nothing (`worth_coding`). An intra block's size is by rule: the largest that
+fits, up to 32×32, but a busy 8×8 in 4×4s.
 
 The motion search (`motion.rs`) is for what moves on a screen. Luma is hashed
 over 8×8 windows; a window whose hash falls in one sixty-fourth of its range

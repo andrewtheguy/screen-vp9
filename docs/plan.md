@@ -20,7 +20,9 @@ found is [its own section](#the-captures-made-again-on-2026-10-14), and
 the open items are in a new order for it. Where a video's bytes go was
 measured the same day, [in a section of its own](#where-a-videos-bytes-go-on-2026-10-14):
 sub-pixel motion, which the scope had out on the strength of the set
-before's video, a test pattern, and which is in it again.
+before's video, a test pattern, and which is in it again. The first four
+open items were taken up on 2026-10-15, [in a section of their
+own](#taken-up-on-2026-10-15).
 
 ## What it is for
 
@@ -108,32 +110,36 @@ desktop as drawn:
 
 ## Where it stands
 
-[benchmarks.md](benchmarks.md), one run of 2026-10-14 over every size of
-the cut captures, `walk` whole, on the build after release 0.0.18 with the
-vectors between pixels back, every block refined and coded at both
-vectors:
+[benchmarks.md](benchmarks.md), one run of 2026-10-15 over every size of
+the cut captures, `walk` whole, on the build after release 0.0.19 that
+updates an inter frame's mode, partition and vector probabilities and
+takes the 32×32 intra transform, `walk`'s rows of it captured again and
+measured again the same day, its clip paused for the settle:
 
-- **A video is inside the gate again, over libvpx's picture.** `video`
-  takes 1.03 to 1.08 of libvpx's bytes at +0.6 to +0.8 dB and `walk`,
-  whole, 1.08 to 1.13 at +0.4 to +0.6, where the gate the plan began with
-  allows 15% more bytes at most; without the vectors between pixels they
-  were 1.22 to 1.27 and 1.16 to 1.25 at up to 0.6 dB under. Everything
-  else over a whole capture is at fewer bytes than libvpx's and at its
-  picture or better, but `drag` from 2048 to 3456 wide, 0.1 to 0.4 dB
-  under at 0.43 to 0.53 of the bytes: 75 cells of 80.
-- Every capture at every size takes less time than libvpx: 0.13 to 0.98
-  of it frame for frame, a line of text 0.13 to 0.19, `walk` 0.74 to
-  0.82, `video` 0.84 to 0.98, at 2048×1536 on the line.
-- A first picture coded alone as a keyframe is 0.1 to 0.7 dB over
-  libvpx's at its bytes, but **`terminal`'s at dial 40, 2.4 to 7.7 dB
-  under** at 0.64 to 0.87 of them, and a picture of the video at 40 up to
-  0.3 dB under at 0.86 to 1.01; in 0.40 to 0.93 of libvpx's time up to
-  1920 wide and 0.56 to 1.03 from 2048 wide.
-- A settle of a busy picture takes more time than libvpx's: 1.05 to 1.38
-  of it from 65 for 1.1 to 1.5 dB more picture at the same bytes, a
-  picture of the video 1.21 to 1.56, and `flood`'s 1.26 to 1.89 from 80
-  and 89; a settle of the video from 89 takes 1.06 to 1.52 of libvpx's
-  bytes from 2048 wide.
+- **A video is inside the gate, over libvpx's picture.** `video` takes
+  1.01 to 1.05 of libvpx's bytes at +0.6 to +0.8 dB and `walk`, whole,
+  1.01 to 1.09 at +0.4 to +0.7, where the gate the plan began with allows
+  15% more bytes at most; without the vectors between pixels they were
+  1.22 to 1.27 and 1.16 to 1.25 at up to 0.6 dB under. Everything else
+  over a whole capture is at fewer bytes than libvpx's and at its picture
+  or better, but `drag` from 2048 to 3456 wide, 0.2 to 0.4 dB under at
+  0.40 to 0.49 of the bytes: 75 cells of 80.
+- Every capture at every size takes less time than libvpx: 0.15 to 0.97
+  of it frame for frame, a line of text 0.15 to 0.21, `walk` 0.70 to
+  0.80, `video` 0.83 to 0.97, at 2048×1536 on the line. The frame `walk`'s
+  session settles, the video paused, is 0.79 to 1.06 of libvpx's time up
+  to 1920 wide and 1.17 to 1.33 from 2048, at 0.84 to 0.93 of its bytes
+  and +0.3 to +0.9 dB.
+- A first picture coded alone as a keyframe is over libvpx's at every
+  dial and size, 0.1 to 0.8 dB at 0.86 to 1.06 of its bytes, `terminal`'s
+  at dial 40 0.5 to 5.9 dB at 0.65 to 0.88 of them where it was 2.4 to
+  7.7 dB under; in 0.41 to 0.97 of libvpx's time up to 1920 wide and 0.52
+  to 1.05 from 2048 wide.
+- A settle of a busy picture takes more time than libvpx's: 0.96 to 1.44
+  of it from 65 for 1.0 to 1.5 dB more picture at 0.90 to 0.97 of the
+  bytes, a picture of the video 1.04 to 1.60, and `flood`'s 0.96 to 1.84
+  from 80 and 89; a settle of the video from 89 takes 1.03 to 1.32 of
+  libvpx's bytes from 2048 wide.
 
 On the M2 Max ([benchmarks-m2-max.md](benchmarks-m2-max.md), the median of
 three runs of 2026-10-10 on the set before) the lines were those of the
@@ -530,6 +536,89 @@ verdict, inside this machine's tenth. The shares above of what is left,
 the intra blocks and the partitions, were read before the vectors came
 back.
 
+## Taken up on 2026-10-15
+
+The first four open items, one after another overnight, each change
+played turn about against the build before over the cut captures, four
+threads, the machine idle.
+
+### Taken
+
+| Change | What it bought |
+|---|---|
+| Nothing is looked for between pixels where each whole vector around a whole one costs more than `SHARP`, 7, times as much again: the picture sits on whole pixels | `drag`, `browser` and `uncover` 0.84 to 0.93 of their time at their bytes and picture; the rest within 0.3% of their bytes and 0.03 dB; `video` and `walk`'s time the same |
+| An inter frame's compressed header updates its inter modes', intra or inter's, the reference's, the luma intra modes' and the partitions' probabilities where its own bools save more than the update costs, as it did the transform sizes' and skips' | every capture that moves 0.94 to 0.99 of its bytes, `browser`, `drag` and `terminal` the most; no decision moves, so the picture and the time are the same |
+| And the vectors', each set to what the frame's bools measure where that saves more than its seven bits (libvpx's `update_mv`) | another 0.987 to 0.998 of the bytes |
+| An intra square of 32×32 and up takes the 32×32 transform, not 16×16 as libvpx's keyframe | `terminal`'s keyframe at dial 40 4.1 to 8.3 dB of luma better for 0.1 to 0.8% more bytes, now over libvpx's; every other keyframe up to 0.5 dB better at its bytes but `browser`'s at 1280×800 at 90, −0.07; the settles −0.02 to +0.36 dB; the captures within 0.4% of their bytes in the same time |
+
+Each update is chosen from the frame's own bools after its blocks are
+decided, as the coefficients' were, so a frame's probabilities are what
+the frames before it updated them to, from the keyframe's defaults; a
+decoder keeps them in the frame context it refreshes. Without the updates
+an inter frame coded every mode, partition and vector at VP9's defaults:
+`video` at 1920×1080 paid 125 kB for its partitions against libvpx's 33,
+72 kB for its references against 24, with LAST its only one. They are
+67 and 53 kB now, and `video` is 1.040 of libvpx's bytes there, from
+1.065.
+
+`terminal`'s keyframe at 40 was a ground of one grey, 47, coded as 48
+from the first block on: every block after predicted 48 from its
+neighbours, and at dial 40 a 16×16's DC moves its mean two grey levels, so
+nothing could take the one back. The picture off by one everywhere is a
+squared error of one a pixel, 47 dB however well the text is coded;
+libvpx's ground came out 47. A 32×32's DC is dequantized at half the step
+and moves the mean one grey: the first flat 64×64 after the text takes
+the level back, and the ground is 47 from there on.
+
+### Measured and not taken
+
+- **The transform size trial cut short** where a size's cost passes the
+  size above it, which ends the trial anyway: every stream the same to
+  the byte, and no time that showed.
+- **A square judged at the refined vector.** `choose` decides intra
+  against inter and whether to split on whole-pixel residuals, before
+  the search between pixels; judging a square the whole vector would split
+  or code intra at the vector it refines to took `video` and `walk` to
+  0.96 to 0.98 of their bytes for 0.1 dB less in 1.11 to 1.27 of their
+  time, the squares coarser, and cost `flood`, `terminal` and `uncover`
+  up to 0.28 dB. Judging only intra against inter that way, the split
+  left to the whole vector, was 0.98 to 0.99 of `video`'s bytes for
+  −0.03 to −0.07 dB, and still cost the others 0.1 to 0.3 dB: the intra
+  blocks of a frame are worth their bytes as this encoder codes them.
+- **`INTRA_BITS` at 48 and 96**: within 0.4% of the bytes, `walk` up to
+  0.12 dB less.
+- **A square split where an 8×8 in it is busy**, for a few lines of text
+  on a flat ground: it never fired on `terminal`, whose text squares are
+  split already; the flat ground was the loss.
+- **The 4×4 split at 10 steps, an intra block's rounding at 56/128, its
+  DC at 64/128**: none moved `terminal`'s keyframe at 40 by more than
+  0.4 dB.
+- **The vectors priced at the inter mode probabilities the frame starts
+  from**, now that they move from frame to frame, not at VP9's defaults:
+  within 0.3% of the bytes and 0.04 dB, the time the same.
+
+### Measured, for what comes next
+
+- **What the search between pixels costs.** At 2048×1536, held to whole
+  pixels `video` and `walk` take 0.70 of the time for 1.2 of the bytes;
+  taking the refined vector without coding both, 0.90 to 0.95, the second
+  trial being a tenth of a video's time and the search the rest.
+- **`drag` from 2048 wide is under libvpx's picture whole as well as cut**:
+  over its 402 frames 0.09 to 0.26 of libvpx's bytes at 0.12 to 0.34 dB
+  under from 2048 to 3456 wide and +0.67 at 3840, where the cut, its
+  busiest 120 frames, is 0.25 to 0.49 at 0.18 to 0.42 under. After the
+  keyframe libvpx spends 2.5 to 30 kB a frame on the still desktop, 50.0
+  dB to 51.4 by frame 9, where this encoder's frames are 1.4 to 1.9 kB
+  and stay near its keyframe's 50.3 to 50.8: a rate, not a picture worse
+  at its bytes.
+- **Where `video`'s bytes are still over**, at 1920×1080 against libvpx:
+  intra coefficients 1008 kB to 357, its intra 4×4s and 8×8s 3.1% of the
+  area to 0.7%; transform sizes 100 kB to 48, intra modes 97 to 17, inter
+  modes 165 to 93, vectors 397 to 289 (libvpx's 37 kB of filters aside);
+  inter 8×8s 20% of the area to libvpx's 5% and 16×16s 7% to its 26%,
+  this encoder coding no rectangle. Its inter coefficients are 4.76 MB to
+  5.52, at 0.6 dB more picture.
+
 ## What is open
 
 In the order it is taken up, set again on 2026-10-14 for the captures
@@ -537,16 +626,19 @@ made again. What they found the picture short in comes first, since a
 stream coded worse than libvpx's at more bytes is not one a user would
 take for less time:
 
-1. **The rest of the video's bytes**, 3 to 13% over libvpx's with the
-   vectors between pixels back ([taken](#where-a-videos-bytes-go-on-2026-10-14)):
-   read again with `tools/vpxinspect/` on the new streams, then this
-   encoder's own share, which before the vectors came back was the 4×4
-   and 8×8 intra blocks it codes in a frame of a video, five times
-   libvpx's area, whose threshold (the 4×4 split at 80 steps, item 11)
-   and intra-against-inter weight were set on screen content, and its
-   partitions and modes at 2.8 of libvpx's bytes. A switchable filter per
-   block, the one part of libvpx's sub-pixel coding not taken, held
-   libvpx within 3.4% of its bytes when it was taken away.
+1. **The rest of the video's bytes**, 1.01 to 1.05 of libvpx's (`walk` 1.01 to 1.09)
+   with the vectors between pixels back and an inter frame's
+   probabilities updated ([taken](#taken-up-on-2026-10-15)). Read again
+   with `tools/vpxinspect/`, what is over is this encoder's own: intra
+   coefficients at three times libvpx's, its intra 4×4s and 8×8s four
+   times libvpx's area, and inter 8×8s where libvpx codes 16×16s and
+   rectangles. Judging a square at its refined vector did not take the
+   intra blocks away without costing the screens their picture
+   ([not taken](#measured-and-not-taken)); what is untried is a square
+   coded inter and intra both and the cheaper taken, as `trial` takes a
+   vector, and the rectangles. A switchable filter per block, the one
+   part of libvpx's sub-pixel coding not taken, held libvpx within 3.4%
+   of its bytes when it was taken away.
 
    **The search's judgement, taken on 2026-10-14.** A Laplacian model of
    the coded residual judged both whether a refined vector was taken and,
@@ -581,25 +673,32 @@ take for less time:
    is 0.84 to 0.98 of its time frame for frame, the most at 2048×1536@2,
    on the line, where the gate allows 1.00. The tables of
    [benchmarks.md](benchmarks.md) are of this build.
-2. **`terminal`'s keyframe at dial 40**: why a few lines on a flat ground
-   lose 2.4 to 7.7 dB to libvpx at dial 40 and none at 65. The 4×4 split
-   at 80 steps (item 11) and the intra rounding (item 12) are the
-   candidates already named; neither was tried on a picture this sparse.
-3. **`drag` from 2048 wide**: whether its 0.1 to 0.4 dB under libvpx's
-   picture is `drag`'s or the cut's, measured on the capture whole and on
-   its busiest window.
+2. **`terminal`'s keyframe at dial 40**: taken on 2026-10-15, [the
+   32×32 intra transform](#taken-up-on-2026-10-15). A ground of one grey
+   coded a level off from the first block stayed off, a 16×16's DC moving
+   its mean two levels at that dial; it is over libvpx's picture now.
+3. **`drag` from 2048 wide**: measured on 2026-10-15, and it is `drag`'s
+   and not the cut's: whole, 0.12 to 0.34 dB under libvpx's picture at a
+   quarter to a tenth of its bytes. libvpx spends the frames after the
+   keyframe raising the still desktop's picture by a decibel and a half,
+   this encoder does not ([measured](#measured-for-what-comes-next)).
+   What is open is whether a still part of the picture should be coded
+   finer in the frames after a keyframe, as a settle codes it, and what
+   that costs a session that moves.
 4. **A frame of the video for the keyframes and the settles**: taken on
    2026-10-14. The two measurements took each capture's first picture,
    which for `video` and `walk` is the clip paused on black; they take
    these two's last picture of more than one colour now, and `walk` is
-   measured whole, 233 to 256 frames, its dial walking down, back up to
-   89 and the desktop settling, where its cut kept the walk down alone.
-   `walk` ends on black too: the clip stopped leaves the screen black, and
-   the settle its session asked for is of that, which says nothing, so its
-   last picture of the video is frame 246 of 249 at 1280×800, at dial 89.
-   A capture that pauses the clip where it stands, rather than stopping
-   it, would have the session settle a frame of the video; that is
-   wlshare's to make.
+   measured whole, where its cut kept the walk down alone. `walk` ended on
+   black too, the clip stopped, and the settle its session asked for was
+   of that; on 2026-10-15 wlshare's walk pauses the clip where it stands
+   instead, partway back up the dial, and `walk` was captured again: 174
+   to 207 frames, the dial down to 20 or 30, back up to 41 to 75, and the
+   paused frame settled at 90, which is the picture its keyframe and settle
+   are measured on too. It is captured at 1280×800 to 1600×1000 and made
+   from the 1600×1000 session from 1920×1080 up, the container on this
+   machine playing 1920×1080 at 12 to 22 frames a second and the dial
+   walking only to 40 there.
 
 Then, set again on 2026-10-11 for the raised floor, what a kernel can be
 rewritten for, because it changes no stream: the tests hold the bytes, and the measurement is time alone. Each
@@ -669,8 +768,7 @@ bool coder's chain 10%.
 
 Then, as before:
 
-9. **Never measured, from the first plan's list**: the updates to the other
-   probabilities on frames of a line of text, `INTRA_MODE_GAIN`, vectors ranked
+9. **Never measured, from the first plan's list**: `INTRA_MODE_GAIN`, vectors ranked
    by their residual's squares on `browser` and `drag`, and `terminal` and
    `flood` captured at quality 100.
 10. **The conversion was not the same on arm64 and amd64**: measured and
@@ -696,10 +794,15 @@ Then, as before:
 
 Of a very busy picture alone, and last:
 
-17. **A settle of a busy picture takes 1.0 to 1.9 of libvpx's time**:
-   `still`, `uncover`, `browser` and `flood` 1.01 to 1.68 from 65, and
-   `flood` 1.27 to 1.85 from 80 and 89, more from 2048 wide than under
-   it. libvpx's settle
+17. **A settle of a busy picture takes up to 1.8 of libvpx's time**, more
+   from 2048 wide than under it ([benchmarks.md](benchmarks.md), the run
+   of 2026-10-15): from 65 `still`, `uncover` and `browser` 0.96 to 1.44,
+   `flood` 0.75 to 1.60 and a picture of the video 1.04 to 1.60, 1.33 to
+   1.60 from 2048 wide; from 80 and 89 `flood` 0.96 to 1.84 and the video
+   0.82 to 1.47. The settle `walk`'s own session asks for, its clip paused
+   partway up the dial at 41 to 75, is 0.79 to 1.06 of libvpx's time up to
+   1920 wide and 1.17 to 1.33 from 2048, at 0.84 to 0.93 of its bytes and
+   +0.3 to +0.9 dB. libvpx's settle
    time read at two levels because the measurement made a fresh encoder a
    pass and its second frame paid page faults, or did not; on encoders
    kept warm it is 0.5 to 0.65 of what it read, and this is what is left.
@@ -708,18 +811,17 @@ Of a very busy picture alone, and last:
    0.2 dB. Untried: the smaller sizes only where the largest leaves more
    than some error, and what a settle from 80 or 89 needs of them at all.
    The forward half of that time is taken above, with the picture kept.
-18. **The frames of `video` and `walk`**, 0.56 to 0.70 of libvpx's time on
-    the clip (0.64 to 0.83 on the test pattern before), the nearest the
-    line of the whole captures but `uncover` and `still`. Item 1 comes
-    before it: their time is for bytes over the gate. Profiled on the
-    test pattern: the token estimate,
-    the block walk, the intra mode and the transforms 5 to 11% each, and
-    the search 9 to 12%, now gone over: its projections, its hashing and
-    its tables' upkeep 0.3 to 0.45 ms each of an 11 ms frame at 1920×1080,
-    none of them one thing. What is left untried in it: the row hashes of
-    an 8×8 row taken once and not twice, the projections' sums in sixteen
-    bits, a table of its own in place of the standard one; a hundredth of
-    a frame each, and item 7 takes the first two with it.
+18. **The frames of `video` and `walk`**, 0.83 to 0.97 and 0.70 to 0.80 of libvpx's time
+    frame for frame, `video`'s most at 2048×1536 on the line, the nearest the line of the whole captures. Of a
+    video's time at 2048×1536 the search between pixels is a fifth and
+    coding a refined block at both vectors a tenth
+    ([measured](#measured-for-what-comes-next)). Untried: the refined
+    vector's luma prediction kept for the trial, which predicts it again;
+    the trial at both vectors only where they differ by enough to choose
+    between; and in the search before it, profiled on the test pattern
+    before, the row hashes of an 8×8 row taken once and not twice, the
+    projections' sums in sixteen bits, a table of its own in place of the
+    standard one, a hundredth of a frame each.
 19. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
     four (27 ms of wall time for 86 of processor time at 1920×1080). No
     thread was found waiting; what is left is memory, and not looked into.
@@ -735,6 +837,7 @@ hand it most; a change is weighed on that frame first.
 And, since the captures were made again, that a video is past what this
 encoder's subset could code at libvpx's bytes. The 16 to 27% was sub-pixel
 motion ([measured](#where-a-videos-bytes-go-on-2026-10-14)), and with the
-vectors between pixels back a video is 3 to 13% over libvpx's bytes at a
-better picture, in 0.74 to 0.98 of libvpx's time: at 2048×1536 the time is
-on the line, and what a video costs is now the risk to the gate.
+vectors between pixels back and its frames' probabilities updated a video
+is 1 to 9% over libvpx's bytes at a better picture, in 0.73 to 0.97 of
+libvpx's time: at 2048×1536 the time is on the line, and what a video
+costs is now the risk to the gate.

@@ -4,7 +4,7 @@
 //! the encoder codes allows, but for the probability updates.
 
 use super::bool_writer::{self, BoolWriter};
-use super::probs::{Counts, DIFF_UPDATE_PROB, Probs, SegmentCounts, binary_prob};
+use super::probs::{Counts, Probs, SegmentCounts, binary_prob};
 
 /// The most a frame's compressed header can say it holds: its size is a
 /// 16-bit field.
@@ -17,10 +17,6 @@ const CS_BT_601: u32 = 1;
 /// TX_MODE_SELECT: each block says which transform size it takes, up to the
 /// largest that fits it.
 const ALLOW_32X32: u32 = 3;
-
-/// The probability an update flag for a motion vector probability is coded
-/// at.
-const MV_UPDATE_PROB: u8 = 252;
 
 /// The reference slot an inter frame reads and refreshes: the one the
 /// keyframe filled with the rest.
@@ -264,9 +260,10 @@ impl Uncompressed {
 }
 
 /// The compressed header: the transform mode, each block saying its size;
-/// the updates to the transform size, coefficient and skip probabilities
-/// `probs` that the frame's bools, `counts`, call for, made to `probs`; and
-/// no update to any other probability, of which an inter frame has more.
+/// the updates to the probabilities `probs` that the frame's bools,
+/// `counts`, call for, made to `probs`: the transform sizes, coefficients
+/// and skips, and in an inter frame its modes, references, partitions and
+/// vectors.
 pub(super) fn compressed(keyframe: bool, probs: &mut Probs, counts: &Counts) -> Vec<u8> {
     let mut w = BoolWriter::new();
     // tx_mode: TX_MODE_SELECT, and the transform size probabilities.
@@ -281,15 +278,10 @@ pub(super) fn compressed(keyframe: bool, probs: &mut Probs, counts: &Counts) -> 
         // reference (5 of 2), the luma intra modes (4 of 9) and the
         // partitions (16 of 3). No switchable filter and no compound
         // reference, so nothing for either.
-        for _ in 0..7 * 3 + 4 + 5 * 2 + 4 * 9 + 16 * 3 {
-            w.write(false, DIFF_UPDATE_PROB);
-        }
-        // The motion vectors: joints (3); per component sign (1), classes
-        // (10), class 0 (1) and bits (10); per component class 0's fractions
-        // (2 of 3) and the fractions (3). No high precision.
-        for _ in 0..3 + 2 * (1 + 10 + 1 + 10) + 2 * (2 * 3 + 3) {
-            w.write(false, MV_UPDATE_PROB);
-        }
+        probs.update_modes(&mut w, counts);
+        // The motion vectors, as `mv::PROBS` orders them. No high
+        // precision.
+        probs.update_mv(&mut w, counts);
     }
     w.finish()
 }
@@ -298,7 +290,7 @@ pub(super) fn compressed(keyframe: bool, probs: &mut Probs, counts: &Counts) -> 
 mod tests {
     use super::super::bool_writer::tests::BoolReader;
     use super::super::probs::tests::read_update;
-    use super::super::probs::{skip_slot, tx_slot};
+    use super::super::probs::{DIFF_UPDATE_PROB, MV_UPDATE_PROB, intra_inter_slot, mv_slot, partition_slot, skip_slot, tx_slot};
     use super::super::tables::{COEF_PROBS, SKIP_PROBS, TX_PROBS_8X8, TX_PROBS_16X16, TX_PROBS_32X32};
     use super::super::tape::Tape;
     use super::super::tokens;
@@ -539,5 +531,57 @@ mod tests {
         assert!(probs.skip[2] < before.skip[2], "skips likelier");
         assert_eq!(probs.skip[..2], before.skip[..2]);
         assert_eq!(probs.coef, before.coef);
+    }
+
+    #[test]
+    fn an_inter_frames_mode_updates_follow_the_bools_and_read_back() {
+        // Blocks beside two intra ones nearly all inter, and 64×64s at
+        // partition context 3 nearly all split.
+        let mut tape = Tape::new();
+        for i in 0..3000 {
+            tape.put(i % 30 != 0, intra_inter_slot(3));
+            tape.put(i % 25 != 0, partition_slot(3));
+        }
+        let before = Probs::default();
+        let mut probs = before.clone();
+        let bytes = compressed(false, &mut probs, &tape.counts);
+        let mut r = super::tests::read(&bytes, &mut before.clone());
+        let mut read = before.clone();
+        let modes = read.inter_mode.iter_mut().flatten().chain(&mut read.intra_inter).chain(read.single_ref.iter_mut().flatten()).chain(read.y_mode.iter_mut().flatten()).chain(read.partition.iter_mut().flatten());
+        for p in modes {
+            *p = read_update(&mut r, *p);
+        }
+        assert!((0..65).all(|_| !r.read(MV_UPDATE_PROB)), "no vector update");
+        assert_eq!((read.inter_mode, read.intra_inter, read.single_ref, read.y_mode, read.partition), (probs.inter_mode, probs.intra_inter, probs.single_ref, probs.y_mode, probs.partition));
+        assert!(probs.intra_inter[3] < before.intra_inter[3], "inter likelier");
+        assert!(probs.partition[3][0] < before.partition[3][0], "a split likelier");
+        assert_eq!((&probs.intra_inter[..3], probs.inter_mode, probs.single_ref, probs.y_mode), (&before.intra_inter[..3], before.inter_mode, before.single_ref, before.y_mode));
+        assert_eq!((&probs.partition[..3], &probs.partition[4..], &probs.partition[3][1..]), (&before.partition[..3], &before.partition[4..], &before.partition[3][1..]));
+    }
+
+    #[test]
+    fn an_inter_frames_vector_updates_follow_the_bools_and_read_back() {
+        // Vectors nearly all moving down alone: the joints' first node, a
+        // vector of zero or not, nearly always not, and the second, across
+        // alone or not, nearly always not.
+        let mut tape = Tape::new();
+        for i in 0..3000 {
+            tape.put(true, mv_slot(0));
+            tape.put(i % 20 == 0, mv_slot(1));
+        }
+        let before = Probs::default();
+        let mut probs = before.clone();
+        let bytes = compressed(false, &mut probs, &tape.counts);
+        let mut r = super::tests::read(&bytes, &mut before.clone());
+        assert!((0..119).all(|_| !r.read(DIFF_UPDATE_PROB)), "no mode update");
+        let mut read = before.mv;
+        for p in &mut read {
+            if r.read(MV_UPDATE_PROB) {
+                *p = (r.literal(7) as u8) << 1 | 1;
+            }
+        }
+        assert_eq!(read, probs.mv);
+        assert_eq!((probs.mv[0], probs.mv[1]), (1, 243), "what the bools measure, odd");
+        assert_eq!(probs.mv[2..], before.mv[2..]);
     }
 }
