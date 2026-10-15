@@ -74,6 +74,7 @@ All under `src/native/`.
 | `tile.rs` | One superblock row of a tile column: the partition, each block's mode, transform size and reconstruction |
 | `motion.rs` | The whole-pixel motion search: hashed anchors for what moves exactly, projections for what does not |
 | `mv.rs` | Motion vectors: the clamping of a predicted vector and the coding of a new one |
+| `convolve.rs` | Inter prediction between pixels at EIGHTTAP_SMOOTH, as a decoder filters, its kernels held to a scalar reference |
 | `predict.rs` | Intra prediction as a decoder makes it, all ten modes |
 | `transform.rs`, `dct.rs` | Forward and inverse transforms, DCT and ADST; `dct.rs` is generated from libvpx |
 | `quantize.rs` | The fixed quantizer at libvpx's realtime roundings, an inter block's and an intra block's |
@@ -99,7 +100,7 @@ The least VP9 that a decoder accepts and that a desktop is coded well with.
 | Segmentation | Every inter frame is in two segments. The inactive one skips (`SEG_LVL_SKIP`) and is not filtered (`SEG_LVL_ALT_LF` at −63); its map is coded whole or against the last frame's, whichever is fewer bits | Segments for anything else |
 | Block sizes | 64×64 down to 8×8, square; an intra 8×8 of text as four 4×4s. An inter block is 32×32 at most | Rectangular partitions; 4×4 inter blocks |
 | Intra modes | All ten. Blocks above 8×8 choose among DC, V, H and TM by line sums; an 8×8 and each 4×4 are coded each way (a 4×4 in DC, V, H and TM) | — |
-| Inter modes | Zero, nearest, near and new vectors of whole pixels | Vectors between pixels, so no interpolation filter runs; the header names EIGHTTAP |
+| Inter modes | Zero, nearest, near and new vectors to a quarter pixel, predicted at EIGHTTAP_SMOOTH, the frame's one filter, which the header names | The switchable per-block filter; eighth-pixel vectors (high precision) |
 | Transforms | A size per block, 4×4 to 32×32, which the block signals; an intra block's luma below 32×32 in the DCT/ADST hybrid its mode pairs | Lossless (the WHT) |
 | Loop filter | libvpx's level from the quantizer, in one and two tile columns; none in four or more | Per-segment or per-mode deltas beyond the inactive segment's |
 | Probabilities | Coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools | Updates to the other probabilities; backward adaptation |
@@ -134,6 +135,16 @@ In an inter frame a square is, in this order:
    to beat the predicted ones by a quarter (`NEW_VECTOR_GAIN`), since it
    costs its bits. An intra mode is taken where its residual beats the best
    vector's by more than its modes cost (`INTRA_BITS` at `RATE_WEIGHT`).
+
+A vector between pixels is measured in this choice at its nearest whole
+pixels. Once a square is coded inter, other than where it settles, its
+vector is refined between pixels (`refine`): libvpx's pruned search, a half
+pixel and then a quarter, on its luma at the filter it is coded with, the
+vector found kept only where a Laplacian model of the coded residual says
+it and its bits do better. A frame refines every block where the frames
+before saved a sixteenth of what the blocks refined would cost
+(`SEARCH_PAYS`), each frame weighing half the one after, and otherwise one
+block in 32 (`SEARCH_PROBE`), to see whether it pays again.
 
 A square is split rather than coded whole where its residual varies by more
 than a fraction of the quantizer's step (`SPLIT_VARIANCE`, `INTER_SPLIT`),

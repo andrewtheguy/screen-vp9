@@ -19,6 +19,7 @@
 //! their own.
 
 mod bool_writer;
+mod convolve;
 mod dct;
 mod header;
 mod lanes;
@@ -42,6 +43,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::{Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, loop_filtered, quality_to_q, tile_columns_log2};
 use pool::Pool;
 
+/// The share of what the blocks it refines would cost that the search
+/// between pixels has to save, as `tile::laplacian` models it, for it to
+/// refine every block of the next frame; where it saves less, it refines one
+/// block in `SEARCH_PROBE`, to see whether it pays again. Set on the first
+/// plan's recordings, where it saved a median of 3% a frame of a desktop and
+/// 11–14% of a recorded video, and probing one block in 32 cost 2–3% of the
+/// time. On the captures of 2026-10-13 a capture nothing in moves between
+/// pixels takes the time it took without the search, within the tenth this
+/// machine moves by, and `video` and `walk` a sixth to a third more.
+const SEARCH_PAYS: f64 = 1.0 / 16.0;
+const SEARCH_PROBE: usize = 32;
 
 /// The widest a tile column may be, in superblocks.
 const MAX_TILE_WIDTH_B64: usize = 64;
@@ -359,6 +371,12 @@ pub struct Encoder {
     /// Whether a decoder holds the inactive segment's features: an inter
     /// frame since the last keyframe wrote them.
     segmented: bool,
+    /// Of the blocks the search between pixels could refine in the next
+    /// frame, the one in this many it does, and what the blocks it refined
+    /// would cost and what it saved (`tile::Contexts::searched`), summed over
+    /// the frames so far, each frame's half again of the one after.
+    search_every: usize,
+    searched: [f64; 2],
 }
 
 impl Encoder {
@@ -401,6 +419,8 @@ impl Encoder {
             started: false,
             last_inter: false,
             segmented: false,
+            search_every: 1,
+            searched: [0.0; 2],
             geometry,
         })
     }
@@ -510,7 +530,7 @@ impl Encoder {
         let q_index = tables::QUANTIZER_TO_QINDEX[quality_to_q(self.quality) as usize];
         let quantizer = quantize::Quantizer::new(q_index);
         let source = tile::Source { planes: picture.planes(), stride: picture.strides()[0], width: usize::from(g.width), height: usize::from(g.height) };
-        let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, still: &self.still, unchanged: &self.unchanged, touched: &self.touched, vectors: &vectors });
+        let previous = (!keyframe).then(|| tile::Previous { reference: &self.reference, still: &self.still, unchanged: &self.unchanged, touched: &self.touched, vectors: &vectors, search_every: self.search_every });
         // A keyframe starts a decoder's probabilities over from the defaults;
         // an inter frame takes the ones the frame before left.
         let mut probs = if keyframe { probs::Probs::default() } else { self.probs.clone() };
@@ -523,6 +543,13 @@ impl Encoder {
         // An inter frame's blocks are in segments, the inactive segment's
         // features written once after each keyframe.
         let segmentation = (!keyframe).then(|| header::Segmentation::choose(&counts.segments, !self.segmented));
+        // Each frame's half again of what came before, so that a frame with
+        // little to search says little.
+        self.searched = self.contexts.iter().fold(self.searched.map(|v| v / 2.0), |[c, s], contexts| [c + contexts.searched[0], s + contexts.searched[1]]);
+        let [came, saved] = self.searched;
+        if came > 0.0 {
+            self.search_every = if saved < came * SEARCH_PAYS { SEARCH_PROBE } else { 1 };
+        }
         let filter_level = if self.filtered { loopfilter::level(quantizer.ac_step(), keyframe) } else { 0 };
         let table = probs.table();
         // The bools of a tile column are coded by one thread, one after
@@ -1245,6 +1272,37 @@ mod tests {
                     Speed::Usual => {}
                 }
             }
+        }
+    }
+
+    /// A `w`×`h` in RGB of soft waves, as video is and a desktop is not,
+    /// moved `shift` pixels right and down: what only a vector between
+    /// pixels predicts well.
+    fn waves_rgb(w: u16, h: u16, (sx, sy): (f64, f64)) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity(usize::from(w) * usize::from(h) * 3);
+        for y in 0..h {
+            for x in 0..w {
+                let (x, y) = (f64::from(x) - sx, f64::from(y) - sy);
+                let wave = |a: f64, b: f64, c: f64| (128.0 + 90.0 * (x * a + y * b + c).sin()).round() as u8;
+                rgb.extend([wave(0.21, 0.07, 0.0), wave(-0.05, 0.17, 1.0), wave(0.13, -0.11, 2.0)]);
+            }
+        }
+        rgb
+    }
+
+    #[test]
+    fn motion_between_pixels_decodes() {
+        // Small pictures and their edges, and four tile columns.
+        for (w, h, threads) in [(130, 67, 1), (200, 120, 1), (3840, 136, 4)] {
+            let mut stream = Stream::new(w, h, 90, threads);
+            let mut fractions = 0;
+            for (i, shift) in [(0.0, 0.0), (0.5, 0.0), (0.75, 0.25), (1.5, 1.0), (-2.25, 0.5), (-2.25, 0.5)].into_iter().enumerate() {
+                let (bytes, keyframe, _) = stream.frame(&picture(w, h, &waves_rgb(w, h, shift)), false);
+                assert_eq!(keyframe, i == 0, "{w}x{h}, frame {i}, {bytes} bytes");
+                fractions += stream.encoder.contexts.iter().flat_map(|c| c.vectors()).filter(|mv| mv.row % 8 != 0 || mv.col % 8 != 0).count();
+            }
+            assert!(fractions > 0, "{w}x{h}: no vector between pixels");
+            assert_eq!(stream.encoder.search_every, 1, "{w}x{h}: the search pays on waves that move");
         }
     }
 
