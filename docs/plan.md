@@ -22,7 +22,10 @@ measured the same day, [in a section of its own](#where-a-videos-bytes-go-on-202
 sub-pixel motion, which the scope had out on the strength of the set
 before's video, a test pattern, and which is in it again. The first four
 open items were taken up on 2026-10-15, [in a section of their
-own](#taken-up-on-2026-10-15).
+own](#taken-up-on-2026-10-15). The other open-source encoders were read the
+same day for what they decide differently, [in a section of its
+own](#read-in-the-other-encoders-on-2026-10-15): six open items came of
+it, 20 to 25.
 
 ## What it is for
 
@@ -619,6 +622,81 @@ the level back, and the ground is 47 from there on.
   this encoder coding no rectangle. Its inter coefficients are 4.76 MB to
   5.52, at 0.6 dB more picture.
 
+## Read in the other encoders, on 2026-10-15
+
+What the other open-source VP9 encoders do that this one does not, read
+and not measured, each weighed against how this encoder decides the same
+thing rather than taken as better for being theirs. Read: SVT-VP9 (Intel's,
+dormant since 2020: 4:2:0, no tiles, no segmentation, a fixed transform
+size a block size, one bool coder a picture), the VP9 encoders written in
+Rust (`rusty_vp9`, Apache-2.0, 4:2:0, a third more bytes than libvpx by
+its own count; `rivet-vp9`, source-available with no patent grant, read
+and nothing taken; `zvidlib-vp9-encoder`, MIT, profile 0, with a
+lookahead; `rvp9`, BSD-3, libvpx's realtime path line for line, so
+nothing libvpx has not), rav1e for the shape of its decisions, libvpx's
+own realtime path at the speed the tables run it and libaom's after it,
+and OpenH264's screen mode. None is a realtime encoder but libvpx's path
+and SVT's, and none codes a desktop in fewer bytes than this one at its
+picture.
+
+What they have in common and this encoder has not: **a square is coded
+whole before it is split**, and split only where coding it whole came out
+dear per pixel, the split's trials cut short once their running cost
+passes the whole's (rav1e's `encode_partition_bottomup`, zvidlib's
+`search_partition`, `rusty_vp9`'s `rd_pick_partition`, SVT's
+`inter_depth_decision`). This encoder splits by rules on the moments
+(`SPLIT_VARIANCE`, `INTER_SPLIT`) and never weighs the whole against the
+split in bits; it is the one thing read that bears on the video's inter
+8×8s where libvpx codes 16×16s ([item 1](#what-is-open)). Rectangles,
+which libvpx's variance partition takes from the same moments this
+encoder measures, every Rust encoder keeps at its slowest speed alone.
+
+What libvpx's realtime path does cheaper, not better: it ranks modes and
+vectors by the sum of the absolute Hadamard coefficients of the quantized
+residual and costs no tokens until the block is coded (`block_yrd`); its
+transform size is a rule on the residual's variance against the AC step
+(`calculate_tx_size`), never above 16×16; it tries intra in an inter
+frame only where the inter cost passes a penalty scaled by the quantizer
+(`vp9_get_intra_cost_penalty`); its search between pixels measures a
+candidate with a 2-tap filter, and from the whole-pixel costs around the
+winner can take one predicted point a level (`_pruned_more`); and libaom
+after it picks a block's sub-pixel precision from its residual at the
+whole vector (`subpel_select`). SVT codes the few best candidates inter and
+intra both at the full cost and takes the cheaper, and skips the intra
+trial where the best inter candidate kept no coefficient
+(`full_loop_escape`); it interpolates a superblock's search area once and
+shares it among the superblock's blocks. zvidlib keeps one luma prediction
+a vector a superblock, shared by every partition level and the search
+between pixels. `rusty_vp9` cuts a smaller transform size's trial short
+once its running cost passes the size above (`rd_cost_y`).
+
+**Why libvpx sharpens a still desktop after a keyframe** ([item
+3](#what-is-open)) is not cyclic refresh, which `aq_mode` 0 leaves off: the
+harness hands a frame its session knew no damage for to both encoders
+whole, and libvpx codes every block of it at the zero vector and keeps
+the residual its thresholds pass, the keyframe's quantization error
+coded again, where this encoder marks the 8×8s still and at this dial
+and leaves them in the inactive segment. On a frame of rectangles libvpx
+does as this encoder does. So it is this encoder's to choose, on the
+whole frames after a keyframe. That those frames of `drag` carry no
+rectangles is to be confirmed on the capture.
+
+Read and not taken: the Laplacian and variance models of a block's rate
+(libvpx's, `rusty_vp9`'s and `rvp9`'s), which this encoder measured wrong
+both ways on 2026-10-14; rav1e's token rate from a table by the
+distortion, which rav1e ships off at every speed; a gate on the search
+between pixels by a SAD threshold (zvidlib, `rusty_vp9`), the gate that
+missed a fractional scroll here; SVT's fixed transform size and its
+decisions blind to chroma, which in 4:4:4 is two thirds of the pixels;
+libaom's hash search, exhaustive and per frame and used for intra block
+copy alone, where this encoder's anchors are sparse and kept; rav1e's
+assembly and its dispatch at run time, against the floor; and nothing
+read splits the bool coder across threads as the tapes and tile rows do,
+or costs tokens cheaper than the tables. Neither libvpx at this
+configuration nor this encoder adapts probabilities backward (libvpx 1.16
+defaults `frame_parallel_decoding_mode` on), so neither has the bitstream
+the other has not.
+
 ## What is open
 
 In the order it is taken up, set again on 2026-10-14 for the captures
@@ -684,7 +762,10 @@ take for less time:
    this encoder does not ([measured](#measured-for-what-comes-next)).
    What is open is whether a still part of the picture should be coded
    finer in the frames after a keyframe, as a settle codes it, and what
-   that costs a session that moves.
+   that costs a session that moves. Why libvpx does is read, on
+   2026-10-15: not cyclic refresh but the whole frames the session knew no
+   damage for, which libvpx codes block by block and this encoder leaves
+   ([read](#read-in-the-other-encoders-on-2026-10-15)); item 24.
 4. **A frame of the video for the keyframes and the settles**: taken on
    2026-10-14. The two measurements took each capture's first picture,
    which for `video` and `walk` is the clip paused on black; they take
@@ -791,6 +872,71 @@ Then, as before:
     it can be one; its lines are not decided, and a time on this machine
     moves by a tenth from run to run.
 16. **`Speed::Fastest` was not measured in this replan.**
+
+Read in the other encoders on 2026-10-15
+([above](#read-in-the-other-encoders-on-2026-10-15)), each measured turn
+about against the build before over the cut captures and weighed on the
+frame of rectangles first, as every change is; 20 to 22 bear on item 1,
+23 on item 17, 24 on item 3 and 25 on item 18:
+
+20. **A square coded whole before it is split.** The square is coded at
+    its best vector or mode and split only where its cost per pixel is
+    past a threshold a size (`rusty_vp9`'s gate, 8×8 to 32×32, its 64×64
+    always tried), the quarters' trials cut short once their running cost
+    passes the whole's (rav1e, zvidlib); a square that comes out skipped
+    is not split (zvidlib). What it is for is the video's inter 8×8s on a
+    fifth of the area where libvpx's are a twentieth. What it risks is
+    what judging a square at its refined vector cost the screens
+    ([not taken](#measured-and-not-taken)), 0.1 to 0.3 dB on `flood`,
+    `terminal` and `uncover`: it is gated on them, and it is not taken
+    without item 25, which keeps a square's prediction for its quarters.
+21. **Rectangles.** libvpx's variance partition takes a square whole
+    where its residual's variance is under a threshold, else the two
+    halves across or down where each is under it, else the quarters
+    (`set_vt_partitioning`), from the moments this encoder measures per
+    8×8 already; the cost is in `tile.rs`, which codes no rectangle, and
+    in the mode info and partition contexts a rectangle leaves. The video
+    at 1920×1080 has libvpx's 16×16s on a quarter of the area and this
+    encoder's on a fourteenth. Every Rust encoder read keeps rectangles at
+    its slowest speed alone, so they are weighed in time on `video` and
+    `walk` and in bytes on nothing else.
+22. **A square coded inter and intra both, the cheaper taken**, as `trial`
+    takes a vector, with the two escapes read: no intra trial where the
+    inter block kept no coefficient (SVT's `full_loop_escape`), and none
+    where the inter cost is under a penalty scaled by the quantizer
+    (libvpx's `vp9_get_intra_cost_penalty`), which is why libvpx's intra
+    is rarer in a frame of the video, its intra 4×4s and 8×8s a quarter
+    of this encoder's area. `INTRA_BITS` is the penalty's cousin on the
+    moments; the trial is on the coded block.
+23. **The settle's smaller transform sizes cut short.** A smaller size's
+    trial stops as soon as its running cost, transform block by transform
+    block, passes the size above's (`rusty_vp9`'s `rd_cost_y`), which
+    changes no stream; and the sizes under the largest are tried only
+    where the largest leaves a residual past a threshold on the moments,
+    libvpx's `calculate_tx_size` as a gate on the trial and not in its
+    place, since the trials are the settle's 1.0 to 1.4 dB from 65. The
+    first is measured alone, as the time it saves on the losing size; the
+    second with item 17's untried line.
+24. **A still desktop coded finer on the whole frames after a keyframe.**
+    On a frame its session knew no damage for, the 8×8s still and at this
+    dial are coded as settling for the first frames after a keyframe,
+    where libvpx codes them block by block, gated so that a flat 8×8
+    costs nothing: the moments' squares less the mean's share over the DC
+    threshold, libvpx's `dc_thr`. Weighed on `drag` from 2048 wide, which
+    is under libvpx's picture by this, against what the frames after a
+    keyframe cost a session that moves.
+25. **A superblock's predictions kept.** One luma prediction a vector a
+    superblock, with a mask of the 8×8s it holds, shared by the
+    partition levels and the search between pixels (zvidlib's
+    `InterBuffers`), so that `trial` reads the prediction `refine` made
+    and does not predict the refined vector again, item 18's first line;
+    and the search between pixels at a precision the block's residual at
+    the whole vector picks (libaom's `subpel_select`: whole or half where
+    it is already under the AC threshold), which reads the block and not
+    the frames before, where the gate of 2026-10-14 read the frames before
+    and was a frame late. SVT's one interpolation of a superblock's search
+    area shared by its blocks is the same idea a step up, and weighed
+    only if the first does not show.
 
 Of a very busy picture alone, and last:
 
