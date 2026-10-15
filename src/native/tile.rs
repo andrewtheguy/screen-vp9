@@ -1520,11 +1520,14 @@ impl<'a> Tile<'a> {
     /// coded intra, whose source has `moments` over its `count` pixels: 4×4
     /// in an 8×8 whose pixels deviate by more than two steps, where a mode
     /// predicted from nearer pixels does better, and otherwise the largest
-    /// that fits up to 16×16 (libvpx's keyframe `ALLOW_16X16`, which keeps
-    /// an 8×8 at 8×8). Measured on the captures' keyframes at 1920×1080:
-    /// at dial 40 the 4×4s are never taken, at dial 90 they save `walk`'s
-    /// keyframe 3% of its bytes and 0.15 dB and `browser`'s a little; the
-    /// same rule on a 16×16 changed nothing.
+    /// that fits. Measured on the captures' keyframes at 1920×1080: at dial
+    /// 40 the 4×4s are never taken, at dial 90 they save `walk`'s keyframe
+    /// 3% of its bytes and 0.15 dB and `browser`'s a little; the same rule
+    /// on a 16×16 changed nothing. Held to 16×16, as libvpx's keyframe
+    /// (`ALLOW_16X16`), a flat ground a level off stays off: at dial 40 a
+    /// 16×16's DC moves its mean two grey levels and a 32×32's, at half
+    /// the step, one, and `terminal`'s keyframe, its ground 47 coded 48
+    /// from the first block on, was 6 dB of luma under libvpx's.
     fn intra_transform_size(&self, n: u32, moments: &Moments, count: i64) -> usize {
         let ac = i64::from(self.quantizer.ac_step());
         // The variance per pixel and plane against two steps squared, a step
@@ -1532,7 +1535,7 @@ impl<'a> Tile<'a> {
         if n == 0 && moments.variance(count) * 16 > ac * ac * 3 * count * count {
             0
         } else {
-            (n as usize + 1).min(2)
+            (n as usize + 1).min(3)
         }
     }
 
