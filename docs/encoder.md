@@ -231,7 +231,8 @@ read the captures in `tmp/captures/` (or the directory `CAPTURES` names) and
 code each with this encoder and with libvpx's, the crate's other coder (`src/libvpx.rs`)
 as `screen-vp9` sets it up, turn about: `captures_against_libvpx` plays each
 capture as its session played it, `keyframes_against_libvpx` codes each
-capture's first picture at a row of dials, and `settles_against_libvpx`
+capture's first picture at a row of dials (a paused video's last picture
+of more than one colour), and `settles_against_libvpx`
 settles it from one dial to another. Each wants a release build and an idle
 machine; `ALONE` leaves libvpx out. `tools/tables.py` makes the tables of
 [benchmarks.md](benchmarks.md) from their logs. `tools/vpxinspect/` builds

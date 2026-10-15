@@ -2033,18 +2033,34 @@ mod tests {
         path.file_name().expect("a file").to_string_lossy().trim_end_matches(".zst").trim_end_matches(".wlcap").to_owned()
     }
 
-    /// The first picture of each capture: what the capture's first frame
-    /// holds.
-    fn first_picture(path: &std::path::Path) -> Picture {
-        let mut picture = None;
+    /// The captures whose first picture is a video paused on its first
+    /// frame, which is black, and says nothing coded alone; `walk` ends on
+    /// black too, the video stopped.
+    const PAUSED: [&str; 2] = ["video", "walk"];
+
+    /// The picture a keyframe and a settle of a capture are measured on:
+    /// what its first frame holds, or for a capture that starts on a paused
+    /// video (`PAUSED`), what its last frame of more than one colour does,
+    /// the video as it last stood.
+    fn measured_picture(path: &std::path::Path) -> Picture {
+        let name = capture_name(path);
+        let last = PAUSED.iter().any(|paused| name.starts_with(&format!("{paused}-")));
+        let (mut size, mut pixels) = ((0, 0), Vec::new());
         each_captured(path, |frame| {
-            let (w, h) = frame.size;
-            let mut p = Picture::new(w, h, 1).expect("a picture");
-            p.read_bgrx(frame.pixels, usize::from(w) * 4).expect("the picture");
-            picture = Some(p);
-            false
+            // `B, G, R, X`: the fourth byte is not the picture's.
+            let one_colour = frame.pixels.as_chunks::<4>().0.iter().all(|p| p[..3] == frame.pixels[..3]);
+            if pixels.is_empty() || !one_colour {
+                size = frame.size;
+                pixels.clear();
+                pixels.extend_from_slice(frame.pixels);
+            }
+            last
         });
-        picture.expect("a frame in the capture")
+        let (w, h) = size;
+        assert!(!pixels.is_empty(), "{}: no frame", path.display());
+        let mut picture = Picture::new(w, h, 1).expect("a picture");
+        picture.read_bgrx(&pixels, usize::from(w) * 4).expect("the picture");
+        picture
     }
 
     /// One frame's bytes, least time and PSNR, luma's and over all three
@@ -2057,8 +2073,9 @@ mod tests {
         );
     }
 
-    /// The first picture of each capture (the same knobs as
-    /// `captures_against_libvpx`) coded as a keyframe by both encoders at
+    /// The picture of each capture `measured_picture` takes, its first or a
+    /// paused video's last (the same knobs as `captures_against_libvpx`),
+    /// coded as a keyframe by both encoders at
     /// the dials `DIALS` names (`40,65,90` if unset), each `PASSES` times
     /// (5 if unset) turn about for the least time: bytes, time and PSNR per
     /// dial, luma's and over all three planes. `SPEED=fastest` codes both
@@ -2076,7 +2093,7 @@ mod tests {
         let passes: usize = std::env::var("PASSES").map_or(5, |t| t.parse().expect("a pass count"));
         let fastest = std::env::var("SPEED").is_ok_and(|s| s == "fastest");
         for path in captures() {
-            let picture = first_picture(&path);
+            let picture = measured_picture(&path);
             let (w, h) = picture.size();
             println!("{} {w}x{h} on {threads}", capture_name(&path));
             for &dial in &dials {
@@ -2121,8 +2138,9 @@ mod tests {
         }
     }
 
-    /// The first picture of each capture (the same knobs as
-    /// `captures_against_libvpx`) coded as a keyframe at the first dial of
+    /// The picture of each capture `measured_picture` takes, its first or a
+    /// paused video's last (the same knobs as `captures_against_libvpx`),
+    /// coded as a keyframe at the first dial of
     /// each pair `SETTLES` names (`20:90,65:90,80:90,89:90` if unset), and
     /// then settled at the second, the picture unchanged, as a caller
     /// sharpens a quiet picture after the dial walked: this encoder's
@@ -2144,7 +2162,7 @@ mod tests {
         );
         let passes: usize = std::env::var("PASSES").map_or(5, |t| t.parse().expect("a pass count"));
         for path in captures() {
-            let picture = first_picture(&path);
+            let picture = measured_picture(&path);
             let (w, h) = picture.size();
             println!("{} {w}x{h} on {threads}", capture_name(&path));
             for &(from, to) in &pairs {
