@@ -139,14 +139,13 @@ In an inter frame a square is, in this order:
 A vector between pixels is measured in this choice at its nearest whole
 pixels. Once a square is coded inter, other than where it settles, its
 vector is refined between pixels (`refine`): libvpx's pruned search, a half
-pixel and then a quarter, on its luma at the filter it is coded with, the
-vector found kept only where a Laplacian model of the coded residual says
-it and its bits do better. A frame refines every block where the frames
-before saved a sixteenth of what the blocks refined would cost
-(`SEARCH_PAYS`), each frame weighing half the one after, and otherwise
-probes one block in 32 of each superblock row, counted across frames
-(`SEARCH_PROBE`): it measures what the search would save there and keeps
-the block's vector, to see whether it pays again.
+pixel and then a quarter, on its luma at the filter it is coded with. Where
+it finds another vector, the block's luma is coded at both by `trial`, each
+with its mode's and its vector's bits at `RATE_WEIGHT`, and the block takes
+the one that costs less (`inter`); the chroma is predicted once, at the
+vector taken. Every block is refined: a page scrolled by a fraction of a
+pixel saves most of a frame now and then and nothing between, which no
+guess from the frames before foresees.
 
 A square is split rather than coded whole where its residual varies by more
 than a fraction of the quantizer's step (`SPLIT_VARIANCE`, `INTER_SPLIT`),

@@ -110,19 +110,20 @@ desktop as drawn:
 
 [benchmarks.md](benchmarks.md), one run of 2026-10-14 over every size of
 the cut captures, `walk` whole, on the build after release 0.0.18 with the
-vectors between pixels back and the probe measuring only:
+vectors between pixels back, every block refined and coded at both
+vectors:
 
 - **A video is inside the gate again, over libvpx's picture.** `video`
-  takes 1.04 to 1.06 of libvpx's bytes at +0.4 to +0.7 dB and `walk`,
-  whole, 1.08 to 1.12 at +0.4 to +0.5, where the gate the plan began with
+  takes 1.03 to 1.08 of libvpx's bytes at +0.6 to +0.8 dB and `walk`,
+  whole, 1.08 to 1.13 at +0.4 to +0.6, where the gate the plan began with
   allows 15% more bytes at most; without the vectors between pixels they
   were 1.22 to 1.27 and 1.16 to 1.25 at up to 0.6 dB under. Everything
   else over a whole capture is at fewer bytes than libvpx's and at its
   picture or better, but `drag` from 2048 to 3456 wide, 0.1 to 0.4 dB
-  under at 0.42 to 0.52 of the bytes: 75 cells of 80.
-- Every capture at every size takes less time than libvpx: 0.13 to 0.91
-  of it frame for frame, a line of text 0.13 to 0.19, `walk` 0.71 to
-  0.78, `video` 0.80 to 0.91.
+  under at 0.43 to 0.53 of the bytes: 75 cells of 80.
+- Every capture at every size takes less time than libvpx: 0.13 to 0.98
+  of it frame for frame, a line of text 0.13 to 0.19, `walk` 0.74 to
+  0.82, `video` 0.84 to 0.98, at 2048×1536 on the line.
 - A first picture coded alone as a keyframe is 0.1 to 0.7 dB over
   libvpx's at its bytes, but **`terminal`'s at dial 40, 2.4 to 7.7 dB
   under** at 0.64 to 0.87 of them, and a picture of the video at 40 up to
@@ -507,7 +508,7 @@ filter with its NEON and AVX2 kernels, libvpx's pruned search on each
 inter block's luma, kept where a Laplacian model of the coded residual
 says it pays, and run on every block of a frame only where the frames
 before saved a sixteenth (`SEARCH_PAYS`), else on one in 32. They are back
-as they were. Against the build before, the two and a build held to half
+as they were, and the gate has gone since ([item 1](#what-is-open)). Against the build before, the two and a build held to half
 pixels played turn about capture by capture over every cut capture, four
 threads, the machine idle:
 
@@ -536,7 +537,7 @@ made again. What they found the picture short in comes first, since a
 stream coded worse than libvpx's at more bytes is not one a user would
 take for less time:
 
-1. **The rest of the video's bytes**, 4 to 12% over libvpx's with the
+1. **The rest of the video's bytes**, 3 to 13% over libvpx's with the
    vectors between pixels back ([taken](#where-a-videos-bytes-go-on-2026-10-14)):
    read again with `tools/vpxinspect/` on the new streams, then this
    encoder's own share, which before the vectors came back was the 4×4
@@ -545,37 +546,40 @@ take for less time:
    and intra-against-inter weight were set on screen content, and its
    partitions and modes at 2.8 of libvpx's bytes. A switchable filter per
    block, the one part of libvpx's sub-pixel coding not taken, held
-   libvpx within 3.4% of its bytes when it was taken away. And the
-   search's model, the Laplacian that judges both a refined vector and
-   the gate (`SEARCH_PAYS`): measured on 2026-10-14, no line of the gate
-   does better than its sixteenth. Four builds turn about over every cut
-   capture: at a thirty-second every stream within 0.2% and every time
-   within the tenth; at a sixty-fourth `browser` at 1600×1000 0.93 of the
-   bytes, `flood` from 2560 wide 0.2% fewer for 11–20% more time and
-   `terminal` 0.1–0.8% more; with the gate open, the search on every
-   block, `browser` 0.77–0.97 of the bytes at five sizes and `uncover` at
-   1920 wide 0.93, but `terminal` 0.6–1.7% more at up to 0.04 dB less and
-   every screen capture 11–29% more time; `video` and `walk`, whole, the
-   same at every line, the search on throughout. The model is wrong both
-   ways, under what the search saves a page and over what it saves text,
-   and a line cannot part them: what a refined vector saves is to be
-   measured as coded, not modelled, and the gate set on that.
+   libvpx within 3.4% of its bytes when it was taken away.
 
-   **The probe, taken on 2026-10-14.** Its count started again with each
-   superblock row of each frame, so a row with fewer than `SEARCH_PROBE`
-   blocks to refine was never probed, and a frame whose rows were all like
-   that could not turn the search back on, a small video in a window among
-   them; and a probed block took the vector it found. Counted across
-   frames alone, `browser` took 1.8 to 7.1% more bytes at up to 0.14 dB
-   less: a block refined among blocks that were not leaves their vectors
-   predicting worse. The search run on every block or on none did not
-   lose. So a probe now measures and keeps the block's vector, and the
-   count is kept per superblock row across frames. Against the build
-   before, turn about over every cut capture: `browser` 0.96 to 1.01 of
-   its bytes at −0.01 to +0.15 dB, `uncover` at 1920 wide 1.014, every
-   other capture within 0.3% and 0.07 dB, the time's median ratio 1.00;
-   `terminal` at 2048 wide, played again three times, 1.05 of a frame of
-   0.9 ms, the sparse rows probed now. The tables of
+   **The search's judgement, taken on 2026-10-14.** A Laplacian model of
+   the coded residual judged both whether a refined vector was taken and,
+   summed over a frame, whether the next frame refined every block or
+   probed one in 32 (`SEARCH_PAYS`, `SEARCH_PROBE`), and it was wrong both
+   ways. No line of the gate did better than its sixteenth: four builds
+   turn about over every cut capture, at a thirty-second every stream
+   within 0.2%; at a sixty-fourth `browser` at 1600×1000 0.93 of the bytes
+   and `flood` 11–20% more time for 0.2% fewer; with the gate open
+   `browser` 0.77–0.97 of the bytes at five sizes, but `terminal` 0.6–1.7%
+   more, the model taking vectors on text that did not pay. The probe's
+   count started again each superblock row, so a sparse row was never
+   probed; counted across frames, a probed block that took its vector cost
+   `browser` up to 7.1%, a block refined alone among blocks that were not
+   leaving their vectors predicting worse, so a probe was made to measure
+   only. And a page gains in bursts, frame 58 of `browser` at 1600×1000
+   20.4 kB without the search and 2.8 kB with it, scrolled by a fraction
+   of a pixel between frames that move by whole ones: a gate that reads
+   the frames before is a frame late on every one, whole superblocks as
+   probes or single blocks.
+
+   So the gate is gone and every block is refined, and a block the search
+   found another vector for is coded at both by `trial`, its luma and each
+   vector's mode and bits at `RATE_WEIGHT`, and takes the cheaper: the
+   model is gone with the gate. Against the build before, turn about over
+   every cut capture: `browser` 0.77–1.00 of its bytes at +0.0 to +0.18
+   dB in 1.11–1.28 of its time, `uncover` 0.93–1.00 in 1.12–1.26, `video`
+   0.99–1.01 at +0.11 to +0.14 dB in 1.04–1.17, `walk` within 0.7% at up
+   to +0.12 in 0.97–1.12, `flood` 0.995–0.998 at +0.05 to +0.11 in
+   1.03–1.17, `terminal` within 0.4% in 1.00–1.10, and `drag`, which
+   gains nothing, in 1.19–1.25; the median 1.13. Against libvpx `video`
+   is 0.84 to 0.98 of its time frame for frame, the most at 2048×1536@2,
+   on the line, where the gate allows 1.00. The tables of
    [benchmarks.md](benchmarks.md) are of this build.
 2. **`terminal`'s keyframe at dial 40**: why a few lines on a flat ground
    lose 2.4 to 7.7 dB to libvpx at dial 40 and none at 65. The 4×4 split
@@ -731,6 +735,6 @@ hand it most; a change is weighed on that frame first.
 And, since the captures were made again, that a video is past what this
 encoder's subset could code at libvpx's bytes. The 16 to 27% was sub-pixel
 motion ([measured](#where-a-videos-bytes-go-on-2026-10-14)), and with the
-vectors between pixels back a video is 4 to 12% over libvpx's bytes at a
-better picture, and a sixth to a third more of its own time, still under
-libvpx's.
+vectors between pixels back a video is 3 to 13% over libvpx's bytes at a
+better picture, in 0.74 to 0.98 of libvpx's time: at 2048×1536 the time is
+on the line, and what a video costs is now the risk to the gate.

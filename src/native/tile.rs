@@ -202,22 +202,6 @@ fn rounded(n: i64, d: i64) -> i64 {
     if (n < 0) != (d < 0) { (n - d / 2) / d } else { (n + d / 2) / d }
 }
 
-/// The squared error and the bits of a residual whose squared deviation is
-/// `deviation` over `count` pixels, quantized at `step`, as a Laplacian
-/// source quantized uniformly (Hang and Chen, 1997): from the closed forms
-/// libvpx tables for `vp9_model_rd_from_var_lapndz`.
-fn laplacian(deviation: f64, count: f64, step: f64) -> (f64, f64) {
-    if deviation == 0.0 {
-        return (0.0, 0.0);
-    }
-    let x = step / (deviation / count).sqrt();
-    let r = (-std::f64::consts::SQRT_2 * x).exp();
-    let entropy = |p: f64| if p <= 0.0 || p >= 1.0 { 0.0 } else { -(p * p.log2() + (1.0 - p) * (1.0 - p).log2()) };
-    let bits = entropy(r.sqrt()) + r.sqrt() * (1.0 + entropy(r) / (1.0 - r));
-    let y = x / std::f64::consts::SQRT_2;
-    (deviation * (1.0 - y / y.sinh()), count * bits)
-}
-
 /// The picture being coded: three planes at its own size.
 pub(super) struct Source<'a> {
     pub(super) planes: [&'a [u8]; 3],
@@ -252,9 +236,6 @@ pub(super) struct Previous<'a> {
     /// is, in the reference, and not written to the reconstruction.
     pub(super) touched: &'a [bool],
     pub(super) vectors: &'a [[Mv; motion::VECTORS]],
-    /// Of the blocks the search between pixels could refine, the one in
-    /// this many it does.
-    pub(super) search_every: usize,
 }
 
 /// How a block is coded.
@@ -364,16 +345,6 @@ pub(super) struct Contexts {
     /// Whether a decoder predicts vectors from the frame before's too:
     /// when that was an inter frame (libvpx's `use_prev_frame_mvs`).
     use_last: bool,
-    /// Of the blocks the search between pixels refined, what their luma
-    /// would cost coded at the vectors they came with, and what the search
-    /// saved, as `laplacian` models them: the column's, and per superblock
-    /// row.
-    pub(super) searched: [f64; 2],
-    searched_rows: Vec<[f64; 2]>,
-    /// Per superblock row, the blocks the search between pixels could have
-    /// refined, counted across frames, so that a row with fewer than
-    /// `search_every` of them a frame is probed in its turn.
-    probes: Vec<usize>,
     /// Per superblock row, its bools, to be coded once the frame's
     /// probabilities are chosen.
     pub(super) tapes: Vec<Tape>,
@@ -399,9 +370,6 @@ impl Contexts {
             width: cols.len(),
             sb_cols,
             use_last: false,
-            searched: [0.0; 2],
-            searched_rows: vec![[0.0; 2]; geometry.sb_rows],
-            probes: vec![0; geometry.sb_rows],
             tapes: (0..geometry.sb_rows).map(|_| Tape::new()).collect(),
             edges: (0..geometry.sb_rows * sb_cols).map(|_| OnceLock::new()).collect(),
             coded: vec![false; geometry.sb_rows * sb_cols],
@@ -444,8 +412,6 @@ impl Contexts {
         // anything reads it, so none is cleared.
         std::mem::swap(&mut self.mode_info, &mut self.last_mode_info);
         self.use_last = last_inter;
-        self.searched = [0.0; 2];
-        self.searched_rows.fill([0.0; 2]);
         for tape in &mut self.tapes {
             tape.clear();
         }
@@ -458,15 +424,15 @@ impl Contexts {
     /// A job for each superblock row of the column, which `column` holds
     /// the pixels of.
     fn jobs<'a>(&'a mut self, column: &'a mut Column) -> impl Iterator<Item = Job<'a>> {
-        let Contexts { mode_info, last_mode_info, width, sb_cols, use_last, searched_rows, probes, tapes, edges, coded, quiet, .. } = self;
+        let Contexts { mode_info, last_mode_info, width, sb_cols, use_last, tapes, edges, coded, quiet, .. } = self;
         let (width, sb_cols, use_last) = (*width, *sb_cols, *use_last);
         let (last_mode_info, edges) = (&last_mode_info[..], &edges[..]);
         let (x, stride) = (column.x, column.stride);
         let [p0, p1, p2] = &mut column.planes;
         let rows = 64 * stride;
         let planes = p0.chunks_mut(rows).zip(p1.chunks_mut(rows)).zip(p2.chunks_mut(rows));
-        let rows = mode_info.chunks_mut(8 * width).zip(planes).zip(tapes.iter_mut().zip(searched_rows.iter_mut().zip(probes))).zip(coded.chunks_mut(sb_cols)).zip(quiet.chunks_mut(sb_cols));
-        rows.enumerate().map(move |(sb_row, ((((mode_info, ((p0, p1), p2)), (tape, (searched, probes))), coded), quiet))| Job {
+        let rows = mode_info.chunks_mut(8 * width).zip(planes).zip(tapes.iter_mut()).zip(coded.chunks_mut(sb_cols)).zip(quiet.chunks_mut(sb_cols));
+        rows.enumerate().map(move |(sb_row, ((((mode_info, ((p0, p1), p2)), tape), coded), quiet))| Job {
             sb_row,
             x,
             stride,
@@ -478,8 +444,6 @@ impl Contexts {
             mode_info,
             planes: [p0, p1, p2],
             tape,
-            searched,
-            probes,
             coded,
             quiet,
         })
@@ -535,9 +499,6 @@ struct Job<'a> {
     mode_info: &'a mut [ModeInfo],
     planes: [&'a mut [u8]; 3],
     tape: &'a mut Tape,
-    searched: &'a mut [f64; 2],
-    /// `Contexts::probes`, the row's.
-    probes: &'a mut usize,
     /// Per superblock of the row, whether a block of it is active.
     coded: &'a mut [bool],
     /// Per superblock of the row, `Contexts::quiet`.
@@ -570,9 +531,6 @@ pub(super) fn code(pool: &Pool, threads: usize, frame: &Frame, contexts: &mut [C
         counts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).add(&scratch.counts);
     };
     pool.run(threads.min(queue.len()), |_| work());
-    for contexts in contexts.iter_mut() {
-        contexts.searched = contexts.searched_rows.iter().fold([0.0; 2], |[c, s], row| [c + row[0], s + row[1]]);
-    }
     counts.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -663,6 +621,8 @@ struct Scratch {
     eobs: [Vec<usize>; 3],
     best_levels: Vec<i16>,
     best_eobs: Vec<usize>,
+    kept_levels: Vec<i16>,
+    kept_eobs: Vec<usize>,
     patch: Vec<u8>,
     planes: [Vec<u8>; 16],
     predicted: Box<[u8; 64 * 64]>,
@@ -683,6 +643,8 @@ impl Scratch {
             eobs: std::array::from_fn(|_| Vec::with_capacity(256)),
             best_levels: vec![0; 64 * 64],
             best_eobs: Vec::with_capacity(256),
+            kept_levels: vec![0; 64 * 64],
+            kept_eobs: Vec::with_capacity(256),
             patch: Vec::new(),
             planes: std::array::from_fn(|_| Vec::new()),
             predicted: Box::new([0; 64 * 64]),
@@ -748,6 +710,10 @@ struct Tile<'a> {
     /// far.
     best_levels: Vec<i16>,
     best_eobs: Vec<usize>,
+    /// The luma levels and ends of block of the vector a block came with,
+    /// kept while it is tried at the one the search between pixels found.
+    kept_levels: Vec<i16>,
+    kept_eobs: Vec<usize>,
     /// Scratch for a block of the previous frame copied out past its edges,
     /// for it filtered across at each sixteenth, and for a prediction
     /// filtered from it.
@@ -767,7 +733,7 @@ struct Tile<'a> {
 impl<'a> Tile<'a> {
     /// The coder of the superblock row `job`, working in `scratch`.
     fn new(frame: &Frame<'a>, job: Job<'a>, scratch: Scratch, failed: &'a AtomicBool) -> Self {
-        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, patch, planes, predicted, residual, coeffs, dequantized, map, counts: mut spare } = scratch;
+        let Scratch { mut moved, levels, eobs, best_levels, best_eobs, kept_levels, kept_eobs, patch, planes, predicted, residual, coeffs, dequantized, map, counts: mut spare } = scratch;
         moved.clear();
         std::mem::swap(&mut job.tape.counts, &mut spare);
         let mi_col_start = job.x / 8;
@@ -799,6 +765,8 @@ impl<'a> Tile<'a> {
             eobs,
             best_levels,
             best_eobs,
+            kept_levels,
+            kept_eobs,
             patch,
             planes,
             predicted,
@@ -834,8 +802,8 @@ impl<'a> Tile<'a> {
             }
         }
         std::mem::swap(&mut self.contexts.tape.counts, &mut self.spare);
-        let Tile { moved, levels, eobs, best_levels, best_eobs, patch, planes, predicted, residual, coeffs, dequantized, map, spare: counts, .. } = self;
-        Scratch { moved, levels, eobs, best_levels, best_eobs, patch, planes, predicted, residual, coeffs, dequantized, map, counts }
+        let Tile { moved, levels, eobs, best_levels, best_eobs, kept_levels, kept_eobs, patch, planes, predicted, residual, coeffs, dequantized, map, spare: counts, .. } = self;
+        Scratch { moved, levels, eobs, best_levels, best_eobs, kept_levels, kept_eobs, patch, planes, predicted, residual, coeffs, dequantized, map, counts }
     }
 
     /// Wait for the row above to code the superblock above superblock
@@ -1577,10 +1545,10 @@ impl<'a> Tile<'a> {
     /// settle's residual, the previous frame's quantization error, leaves
     /// a lone level deep in the scan of many a block, a hundred zero
     /// tokens for one coefficient. Its luma levels and ends of block are
-    /// left in `levels` and `eobs`. Chroma takes the size luma chose:
-    /// deciding each plane's part of the cost too saved 0.4–3% of the
-    /// bytes for a fifth more time.
-    fn trial(&mut self, mi_row: usize, mi_col: usize, n: u32) -> usize {
+    /// left in `levels` and `eobs`, and its cost is given with it. Chroma
+    /// takes the size luma chose: deciding each plane's part of the cost
+    /// too saved 0.4–3% of the bytes for a fifth more time.
+    fn trial(&mut self, mi_row: usize, mi_col: usize, n: u32) -> (usize, i64) {
         let ac = i64::from(self.quantizer.ac_step());
         let weight = RATE_WEIGHT * ac * ac;
         let mut best = (i64::MAX, 0);
@@ -1612,7 +1580,7 @@ impl<'a> Tile<'a> {
         }
         std::mem::swap(&mut self.levels[0], &mut self.best_levels);
         std::mem::swap(&mut self.eobs[0], &mut self.best_eobs);
-        best.1
+        (best.1, best.0)
     }
 
     /// Code the transform size `tx` of the square block of `1 << n` 8×8s
@@ -1636,6 +1604,42 @@ impl<'a> Tile<'a> {
         }
     }
 
+    /// The vector and the transform size of the square inter block of
+    /// `1 << n` 8×8s at `(mi_row, mi_col)` that came with `mv`, its
+    /// prediction in `recon` and its luma levels in `levels`: where the
+    /// search between pixels found another vector (`refine`), the block's
+    /// luma is coded at both by `trial`, each with its mode's and its
+    /// vector's bits at `RATE_WEIGHT`, and takes the one that costs less:
+    /// how good a vector between pixels is shows only coded, a page moved by
+    /// a fraction of a pixel saving most of a frame where text barely moves
+    /// at all. A block that settles has nothing to find between the pixels.
+    fn inter(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> (Mode, usize) {
+        let found = if self.still(mi_row, mi_col, n) { None } else { self.refine(mi_row, mi_col, n, mv) };
+        let Some(other) = found else {
+            self.predict_inter(mi_row, mi_col, n, mv, 0..3);
+            return (Mode::Inter(mv), self.trial(mi_row, mi_col, n).0);
+        };
+        // `trial` reads the luma alone, so the chroma is predicted once, at
+        // the vector taken.
+        self.predict_inter(mi_row, mi_col, n, mv, 0..1);
+        let (tx, cost) = self.trial(mi_row, mi_col, n);
+        let ac = i64::from(self.quantizer.ac_step());
+        let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
+        let with = |cost: i64, v: Mv| cost + RATE_WEIGHT * ac * ac * i64::from(prices.of(v).0);
+        std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
+        std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
+        self.predict_inter(mi_row, mi_col, n, other, 0..1);
+        let (other_tx, other_cost) = self.trial(mi_row, mi_col, n);
+        if with(other_cost, other) < with(cost, mv) {
+            self.predict_inter(mi_row, mi_col, n, other, 1..3);
+            return (Mode::Inter(other), other_tx);
+        }
+        std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
+        std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
+        self.predict_inter(mi_row, mi_col, n, mv, 0..3);
+        (Mode::Inter(mv), tx)
+    }
+
     /// Code the square block of `1 << n` 8×8s at `(mi_row, mi_col)` in
     /// `mode`, whose source less its prediction has `moments`: at the
     /// transform size `trial` finds for an inter block and
@@ -1649,19 +1653,11 @@ impl<'a> Tile<'a> {
         let count = 64 * self.count_inside(mi_row, mi_col, n) as i64;
         let above = (mi_row > 0).then(|| self.mode_info(mi_row - 1, mi_col));
         let left = (mi_col > self.mi_col_start).then(|| self.mode_info(mi_row, mi_col - 1));
-        // A block that settles has nothing to find between the pixels.
-        let mode = match mode {
-            Mode::Inter(mv) if !self.still(mi_row, mi_col, n) => Mode::Inter(self.refine(mi_row, mi_col, n, mv)),
-            mode => mode,
-        };
-        let tx = match mode {
-            Mode::Intra { .. } => self.intra_transform_size(n, moments, count),
-            Mode::Intra4 { .. } => 0,
-            Mode::Inter(mv) => {
-                self.predict_inter(mi_row, mi_col, n, mv);
-                self.trial(mi_row, mi_col, n)
-            }
-            Mode::Unchanged => largest,
+        let (mode, tx) = match mode {
+            Mode::Intra { .. } => (mode, self.intra_transform_size(n, moments, count)),
+            Mode::Intra4 { .. } => (mode, 0),
+            Mode::Inter(mv) => self.inter(mi_row, mi_col, n, mv),
+            Mode::Unchanged => (mode, largest),
         };
         // An 8×8 intra block's mode is chosen by coding it each way, and
         // each of four 4×4s' in turn; then the chroma's, by coding the
@@ -2095,32 +2091,25 @@ impl<'a> Tile<'a> {
         (Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]).of(mv).1, mv)
     }
 
-    /// The vector within three quarters of a pixel of `mv` that the square
-    /// block of `1 << n` 8×8s at `(mi_row, mi_col)` is best predicted at, by
-    /// its luma's variance from the prediction and the bits of the vector at
-    /// `RATE_WEIGHT`, the variance being an error to come in the residual,
-    /// and then kept only where it pays as `laplacian` models it: libvpx's
-    /// pruned sub-pixel search
+    /// The vector within three quarters of a pixel of `mv`, other than
+    /// `mv`, that the square block of `1 << n` 8×8s at `(mi_row, mi_col)`
+    /// is best predicted at, if one is, by its luma's variance from the prediction and the
+    /// bits of the vector at `RATE_WEIGHT`, the variance being an error to
+    /// come in the residual: libvpx's pruned sub-pixel search
     /// (`vp9_find_best_sub_pixel_tree_pruned_more`), a half pixel where the
     /// whole pixels around `mv` say, or each way, and then each way a quarter
     /// pixel from the best. The patch around `mv` is filtered across once
     /// per sixteenth the vectors tried ask for, so each of them is at most a
-    /// pass down. A block the picture does not hold whole keeps `mv`, as
-    /// does one whose luma `mv` predicts exactly, and one only probed, the
-    /// search measured and not taken.
-    fn refine(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> Mv {
+    /// pass down. A block the picture does not hold whole is not looked at;
+    /// one whose luma `mv` predicts exactly has nothing better.
+    fn refine(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> Option<Mv> {
         let src = self.source;
         let size = 8 << n;
         let (px, py) = (mi_col * 8, mi_row * 8);
         if px + size > src.width || py + size > src.height {
-            return mv;
+            return None;
         }
-        let previous = self.previous.as_ref().expect("an inter frame");
-        let reference = previous.reference;
-        *self.contexts.probes += 1;
-        if !self.contexts.probes.is_multiple_of(previous.search_every) {
-            return mv;
-        }
+        let reference = self.previous.as_ref().expect("an inter frame").reference;
         let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
         let ac = i64::from(self.quantizer.ac_step());
         let count = (size * size) as i64;
@@ -2179,7 +2168,7 @@ impl<'a> Tile<'a> {
         let first = cost(mv);
         // Nothing to take from a prediction that is the source.
         if first.1 == 0 {
-            return mv;
+            return None;
         }
         let mut best = (first.0, mv, first.1);
         // From a vector of whole pixels that predicts better than the whole
@@ -2198,22 +2187,7 @@ impl<'a> Tile<'a> {
             _ => around(&mut cost, &mut best, 4),
         }
         around(&mut cost, &mut best, 2);
-        // What the residual costs coded is no straight line in its
-        // deviation: the vector found is taken only where its residual
-        // modelled as coded, and its bits, do better.
-        let (step, weight) = (ac as f64 / 8.0, (RATE_WEIGHT * ac * ac) as f64 / 64_000.0);
-        let coded = |deviation: i64, v: Mv| {
-            let (distortion, residual) = laplacian(deviation as f64, count as f64, step);
-            distortion + weight * (residual + f64::from(bits(v)) / 256.0)
-        };
-        let came = coded(first.1, mv);
-        let saved = if best.1 == mv { 0.0 } else { (came - coded(best.2, best.1)).max(0.0) };
-        self.contexts.searched[0] += came;
-        self.contexts.searched[1] += saved;
-        // A probe only measures: a block refined alone among blocks that
-        // were not leaves their vectors predicting worse, which cost
-        // `browser` more than the vector saved.
-        if saved > 0.0 && previous.search_every == 1 { best.1 } else { mv }
+        (best.1 != mv).then_some(best.1)
     }
 
     /// The transform blocks of size `tx` (log2 less 2) of a block at
@@ -2238,7 +2212,7 @@ impl<'a> Tile<'a> {
     /// has 135); left stale, their residual there was garbage, coded at a
     /// thousand tokens a block in every inter frame that coded the bottom
     /// row, unseen by a decoder and paid for.
-    fn predict_inter(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) {
+    fn predict_inter(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv, planes: std::ops::Range<usize>) {
         let reference = self.previous.as_ref().expect("an inter frame").reference;
         let picture = (self.source.width, self.source.height);
         let ((dx, dy), fraction) = mv.split();
@@ -2247,7 +2221,7 @@ impl<'a> Tile<'a> {
         let (wide, high) = (size, size);
         let (stride, x, y) = (self.contexts.stride, px - self.contexts.x, py - self.top * 8);
         let (rx, ry) = (px as isize + dx, py as isize + dy);
-        for (plane, recon) in self.contexts.planes.iter_mut().enumerate() {
+        for (plane, recon) in self.contexts.planes.iter_mut().enumerate().take(planes.end).skip(planes.start) {
             let out = &mut recon[y * stride + x..];
             if fraction == (0, 0) {
                 let (block, from) = reference.block(plane, (rx, ry), (wide, high), picture, &mut self.patch);
@@ -2303,7 +2277,7 @@ impl<'a> Tile<'a> {
             // it is, and nothing of this frame reads it here.
             let previous = self.previous.as_ref().expect("an inter frame");
             if previous.touched[(mi_row >> SB_LOG2) * g.sb_cols + (mi_col >> SB_LOG2)] {
-                self.predict_inter(mi_row, mi_col, n, Mv::ZERO);
+                self.predict_inter(mi_row, mi_col, n, Mv::ZERO, 0..3);
             }
             self.nothing(mi_row, mi_col, n, tx_log2);
             return;
