@@ -636,6 +636,36 @@ the level back, and the ground is 47 from there on.
   level's four points are not where a video's time is, and the parabola
   through whole pixels misses the quarter pixel often enough to cost
   bytes and picture both.
+- **A square coded whole and in quarters, and the cheaper taken** (item
+  20), in four forms, each turn about with the build before. The whole
+  first, at its vector searched between pixels, then the quarters cut
+  short once they cost more, their decisions kept for the partition,
+  over the 80 captures: `video` 0.933 to 0.982 of its bytes at −0.02 to
+  −0.06 dB and `walk` 0.938 to 0.964 at −0.17 to +0.04, in 1.30 to 1.62
+  and 1.12 to 1.33 of their time; `browser` 1.004 to 1.038 at ±0.05 dB in
+  1.03 to 1.07, `terminal` and `uncover` within 0.6% in 1.02 to 1.15;
+  `flood` 0.995 in 1.26 to 1.41. The quarters first, as they are decided
+  without it, then the whole at its whole vector cut short past their
+  cost and searched between pixels only where it wins, by the luma alone:
+  `video` 0.966 to 0.996 and `walk` 0.967 to 0.987 at the same picture in
+  1.08 to 1.24, but `browser` 1.000 to 1.041, and −0.27 dB once. The
+  chroma's residual weighed on both sides as the moments measure it:
+  `browser` 0.996 to 1.008, but `video` 0.986 to 0.998 and `walk` 0.990
+  to 0.996 in 1.13 to 1.24, the deviation not being the error coded, and
+  too heavy on a video. The whole tried only where every quarter came out
+  inter at its whole pixels, four blocks at one vector: `video` 0.998 to
+  1.000, nothing, so the 8×8s on a fifth of a video's area are not four
+  blocks at one vector. Tried where every quarter is inter at any vector,
+  at its largest transform size alone: `video` 0.991 to 0.998 and `walk`
+  0.988 to 0.996 at the same picture in 1.00 to 1.12 of their time, the
+  users' frames within 0.3% in 0.98 to 1.09. A hundredth of the bytes for
+  five to eight of the time where the video is on libvpx's line, which is
+  what item 22's search in the trial was refused on: not taken. The
+  browser's bytes under the luma alone are from squares with intra or
+  unchanged quarters, since inter quarters cost it nothing; and deciding
+  the quarters before the whole costs 2 to 3% of every capture's time by
+  itself, in the predictions made again and the decisions kept and
+  brought back.
 
 ### Measured, for what comes next
 
@@ -927,17 +957,21 @@ about against the build before over the cut captures and weighed on the
 frame of rectangles first, as every change is; 20 to 22 bear on item 1,
 23 on item 17, 24 on item 3 and 25 on item 18:
 
-20. **A square coded whole before it is split.** The square is coded at
-    its best vector or mode and split only where its cost per pixel is
-    past a threshold a size (`rusty_vp9`'s gate, 8×8 to 32×32, its 64×64
-    always tried), the quarters' trials cut short once their running cost
-    passes the whole's (rav1e, zvidlib); a square that comes out skipped
-    is not split (zvidlib). What it is for is the video's inter 8×8s on a
-    fifth of the area where libvpx's are a twentieth. What it risks is
-    what judging a square at its refined vector cost the screens
-    ([not taken](#measured-and-not-taken)), 0.1 to 0.3 dB on `flood`,
-    `terminal` and `uncover`: it is gated on them, and it is not taken
-    without item 25, which keeps a square's prediction for its quarters.
+20. **A square coded whole before it is split**, [measured in four forms
+    and not taken](#measured-and-not-taken): the whole first and the
+    quarters cut short past it (rav1e, zvidlib) takes `video` to 0.93 to
+    0.98 of its bytes in 1.3 to 1.6 of its time; the quarters first and
+    the whole after them, cut short past their cost, a hundredth of the
+    bytes in 1.00 to 1.12. What it is for is the video's inter 8×8s on a
+    fifth of the area where libvpx's are a twentieth, and they are not
+    four blocks at one vector: a whole that wins is coded over quarters
+    whose vectors differ, at more residual for fewer vector bits. What
+    is left of it: the whole's prediction kept for its quarters at the
+    same vector (item 25), which the whole-first form needs to be cheap;
+    the chroma in the comparison as it is coded and not as its deviation,
+    since by the luma alone the screens' squares with intra quarters lose
+    up to 4% of their bytes; and `rusty_vp9`'s gate on the whole's cost
+    per pixel, untried.
 21. **Rectangles.** libvpx's variance partition takes a square whole
     where its residual's variance is under a threshold, else the two
     halves across or down where each is under it, else the quarters
