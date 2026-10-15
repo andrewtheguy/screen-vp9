@@ -76,6 +76,16 @@ const INTRA_BITS: i64 = 24;
 /// fewer but `uncover`'s at 1.01×.
 const RATE_WEIGHT: i64 = 35;
 
+/// How many times the cost of a whole vector's prediction the whole
+/// vectors around it each cost more for nothing to be looked for between
+/// pixels (`refine`). The search found nothing on seven tenths of `drag`'s
+/// and `browser`'s area at 2048×1536, nearly all of it where the four
+/// cost more than four times as much; at 7, turn about over every cut
+/// capture, `drag`, `browser` and `uncover` take 0.84 to 0.93 of the time
+/// at their bytes and picture, and the rest within 0.3% of their bytes and
+/// 0.03 dB. At 3 `browser` at 2048×1536 lost 0.14 dB.
+const SHARP: i64 = 7;
+
 /// A vector the search offers is taken over the vectors a decoder predicts
 /// only where its residual's squares are `1 / NEW_VECTOR_GAIN` less than
 /// theirs.
@@ -2174,9 +2184,13 @@ impl<'a> Tile<'a> {
         // From a vector of whole pixels that predicts better than the whole
         // pixels around it, a half pixel only where those say the least
         // lies, fitting a parabola through them (libvpx's
-        // `get_cost_surf_min`); otherwise each way.
+        // `get_cost_surf_min`); otherwise each way. Where each of them costs
+        // more than `SHARP` times as much again, the picture sits on whole
+        // pixels, as text and a page moved by whole ones do, and a filtered
+        // prediction only blurs it: nothing is looked for between them.
         let mut whole = |row: i32, col: i32| cost(Mv { row: mv.row + row, col: mv.col + col }).0;
         match (mv.split().1 == (0, 0)).then(|| [whole(0, -8), whole(0, 8), whole(-8, 0), whole(8, 0)]) {
+            Some(around) if around.iter().all(|&c| c - first.0 > SHARP * first.0) => return None,
             Some([left, right, up, down]) if [left, right, up, down].iter().all(|&c| c > first.0) => {
                 let towards = |less: i64, more: i64| rounded(less - more, less - 2 * first.0 + more) as i32;
                 let (col, row) = (towards(left, right), towards(up, down));
