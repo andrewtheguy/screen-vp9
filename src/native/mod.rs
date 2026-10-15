@@ -19,6 +19,7 @@
 //! their own.
 
 mod bool_writer;
+mod convolve;
 mod dct;
 mod header;
 mod lanes;
@@ -41,7 +42,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, loop_filtered, quality_to_q, tile_columns_log2};
 use pool::Pool;
-
 
 /// The widest a tile column may be, in superblocks.
 const MAX_TILE_WIDTH_B64: usize = 64;
@@ -1248,6 +1248,36 @@ mod tests {
         }
     }
 
+    /// A `w`×`h` in RGB of soft waves, as video is and a desktop is not,
+    /// moved `shift` pixels right and down: what only a vector between
+    /// pixels predicts well.
+    fn waves_rgb(w: u16, h: u16, (sx, sy): (f64, f64)) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity(usize::from(w) * usize::from(h) * 3);
+        for y in 0..h {
+            for x in 0..w {
+                let (x, y) = (f64::from(x) - sx, f64::from(y) - sy);
+                let wave = |a: f64, b: f64, c: f64| (128.0 + 90.0 * (x * a + y * b + c).sin()).round() as u8;
+                rgb.extend([wave(0.21, 0.07, 0.0), wave(-0.05, 0.17, 1.0), wave(0.13, -0.11, 2.0)]);
+            }
+        }
+        rgb
+    }
+
+    #[test]
+    fn motion_between_pixels_decodes() {
+        // Small pictures and their edges, and four tile columns.
+        for (w, h, threads) in [(130, 67, 1), (200, 120, 1), (3840, 136, 4)] {
+            let mut stream = Stream::new(w, h, 90, threads);
+            let mut fractions = 0;
+            for (i, shift) in [(0.0, 0.0), (0.5, 0.0), (0.75, 0.25), (1.5, 1.0), (-2.25, 0.5), (-2.25, 0.5)].into_iter().enumerate() {
+                let (bytes, keyframe, _) = stream.frame(&picture(w, h, &waves_rgb(w, h, shift)), false);
+                assert_eq!(keyframe, i == 0, "{w}x{h}, frame {i}, {bytes} bytes");
+                fractions += stream.encoder.contexts.iter().flat_map(|c| c.vectors()).filter(|mv| mv.row % 8 != 0 || mv.col % 8 != 0).count();
+            }
+            assert!(fractions > 0, "{w}x{h}: no vector between pixels");
+        }
+    }
+
     #[test]
     fn an_unchanged_picture_costs_a_few_bytes() {
         let (w, h) = (640, 384);
@@ -1827,12 +1857,12 @@ mod tests {
         let mut stream: Option<(Libvpx, Encoder, [Decoder; 2], Picture)> = None;
         let mut tallies: std::collections::BTreeMap<Kind, Tally> = std::collections::BTreeMap::new();
         let (mut n, mut size, mut libvpx_carried) = (0usize, (0u16, 0u16), false);
-        // With `IVF` set to a directory, this encoder's stream is kept and
-        // written there as `<capture>-<WxH>.ivf`, a file per size.
+        // With `IVF` set to a directory, both streams are kept and written
+        // there as `<capture>-<WxH>-<encoder>.ivf`, a file per size.
         let ivf = std::env::var_os("IVF").map(std::path::PathBuf::from);
         let frames = std::env::var_os("FRAMES").is_some();
         let fastest = std::env::var("SPEED").is_ok_and(|s| s == "fastest");
-        type Kept = ((u16, u16), Vec<Vec<u8>>);
+        type Kept = ((u16, u16), [Vec<Vec<u8>>; 2]);
         let mut kept: Vec<Kept> = Vec::new();
         each_captured(path, |frame| {
             let (w, h) = frame.size;
@@ -1932,16 +1962,22 @@ mod tests {
             }
             if ivf.is_some() {
                 if fresh {
-                    kept.push(((w, h), Vec::new()));
+                    kept.push(((w, h), [Vec::new(), Vec::new()]));
                 }
-                kept.last_mut().expect("pushed above").1.push(std::mem::take(&mut out[1]));
+                let streams = &mut kept.last_mut().expect("pushed above").1;
+                if against && produced {
+                    streams[0].push(std::mem::take(&mut out[0]));
+                }
+                streams[1].push(std::mem::take(&mut out[1]));
             }
             n += 1;
             true
         });
         if let Some(dir) = ivf {
-            for ((w, h), stream) in &kept {
-                write_ivf(&dir.join(format!("{}-{w}x{h}.ivf", capture_name(path))), (*w, *h), stream);
+            for ((w, h), streams) in &kept {
+                for (stream, coder) in streams.iter().zip(["libvpx", "rust"]).filter(|(stream, _)| !stream.is_empty()) {
+                    write_ivf(&dir.join(format!("{}-{w}x{h}-{coder}.ivf", capture_name(path))), (*w, *h), stream);
+                }
             }
         }
         (tallies, size, n)
@@ -1967,18 +2003,34 @@ mod tests {
         path.file_name().expect("a file").to_string_lossy().trim_end_matches(".zst").trim_end_matches(".wlcap").to_owned()
     }
 
-    /// The first picture of each capture: what the capture's first frame
-    /// holds.
-    fn first_picture(path: &std::path::Path) -> Picture {
-        let mut picture = None;
+    /// The captures whose first picture is a video paused on its first
+    /// frame, which is black, and says nothing coded alone; `walk` ends on
+    /// black too, the video stopped.
+    const PAUSED: [&str; 2] = ["video", "walk"];
+
+    /// The picture a keyframe and a settle of a capture are measured on:
+    /// what its first frame holds, or for a capture that starts on a paused
+    /// video (`PAUSED`), what its last frame of more than one colour does,
+    /// the video as it last stood.
+    fn measured_picture(path: &std::path::Path) -> Picture {
+        let name = capture_name(path);
+        let last = PAUSED.iter().any(|paused| name.starts_with(&format!("{paused}-")));
+        let (mut size, mut pixels) = ((0, 0), Vec::new());
         each_captured(path, |frame| {
-            let (w, h) = frame.size;
-            let mut p = Picture::new(w, h, 1).expect("a picture");
-            p.read_bgrx(frame.pixels, usize::from(w) * 4).expect("the picture");
-            picture = Some(p);
-            false
+            // `B, G, R, X`: the fourth byte is not the picture's.
+            let one_colour = frame.pixels.as_chunks::<4>().0.iter().all(|p| p[..3] == frame.pixels[..3]);
+            if pixels.is_empty() || !one_colour {
+                size = frame.size;
+                pixels.clear();
+                pixels.extend_from_slice(frame.pixels);
+            }
+            last
         });
-        picture.expect("a frame in the capture")
+        let (w, h) = size;
+        assert!(!pixels.is_empty(), "{}: no frame", path.display());
+        let mut picture = Picture::new(w, h, 1).expect("a picture");
+        picture.read_bgrx(&pixels, usize::from(w) * 4).expect("the picture");
+        picture
     }
 
     /// One frame's bytes, least time and PSNR, luma's and over all three
@@ -1991,8 +2043,9 @@ mod tests {
         );
     }
 
-    /// The first picture of each capture (the same knobs as
-    /// `captures_against_libvpx`) coded as a keyframe by both encoders at
+    /// The picture of each capture `measured_picture` takes, its first or a
+    /// paused video's last (the same knobs as `captures_against_libvpx`),
+    /// coded as a keyframe by both encoders at
     /// the dials `DIALS` names (`40,65,90` if unset), each `PASSES` times
     /// (5 if unset) turn about for the least time: bytes, time and PSNR per
     /// dial, luma's and over all three planes. `SPEED=fastest` codes both
@@ -2010,7 +2063,7 @@ mod tests {
         let passes: usize = std::env::var("PASSES").map_or(5, |t| t.parse().expect("a pass count"));
         let fastest = std::env::var("SPEED").is_ok_and(|s| s == "fastest");
         for path in captures() {
-            let picture = first_picture(&path);
+            let picture = measured_picture(&path);
             let (w, h) = picture.size();
             println!("{} {w}x{h} on {threads}", capture_name(&path));
             for &dial in &dials {
@@ -2055,8 +2108,9 @@ mod tests {
         }
     }
 
-    /// The first picture of each capture (the same knobs as
-    /// `captures_against_libvpx`) coded as a keyframe at the first dial of
+    /// The picture of each capture `measured_picture` takes, its first or a
+    /// paused video's last (the same knobs as `captures_against_libvpx`),
+    /// coded as a keyframe at the first dial of
     /// each pair `SETTLES` names (`20:90,65:90,80:90,89:90` if unset), and
     /// then settled at the second, the picture unchanged, as a caller
     /// sharpens a quiet picture after the dial walked: this encoder's
@@ -2078,7 +2132,7 @@ mod tests {
         );
         let passes: usize = std::env::var("PASSES").map_or(5, |t| t.parse().expect("a pass count"));
         for path in captures() {
-            let picture = first_picture(&path);
+            let picture = measured_picture(&path);
             let (w, h) = picture.size();
             println!("{} {w}x{h} on {threads}", capture_name(&path));
             for &(from, to) in &pairs {
@@ -2129,8 +2183,8 @@ mod tests {
     /// and the ratios `tools/tables.py` makes the tables of
     /// `docs/benchmarks.md` from. `ALONE` leaves libvpx out, `FRAMES`
     /// prints every frame, `SPEED=fastest` codes both at their fastest.
-    /// With `IVF` set to a directory, this encoder's stream of each capture
-    /// is written there too, for the browsers' own decoders to read through
+    /// With `IVF` set to a directory, both encoders' streams of each capture
+    /// are written there too, for the browsers' own decoders to read through
     /// ffmpeg (`-c:v libvpx-vp9` is Chrome's, `-c:v vp9` Firefox's;
     /// `-f framemd5` of each should agree), one file per size the capture
     /// runs at, since ffmpeg rescales every frame after a size change to

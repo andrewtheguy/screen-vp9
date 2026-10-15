@@ -74,6 +74,7 @@ All under `src/native/`.
 | `tile.rs` | One superblock row of a tile column: the partition, each block's mode, transform size and reconstruction |
 | `motion.rs` | The whole-pixel motion search: hashed anchors for what moves exactly, projections for what does not |
 | `mv.rs` | Motion vectors: the clamping of a predicted vector and the coding of a new one |
+| `convolve.rs` | Inter prediction between pixels at EIGHTTAP_SMOOTH, as a decoder filters, its kernels held to a scalar reference |
 | `predict.rs` | Intra prediction as a decoder makes it, all ten modes |
 | `transform.rs`, `dct.rs` | Forward and inverse transforms, DCT and ADST; `dct.rs` is generated from libvpx |
 | `quantize.rs` | The fixed quantizer at libvpx's realtime roundings, an inter block's and an intra block's |
@@ -99,7 +100,7 @@ The least VP9 that a decoder accepts and that a desktop is coded well with.
 | Segmentation | Every inter frame is in two segments. The inactive one skips (`SEG_LVL_SKIP`) and is not filtered (`SEG_LVL_ALT_LF` at −63); its map is coded whole or against the last frame's, whichever is fewer bits | Segments for anything else |
 | Block sizes | 64×64 down to 8×8, square; an intra 8×8 of text as four 4×4s. An inter block is 32×32 at most | Rectangular partitions; 4×4 inter blocks |
 | Intra modes | All ten. Blocks above 8×8 choose among DC, V, H and TM by line sums; an 8×8 and each 4×4 are coded each way (a 4×4 in DC, V, H and TM) | — |
-| Inter modes | Zero, nearest, near and new vectors of whole pixels | Vectors between pixels, so no interpolation filter runs; the header names EIGHTTAP |
+| Inter modes | Zero, nearest, near and new vectors to a quarter pixel, predicted at EIGHTTAP_SMOOTH, the frame's one filter, which the header names | The switchable per-block filter; eighth-pixel vectors (high precision) |
 | Transforms | A size per block, 4×4 to 32×32, which the block signals; an intra block's luma below 32×32 in the DCT/ADST hybrid its mode pairs | Lossless (the WHT) |
 | Loop filter | libvpx's level from the quantizer, in one and two tile columns; none in four or more | Per-segment or per-mode deltas beyond the inactive segment's |
 | Probabilities | Coefficient, transform size and skip probabilities updated in each frame's header from the frame's own bools | Updates to the other probabilities; backward adaptation |
@@ -134,6 +135,17 @@ In an inter frame a square is, in this order:
    to beat the predicted ones by a quarter (`NEW_VECTOR_GAIN`), since it
    costs its bits. An intra mode is taken where its residual beats the best
    vector's by more than its modes cost (`INTRA_BITS` at `RATE_WEIGHT`).
+
+A vector between pixels is measured in this choice at its nearest whole
+pixels. Once a square is coded inter, other than where it settles, its
+vector is refined between pixels (`refine`): libvpx's pruned search, a half
+pixel and then a quarter, on its luma at the filter it is coded with. Where
+it finds another vector, the block's luma is coded at both by `trial`, each
+with its mode's and its vector's bits at `RATE_WEIGHT`, and the block takes
+the one that costs less (`inter`); the chroma is predicted once, at the
+vector taken. Every block is refined: a page scrolled by a fraction of a
+pixel saves most of a frame now and then and nothing between, which no
+guess from the frames before foresees.
 
 A square is split rather than coded whole where its residual varies by more
 than a fraction of the quantizer's step (`SPLIT_VARIANCE`, `INTER_SPLIT`),
@@ -207,8 +219,9 @@ The rules the encoder keeps to, in the order the users' frames come:
   and the decode is held to the encoder's own reconstruction pixel for
   pixel. libvpx is Chrome's decoder.
 - **ffvp9, Firefox's**, by hand: the measuring harness writes each capture's
-  stream as IVF when `IVF` names a directory, one file per picture size, and
-  `ffmpeg -c:v vp9 -f framemd5` of it should agree with `-c:v libvpx-vp9`.
+  stream as IVF when `IVF` names a directory, libvpx's beside it, one file
+  per picture size and encoder, and `ffmpeg -c:v vp9 -f framemd5` of this
+  encoder's should agree with `-c:v libvpx-vp9`.
 - **Scalar, NEON and AVX2 code the same stream to the byte.** arm64 is run
   on a Mac; amd64 here.
 
@@ -217,10 +230,14 @@ read the captures in `tmp/captures/` (or the directory `CAPTURES` names) and
 code each with this encoder and with libvpx's, the crate's other coder (`src/libvpx.rs`)
 as `screen-vp9` sets it up, turn about: `captures_against_libvpx` plays each
 capture as its session played it, `keyframes_against_libvpx` codes each
-capture's first picture at a row of dials, and `settles_against_libvpx`
+capture's first picture at a row of dials (a paused video's last picture
+of more than one colour), and `settles_against_libvpx`
 settles it from one dial to another. Each wants a release build and an idle
 machine; `ALONE` leaves libvpx out. `tools/tables.py` makes the tables of
-[benchmarks.md](benchmarks.md) from their logs.
+[benchmarks.md](benchmarks.md) from their logs. `tools/vpxinspect/` builds
+libvpx with a decoder that says where a stream's bytes go and an encoder
+that can be held to whole pixels, half pixels, one filter or the last
+frame, for the harness to be linked against through `LIBVPX_PREBUILT_DIR`.
 
 ## Reuse and licence
 

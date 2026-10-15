@@ -26,9 +26,8 @@ const MV_UPDATE_PROB: u8 = 252;
 /// keyframe filled with the rest.
 const LAST_SLOT: u32 = 0;
 
-/// `interp_filter`'s literal for EIGHTTAP, the frame's one filter, which
-/// no block uses: every vector is of whole pixels.
-const EIGHTTAP: u32 = 1;
+/// `interp_filter`'s literal for EIGHTTAP_SMOOTH, the frame's one filter.
+const EIGHTTAP_SMOOTH: u32 = 0;
 
 /// The segment of a block an inter frame leaves as the previous frame has
 /// it: the previous frame at the zero vector, no residual, and not loop
@@ -182,7 +181,7 @@ impl Uncompressed {
         w.flag(false); // render_and_frame_size_different
         w.flag(false); // allow_high_precision_mv
         w.flag(false); // is_filter_switchable
-        w.put(EIGHTTAP, 2); // raw_interpolation_filter
+        w.put(EIGHTTAP_SMOOTH, 2); // raw_interpolation_filter
     }
 
     /// From `refresh_frame_context` on, which every frame writes alike.
@@ -356,7 +355,7 @@ mod tests {
         assert_eq!(field(10, 8), 1, "slot 0 refreshed");
         assert_eq!(field(18, 12), 0, "every reference slot 0, no sign bias");
         assert_eq!(field(30, 2), 0b10, "the size of LAST, no render size");
-        assert_eq!(field(32, 4), 0b0001, "no high precision, EIGHTTAP");
+        assert_eq!(field(32, 4), 0b0000, "no high precision, EIGHTTAP_SMOOTH");
         assert_eq!(field(36, 2), 0b11, "refreshed, frame parallel");
         assert_eq!(field(38, 2), 0, "context 0");
         assert_eq!(field(40, 11), 10 << 5 | 0b00010, "loop filter level, sharpness, deltas");

@@ -20,9 +20,6 @@ import sys
 SIZES = ["1280x800", "1440x900", "1600x1000", "1920x1080", "2048x1536", "2560x1600", "2880x1800", "3200x2000", "3456x2168", "3840x2160"]
 SCALE2 = set(SIZES[4:])
 CAPTURES = ["terminal", "still", "uncover", "flood", "browser", "drag", "video", "walk"]
-# Whose first picture is the video paused on its first frame, which is black:
-# a keyframe or a settle of it says nothing.
-PAUSED = {"video", "walk"}
 HEAD = re.compile(r"^([a-z]+)-(\d+x\d+)(?:@2)? (\d+x\d+) on \d+(, \d+ frames)?")
 KIND = re.compile(r"^  (key|whole|small|mid|large|all)\s+(\d+) \| libvpx\s+(\d+) B\s+([\d.]+) ms\s+([\d.]+) dB \| rust\s+(\d+) B\s+([\d.]+) ms\s+([\d.]+) dB \| bytes ([\d.]+) time median ([\d.]+) total ([\d.]+)")
 PAIR = re.compile(r"^  q([\d:]+)\s+\| libvpx\s+(\d+) B\s+([\d.]+) ms\s+([\d.]+) dB \| rust\s+(\d+) B\s+([\d.]+) ms\s+([\d.]+) dB \| bytes ([\d.]+) time ([\d.]+) dB ([-+][\d.]+) all ([-+][\d.]+)")
@@ -126,19 +123,18 @@ def main():
     apart("`uncover`, a window moved off a page", data, "uncover", "large")
     apart("`video`, a frame of the video", data, "video", "large")
     apart("`walk`, a frame as the dial walks", data, "walk", "large")
-    apart("`walk`, the settle a session asked for", data, "walk", "whole")
     for c in ["terminal", "uncover", "drag", "flood"]:
         apart(f"Keyframes inside `{c}`", data, c, "key")
     for path, what, which in zip(sys.argv[2:], ["A keyframe at dial", "A settle from dial"], ["keyframes", "settles"]):
         pairs, made_of = read(path)
         # A first picture that is not the capture's size is the desktop
         # before its resize, and says nothing of the size.
-        rows = [c for c in CAPTURES if c not in PAUSED and any(made_of.get((c, s)) == s for s in SIZES)]
+        rows = [c for c in CAPTURES if any(made_of.get((c, s)) == s for s in SIZES)]
         pairs = {k: v for k, v in pairs.items() if made_of.get(k) == k[1]}
         labels = []
         for v in pairs.values():
             labels += [label for label in v if label not in labels]
-        print(f"## Against libvpx, {which} of each capture's first picture\n")
+        print(f"## Against libvpx, {which} of each capture's first picture, a paused video's last\n")
         for label in labels:
             name = f"{what} {label.replace(':', ' to ')}"
             grid(f"{name}: time", "This encoder's least time over libvpx's.", pairs, label, "time", ratio, rows)

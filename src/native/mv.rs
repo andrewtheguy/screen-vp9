@@ -38,9 +38,15 @@ impl Mv {
         Self { row: rows * 8, col: cols * 8 }
     }
 
-    /// The whole pixels across and down.
-    pub(super) fn split(self) -> (isize, isize) {
-        ((self.col >> 3) as isize, (self.row >> 3) as isize)
+    /// The nearest vector of whole pixels, halves rounded up.
+    pub(super) fn round(self) -> Self {
+        Self { row: (self.row + 4) & !7, col: (self.col + 4) & !7 }
+    }
+
+    /// The whole pixels across and down, rounded down, and the sixteenths
+    /// past them across and down that a 4:4:4 plane is filtered at.
+    pub(super) fn split(self) -> ((isize, isize), (usize, usize)) {
+        (((self.col >> 3) as isize, (self.row >> 3) as isize), (((self.col & 7) * 2) as usize, ((self.row & 7) * 2) as usize))
     }
 
     /// The vector a decoder predicts from this one for the square of `bw`
