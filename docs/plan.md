@@ -794,10 +794,15 @@ Then, as before:
 
 Of a very busy picture alone, and last:
 
-17. **A settle of a busy picture takes 1.0 to 1.9 of libvpx's time**:
-   `still`, `uncover`, `browser` and `flood` 1.01 to 1.68 from 65, and
-   `flood` 1.27 to 1.85 from 80 and 89, more from 2048 wide than under
-   it. libvpx's settle
+17. **A settle of a busy picture takes up to 1.8 of libvpx's time**, more
+   from 2048 wide than under it ([benchmarks.md](benchmarks.md), the run
+   of 2026-10-15): from 65 `still`, `uncover` and `browser` 0.96 to 1.44,
+   `flood` 0.75 to 1.60 and a picture of the video 1.04 to 1.60, 1.33 to
+   1.60 from 2048 wide; from 80 and 89 `flood` 0.96 to 1.84 and the video
+   0.82 to 1.47. The settle `walk`'s own session asks for, its clip paused
+   partway up the dial at 41 to 75, is 0.79 to 1.06 of libvpx's time up to
+   1920 wide and 1.17 to 1.33 from 2048, at 0.84 to 0.93 of its bytes and
+   +0.3 to +0.9 dB. libvpx's settle
    time read at two levels because the measurement made a fresh encoder a
    pass and its second frame paid page faults, or did not; on encoders
    kept warm it is 0.5 to 0.65 of what it read, and this is what is left.
