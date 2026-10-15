@@ -2005,7 +2005,7 @@ mod tests {
 
     /// The captures whose first picture is a video paused on its first
     /// frame, which is black, and says nothing coded alone; `walk` ends on
-    /// black too, the video stopped.
+    /// the video paused where it stood, the picture its session settles.
     const PAUSED: [&str; 2] = ["video", "walk"];
 
     /// The picture a keyframe and a settle of a capture are measured on:

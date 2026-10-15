@@ -13,7 +13,8 @@ by the three measurements in `src/native/mod.rs`:
 frame, turn about; `keyframes_against_libvpx` codes each capture's first
 picture as a keyframe at dials 40, 65 and 90, and `video`'s and `walk`'s
 last of more than one colour, since both begin on the clip paused on
-black and `walk` ends on black; `settles_against_libvpx`
+black, which for `walk` is the frame its session pauses the clip on and
+settles; `settles_against_libvpx`
 codes it at one dial and settles it at 90, the picture unchanged. The last
 two keep the least time of five passes, each on one encoder kept across
 them, as a session's is. `tools/tables.py` makes the tables below from
@@ -25,7 +26,9 @@ build after release 0.0.19 that updates an inter frame's mode, partition
 and vector probabilities and takes the 32×32 intra transform
 ([plan.md](plan.md#taken-up-on-2026-10-15)), over the captures of
 2026-10-13 cut to 120 frames each, `walk` whole ([Test
-material](#test-material)): the three took 47 minutes. A time on this
+material](#test-material)): the three took 47 minutes. `walk` was captured
+again the same day, its clip paused for the settle where it had been
+stopped, and its rows measured again on the same build, in 7 minutes. A time on this
 machine moves by a tenth from one run to the next, so a ratio within a
 tenth of 1.00 is on the line. The same
 measurements on an Apple M2 Max, in
@@ -44,8 +47,12 @@ the other; a number on the line is left plain.
 - **A video is a little over the line in bytes at every size, and over
   libvpx's picture.** `video` takes 1.01 to 1.05 of libvpx's bytes over
   its frames at +0.6 to +0.8 dB, the least from 2048 wide; `walk`, the
-  same video as the dial walks down to 20 and back up to 89, 1.03 to 1.09
-  at +0.5 to +0.7. At 0.0.19 they were 1.03 to 1.08 and 1.08 to 1.13, the
+  same video as the dial walks down to 20 or 30 and partway back up, then
+  paused and settled, 1.01 to 1.09 at +0.4 to +0.7, the frame its session
+  settles, from 41 to 75, at 0.84 to 0.93 of libvpx's bytes at +0.3 to
+  +0.9 dB, in 0.79 to 1.06 of its time up to 1920 wide and 1.17 to 1.33
+  from 2048. At 0.0.19
+  they were 1.03 to 1.08 and, on the walk before, 1.08 to 1.13, the
   frames' modes, partitions and vectors coded at VP9's default
   probabilities, and without vectors between pixels, at 0.0.18, 1.22 to
   1.27 and 1.16 to 1.25 at up to 0.6 dB under: where a video's bytes go
@@ -62,7 +69,7 @@ the other; a number on the line is left plain.
 - **Every capture at every size takes less time than libvpx**, frame for
   frame and summed: a line of text 0.15–0.21, `browser` 0.39–0.46,
   `flood` 0.38–0.54, `drag` 0.47–0.57, `uncover` 0.52–0.67, `walk`
-  0.73–0.81, `video` 0.83–0.97, the most at 2048×1536 on the line,
+  0.70–0.80, `video` 0.83–0.97, the most at 2048×1536 on the line,
   `still`'s two keyframes 0.51–0.72.
 - **A keyframe inside a capture is 0.1 to 0.6 dB over libvpx's** at
   0.97–1.01× the bytes (`terminal`'s 0.77–0.95×), in 0.39 to 0.76 of its
@@ -73,25 +80,25 @@ the other; a number on the line is left plain.
   90 every picture 0.1 to 0.7 dB over at 0.97–1.03×, `terminal`'s at
   0.73–0.95×. `terminal`'s at 40 was 2.4 to 7.7 dB under, its flat ground
   a grey level off ([plan.md](plan.md#taken-up-on-2026-10-15)). **A
-  picture of the video** is 0.0 to 0.2 dB over at 40 at 0.85–1.01× the
+  picture of the video** is 0.1 to 0.2 dB over at 40 at 0.86–1.01× the
   bytes, and 0.3 to 0.5 at 65 and 90 at 0.97–1.06×. Up to 1920 wide a
-  keyframe takes 0.41 to 0.95 of libvpx's time; from 2048 wide 0.52 to
+  keyframe takes 0.41 to 0.97 of libvpx's time; from 2048 wide 0.52 to
   1.05, `flood`'s at 0.94 to 1.05 and `video`'s at 90 up to 1.03.
 - **A settle of a busy picture takes more time than libvpx's** from 65:
   `still`, `uncover` and `browser` 0.96 to 1.44 of it, for 1.0 to 1.5 dB
   more picture at 0.90–0.97× the bytes; `flood` 0.75 to 1.60; a picture
-  of the video 1.03 to 1.60, at +0.1 to +0.4 dB and 0.93–0.98× the bytes;
+  of the video 1.04 to 1.60, at +0.1 to +0.4 dB and 0.93–0.98× the bytes;
   `drag` 0.85 to 1.24. From 80 `flood` is 0.96 to 1.84 of it, at 1.01 to
-  1.10 of the bytes, the video 0.99 to 1.49 at 0.79–0.90× the bytes, and
+  1.10 of the bytes, the video 0.96 to 1.46 at 0.79–0.87× the bytes, and
   `still`, `uncover` and `browser` 0.83 to 1.11, on the line; from 89
-  `flood` is 1.04 to 1.73, the video 0.89 to 1.47, and the others 0.62 to
-  0.94. From 20 a settle is 0.30 to 0.99 of libvpx's time but the video's
-  from 2048 wide, 1.01 to 1.16, every settle from 20 at libvpx's picture
+  `flood` is 1.04 to 1.73, the video 0.82 to 1.47, and the others 0.62 to
+  0.94. From 20 a settle is 0.30 to 0.97 of libvpx's time but the video's
+  from 2048 wide, 1.00 to 1.15, every settle from 20 at libvpx's picture
   or over at 0.76–1.04× its bytes. `terminal`'s settles are 0.30 to 0.63
   of it.
 - **What is over the line in bytes, besides the video over its frames**:
   a settle from 89 of a picture of the video from 2048 wide (1.03 to
-  1.36×, at +0.4 to +0.5 dB), of `terminal` up to 1920 wide (up to
+  1.32×, at +0.4 to +0.5 dB), of `terminal` up to 1920 wide (up to
   1.55×, a few hundred bytes) and of `uncover` at one size (1.05×); a
   settle of `flood` from 80 (1.01 to 1.10×) and from 65 from 2048 wide
   (1.01 to 1.02×); single cells of `terminal`'s settles from 20 and 80 (up
@@ -269,7 +276,7 @@ Under 1.00 is fewer bytes than libvpx.
 | `browser` | $\color{green}{0.25}$ | $\color{green}{0.23}$ | $\color{green}{0.21}$ | $\color{green}{0.30}$ | $\color{green}{0.22}$ | $\color{green}{0.19}$ | $\color{green}{0.19}$ | $\color{green}{0.18}$ | $\color{green}{0.20}$ | $\color{green}{0.18}$ |
 | `drag` | $\color{green}{0.23}$ | $\color{green}{0.23}$ | $\color{green}{0.24}$ | $\color{green}{0.21}$ | $\color{green}{0.40}$ | $\color{green}{0.47}$ | $\color{green}{0.49}$ | $\color{green}{0.43}$ | $\color{green}{0.44}$ | $\color{green}{0.25}$ |
 | `video` | $\color{red}{1.05}$ | $\color{red}{1.05}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ |
-| `walk` | $\color{red}{1.09}$ | $\color{red}{1.09}$ | $\color{red}{1.08}$ | $\color{red}{1.07}$ | $\color{red}{1.06}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ |
+| `walk` | $\color{red}{1.09}$ | $\color{red}{1.07}$ | $\color{red}{1.06}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ |
 
 ### Encode time, the median of the per-frame ratios
 
@@ -284,7 +291,7 @@ Under 1.00 is faster than libvpx, frame for frame.
 | `browser` | $\color{green}{0.39}$ | $\color{green}{0.41}$ | $\color{green}{0.40}$ | $\color{green}{0.42}$ | $\color{green}{0.46}$ | $\color{green}{0.44}$ | $\color{green}{0.45}$ | $\color{green}{0.44}$ | $\color{green}{0.41}$ | $\color{green}{0.42}$ |
 | `drag` | $\color{green}{0.47}$ | $\color{green}{0.49}$ | $\color{green}{0.49}$ | $\color{green}{0.48}$ | $\color{green}{0.55}$ | $\color{green}{0.55}$ | $\color{green}{0.55}$ | $\color{green}{0.51}$ | $\color{green}{0.52}$ | $\color{green}{0.57}$ |
 | `video` | $\color{green}{0.83}$ | $\color{green}{0.92}$ | $\color{green}{0.93}$ | $\color{green}{0.90}$ | $\color{green}{0.97}$ | $\color{green}{0.92}$ | $\color{green}{0.88}$ | $\color{green}{0.86}$ | $\color{green}{0.87}$ | $\color{green}{0.86}$ |
-| `walk` | $\color{green}{0.74}$ | $\color{green}{0.81}$ | $\color{green}{0.78}$ | $\color{green}{0.78}$ | $\color{green}{0.80}$ | $\color{green}{0.77}$ | $\color{green}{0.76}$ | $\color{green}{0.74}$ | $\color{green}{0.74}$ | $\color{green}{0.73}$ |
+| `walk` | $\color{green}{0.78}$ | $\color{green}{0.78}$ | $\color{green}{0.77}$ | $\color{green}{0.71}$ | $\color{green}{0.80}$ | $\color{green}{0.75}$ | $\color{green}{0.75}$ | $\color{green}{0.72}$ | $\color{green}{0.73}$ | $\color{green}{0.70}$ |
 
 ### Encode time, the whole capture's
 
@@ -299,7 +306,7 @@ Every frame's time summed, this encoder's over libvpx's: where the long frames w
 | `browser` | $\color{green}{0.39}$ | $\color{green}{0.42}$ | $\color{green}{0.40}$ | $\color{green}{0.41}$ | $\color{green}{0.47}$ | $\color{green}{0.44}$ | $\color{green}{0.44}$ | $\color{green}{0.42}$ | $\color{green}{0.40}$ | $\color{green}{0.41}$ |
 | `drag` | $\color{green}{0.46}$ | $\color{green}{0.48}$ | $\color{green}{0.48}$ | $\color{green}{0.47}$ | $\color{green}{0.55}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ | $\color{green}{0.53}$ | $\color{green}{0.52}$ | $\color{green}{0.54}$ |
 | `video` | $\color{green}{0.83}$ | $\color{green}{0.93}$ | $\color{green}{0.95}$ | $\color{green}{0.90}$ | $\color{green}{0.99}$ | $\color{green}{0.93}$ | $\color{green}{0.90}$ | $\color{green}{0.88}$ | $\color{green}{0.90}$ | $\color{green}{0.87}$ |
-| `walk` | $\color{green}{0.77}$ | $\color{green}{0.85}$ | $\color{green}{0.82}$ | $\color{green}{0.81}$ | $\color{green}{0.84}$ | $\color{green}{0.81}$ | $\color{green}{0.78}$ | $\color{green}{0.77}$ | $\color{green}{0.76}$ | $\color{green}{0.76}$ |
+| `walk` | $\color{green}{0.78}$ | $\color{green}{0.78}$ | $\color{green}{0.79}$ | $\color{green}{0.76}$ | $\color{green}{0.80}$ | $\color{green}{0.76}$ | $\color{green}{0.75}$ | $\color{green}{0.72}$ | $\color{green}{0.73}$ | $\color{green}{0.71}$ |
 
 ### Luma PSNR, this encoder less libvpx, in dB
 
@@ -314,7 +321,7 @@ Above zero is a better picture than libvpx at the same dial.
 | `browser` | $\color{green}{+0.8}$ | $\color{green}{+1.0}$ | $\color{green}{+1.2}$ | $\color{green}{+1.0}$ | $\color{green}{+1.5}$ | $\color{green}{+1.6}$ | $\color{green}{+1.6}$ | $\color{green}{+1.6}$ | $\color{green}{+1.6}$ | $\color{green}{+1.6}$ |
 | `drag` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{red}{-0.4}$ | $\color{red}{-0.4}$ | $\color{red}{-0.3}$ | $\color{red}{-0.2}$ | $\color{red}{-0.2}$ | $\color{green}{+0.3}$ |
 | `video` | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ |
-| `walk` | $\color{green}{+0.7}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ |
+| `walk` | $\color{green}{+0.7}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ |
 
 ## Against libvpx, the frames apart
 
@@ -430,16 +437,16 @@ time ratio the median of the per-frame ratios, and the bytes the mean per frame.
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 246 | 15.6 | $\color{green}{11.7}$ | $\color{green}{0.74}$ | 14 kB | 15 kB | $\color{red}{1.09}$ | $\color{green}{+0.7}$ |
-| 1440×900 | 254 | 17.5 | $\color{green}{14.4}$ | $\color{green}{0.81}$ | 20 kB | 22 kB | $\color{red}{1.09}$ | $\color{green}{+0.6}$ |
-| 1600×1000 | 236 | 20.0 | $\color{green}{15.6}$ | $\color{green}{0.79}$ | 18 kB | 20 kB | $\color{red}{1.08}$ | $\color{green}{+0.6}$ |
-| 1920×1080 | 232 | 22.6 | $\color{green}{18.5}$ | $\color{green}{0.78}$ | 20 kB | 22 kB | $\color{red}{1.07}$ | $\color{green}{+0.5}$ |
-| 2048×1536@2 | 230 | 36.0 | $\color{green}{29.9}$ | $\color{green}{0.81}$ | 34 kB | 36 kB | $\color{red}{1.06}$ | $\color{green}{+0.6}$ |
-| 2560×1600@2 | 232 | 41.9 | $\color{green}{33.0}$ | $\color{green}{0.78}$ | 37 kB | 39 kB | $\color{red}{1.05}$ | $\color{green}{+0.6}$ |
-| 2880×1800@2 | 232 | 51.8 | $\color{green}{40.7}$ | $\color{green}{0.76}$ | 43 kB | 45 kB | $\color{red}{1.04}$ | $\color{green}{+0.5}$ |
-| 3200×2000@2 | 232 | 63.0 | $\color{green}{47.4}$ | $\color{green}{0.75}$ | 50 kB | 52 kB | $\color{red}{1.03}$ | $\color{green}{+0.5}$ |
-| 3456×2168@2 | 232 | 72.7 | $\color{green}{56.3}$ | $\color{green}{0.74}$ | 56 kB | 58 kB | $\color{red}{1.03}$ | $\color{green}{+0.5}$ |
-| 3840×2160@2 | 232 | 73.8 | $\color{green}{56.4}$ | $\color{green}{0.74}$ | 55 kB | 57 kB | $\color{red}{1.03}$ | $\color{green}{+0.5}$ |
+| 1280×800 | 200 | 17.5 | $\color{green}{13.9}$ | $\color{green}{0.78}$ | 15 kB | 16 kB | $\color{red}{1.09}$ | $\color{green}{+0.7}$ |
+| 1440×900 | 204 | 18.5 | $\color{green}{14.2}$ | $\color{green}{0.78}$ | 18 kB | 19 kB | $\color{red}{1.07}$ | $\color{green}{+0.7}$ |
+| 1600×1000 | 171 | 20.2 | $\color{green}{15.6}$ | $\color{green}{0.77}$ | 19 kB | 20 kB | $\color{red}{1.07}$ | $\color{green}{+0.6}$ |
+| 1920×1080 | 171 | 25.2 | $\color{green}{17.9}$ | $\color{green}{0.71}$ | 21 kB | 22 kB | $\color{red}{1.06}$ | $\color{green}{+0.5}$ |
+| 2048×1536@2 | 171 | 39.3 | $\color{green}{30.0}$ | $\color{green}{0.80}$ | 34 kB | 36 kB | $\color{red}{1.05}$ | $\color{green}{+0.6}$ |
+| 2560×1600@2 | 171 | 41.6 | $\color{green}{30.1}$ | $\color{green}{0.75}$ | 38 kB | 39 kB | $\color{red}{1.04}$ | $\color{green}{+0.5}$ |
+| 2880×1800@2 | 171 | 50.0 | $\color{green}{37.3}$ | $\color{green}{0.75}$ | 44 kB | 46 kB | $\color{red}{1.03}$ | $\color{green}{+0.6}$ |
+| 3200×2000@2 | 171 | 61.8 | $\color{green}{43.1}$ | $\color{green}{0.72}$ | 51 kB | 53 kB | $\color{red}{1.02}$ | $\color{green}{+0.5}$ |
+| 3456×2168@2 | 171 | 69.2 | $\color{green}{49.8}$ | $\color{green}{0.73}$ | 57 kB | 59 kB | $\color{red}{1.02}$ | $\color{green}{+0.5}$ |
+| 3840×2160@2 | 171 | 72.3 | $\color{green}{49.5}$ | $\color{green}{0.70}$ | 56 kB | 58 kB | $\color{red}{1.02}$ | $\color{green}{+0.4}$ |
 
 ### Keyframes inside `terminal`
 
@@ -516,7 +523,7 @@ This encoder's least time over libvpx's.
 | `browser` | $\color{green}{0.57}$ | $\color{green}{0.66}$ | $\color{green}{0.72}$ | $\color{green}{0.69}$ | $\color{green}{0.78}$ | $\color{green}{0.76}$ | $\color{green}{0.76}$ | $\color{green}{0.74}$ | $\color{green}{0.75}$ | $\color{green}{0.77}$ |
 | `drag` | $\color{green}{0.60}$ | $\color{green}{0.62}$ | $\color{green}{0.60}$ | $\color{green}{0.61}$ | $\color{green}{0.82}$ | $\color{green}{0.78}$ | $\color{green}{0.76}$ | $\color{green}{0.70}$ | $\color{green}{0.69}$ | $\color{green}{0.70}$ |
 | `video` | $\color{green}{0.78}$ | $\color{green}{0.90}$ | $\color{green}{0.87}$ | $\color{green}{0.81}$ | $\color{green}{0.86}$ | $\color{green}{0.78}$ | $\color{green}{0.74}$ | $\color{green}{0.69}$ | $\color{green}{0.72}$ | $\color{green}{0.72}$ |
-| `walk` | $\color{green}{0.76}$ | $\color{green}{0.82}$ | $\color{green}{0.79}$ | $\color{green}{0.76}$ | $\color{green}{0.77}$ | $\color{green}{0.77}$ | $\color{green}{0.76}$ | $\color{green}{0.76}$ | $\color{green}{0.72}$ | $\color{green}{0.72}$ |
+| `walk` | $\color{green}{0.77}$ | $\color{green}{0.87}$ | $\color{green}{0.85}$ | $\color{green}{0.79}$ | $\color{green}{0.83}$ | $\color{green}{0.77}$ | $\color{green}{0.79}$ | $\color{green}{0.73}$ | $\color{green}{0.73}$ | $\color{green}{0.71}$ |
 
 ### A keyframe at dial 40: bytes
 
@@ -531,7 +538,7 @@ This encoder's bytes over libvpx's.
 | `browser` | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{red}{1.01}$ | 1.00 | $\color{red}{1.01}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | 1.00 | 1.00 |
 | `drag` | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | 1.00 |
 | `video` | $\color{red}{1.01}$ | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.88}$ | $\color{green}{0.88}$ |
-| `walk` | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.90}$ | $\color{green}{0.90}$ | $\color{green}{0.88}$ | $\color{green}{0.86}$ | $\color{green}{0.85}$ | $\color{green}{0.85}$ |
+| `walk` | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.88}$ | $\color{green}{0.86}$ | $\color{green}{0.86}$ |
 
 ### A keyframe at dial 40: luma PSNR
 
@@ -546,7 +553,7 @@ This encoder's less libvpx's, in dB.
 | `browser` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
 | `drag` | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ |
 | `video` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ |
-| `walk` | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | 0.0 | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ |
+| `walk` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ |
 
 ### A keyframe at dial 65: time
 
@@ -561,7 +568,7 @@ This encoder's least time over libvpx's.
 | `browser` | $\color{green}{0.52}$ | $\color{green}{0.67}$ | $\color{green}{0.66}$ | $\color{green}{0.66}$ | $\color{green}{0.77}$ | $\color{green}{0.75}$ | $\color{green}{0.70}$ | $\color{green}{0.68}$ | $\color{green}{0.74}$ | $\color{green}{0.76}$ |
 | `drag` | $\color{green}{0.58}$ | $\color{green}{0.57}$ | $\color{green}{0.55}$ | $\color{green}{0.57}$ | $\color{green}{0.79}$ | $\color{green}{0.75}$ | $\color{green}{0.73}$ | $\color{green}{0.73}$ | $\color{green}{0.69}$ | $\color{green}{0.66}$ |
 | `video` | $\color{green}{0.81}$ | $\color{green}{0.95}$ | $\color{green}{0.89}$ | $\color{green}{0.92}$ | $\color{green}{0.95}$ | $\color{green}{0.90}$ | $\color{green}{0.92}$ | $\color{green}{0.86}$ | $\color{green}{0.85}$ | $\color{green}{0.83}$ |
-| `walk` | $\color{green}{0.76}$ | $\color{green}{0.93}$ | $\color{green}{0.89}$ | $\color{green}{0.86}$ | $\color{green}{0.93}$ | $\color{green}{0.88}$ | $\color{green}{0.86}$ | $\color{green}{0.83}$ | $\color{green}{0.82}$ | $\color{green}{0.78}$ |
+| `walk` | $\color{green}{0.77}$ | $\color{green}{0.93}$ | $\color{green}{0.94}$ | $\color{green}{0.87}$ | $\color{green}{0.88}$ | $\color{green}{0.89}$ | $\color{green}{0.86}$ | $\color{green}{0.86}$ | $\color{green}{0.84}$ | $\color{green}{0.79}$ |
 
 ### A keyframe at dial 65: bytes
 
@@ -576,7 +583,7 @@ This encoder's bytes over libvpx's.
 | `browser` | $\color{green}{0.99}$ | $\color{green}{0.99}$ | 1.00 | 1.00 | $\color{red}{1.02}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | 1.00 | 1.00 | 1.00 |
 | `drag` | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | 1.00 | 1.00 | 1.00 |
 | `video` | $\color{red}{1.06}$ | $\color{red}{1.06}$ | $\color{red}{1.05}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | 1.00 | 1.00 |
-| `walk` | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | 1.00 | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ |
+| `walk` | $\color{red}{1.03}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | 1.00 | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ |
 
 ### A keyframe at dial 65: luma PSNR
 
@@ -591,7 +598,7 @@ This encoder's less libvpx's, in dB.
 | `browser` | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ |
 | `drag` | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ |
 | `video` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
-| `walk` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
+| `walk` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
 
 ### A keyframe at dial 90: time
 
@@ -606,7 +613,7 @@ This encoder's least time over libvpx's.
 | `browser` | $\color{green}{0.49}$ | $\color{green}{0.63}$ | $\color{green}{0.62}$ | $\color{green}{0.61}$ | $\color{green}{0.75}$ | $\color{green}{0.73}$ | $\color{green}{0.69}$ | $\color{green}{0.70}$ | $\color{green}{0.71}$ | $\color{green}{0.71}$ |
 | `drag` | $\color{green}{0.51}$ | $\color{green}{0.56}$ | $\color{green}{0.54}$ | $\color{green}{0.53}$ | $\color{green}{0.71}$ | $\color{green}{0.66}$ | $\color{green}{0.63}$ | $\color{green}{0.62}$ | $\color{green}{0.62}$ | $\color{green}{0.59}$ |
 | `video` | $\color{green}{0.74}$ | $\color{green}{0.88}$ | $\color{green}{0.95}$ | $\color{green}{0.90}$ | $\color{red}{1.03}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.98}$ | $\color{green}{0.94}$ | $\color{green}{0.94}$ |
-| `walk` | $\color{green}{0.79}$ | $\color{green}{0.94}$ | $\color{green}{0.93}$ | $\color{green}{0.90}$ | $\color{green}{0.96}$ | $\color{green}{0.94}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.88}$ | $\color{green}{0.91}$ |
+| `walk` | $\color{green}{0.76}$ | $\color{green}{0.92}$ | $\color{green}{0.97}$ | $\color{green}{0.89}$ | 1.00 | $\color{green}{0.98}$ | $\color{green}{0.93}$ | $\color{green}{0.89}$ | $\color{green}{0.92}$ | $\color{green}{0.90}$ |
 
 ### A keyframe at dial 90: bytes
 
@@ -621,7 +628,7 @@ This encoder's bytes over libvpx's.
 | `browser` | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | 1.00 | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
 | `drag` | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
 | `video` | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.02}$ |
-| `walk` | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | 1.00 | $\color{red}{1.01}$ | 1.00 | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
+| `walk` | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | 1.00 | 1.00 | $\color{green}{0.99}$ | 1.00 |
 
 ### A keyframe at dial 90: luma PSNR
 
@@ -636,7 +643,7 @@ This encoder's less libvpx's, in dB.
 | `browser` | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ |
 | `drag` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
 | `video` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
-| `walk` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
+| `walk` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
 
 ## Against libvpx, settles of each capture's first picture, a paused video's last
 
@@ -653,7 +660,7 @@ This encoder's least time over libvpx's.
 | `browser` | $\color{green}{0.52}$ | $\color{green}{0.64}$ | $\color{green}{0.72}$ | $\color{green}{0.63}$ | $\color{green}{0.77}$ | $\color{green}{0.75}$ | $\color{green}{0.72}$ | $\color{green}{0.74}$ | $\color{green}{0.77}$ | $\color{green}{0.73}$ |
 | `drag` | $\color{green}{0.48}$ | $\color{green}{0.51}$ | $\color{green}{0.47}$ | $\color{green}{0.48}$ | $\color{green}{0.73}$ | $\color{green}{0.68}$ | $\color{green}{0.66}$ | $\color{green}{0.63}$ | $\color{green}{0.59}$ | $\color{green}{0.56}$ |
 | `video` | $\color{green}{0.70}$ | $\color{green}{0.91}$ | $\color{green}{0.94}$ | $\color{green}{0.95}$ | $\color{red}{1.15}$ | $\color{red}{1.07}$ | $\color{red}{1.08}$ | $\color{red}{1.05}$ | $\color{red}{1.08}$ | $\color{red}{1.04}$ |
-| `walk` | $\color{green}{0.73}$ | $\color{green}{0.99}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{red}{1.16}$ | $\color{red}{1.07}$ | $\color{red}{1.04}$ | $\color{red}{1.08}$ | $\color{red}{1.08}$ | $\color{red}{1.01}$ |
+| `walk` | $\color{green}{0.69}$ | $\color{green}{0.93}$ | $\color{green}{0.97}$ | $\color{green}{0.93}$ | $\color{red}{1.10}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.06}$ | 1.00 |
 
 ### A settle from dial 20 to 90: bytes
 
@@ -668,7 +675,7 @@ This encoder's bytes over libvpx's.
 | `browser` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.95}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ |
 | `drag` | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ |
 | `video` | $\color{green}{0.93}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.83}$ | $\color{green}{0.82}$ | $\color{green}{0.80}$ | $\color{green}{0.78}$ | $\color{green}{0.77}$ | $\color{green}{0.77}$ |
-| `walk` | $\color{green}{0.90}$ | $\color{green}{0.90}$ | $\color{green}{0.89}$ | $\color{green}{0.89}$ | $\color{green}{0.79}$ | $\color{green}{0.80}$ | $\color{green}{0.79}$ | $\color{green}{0.77}$ | $\color{green}{0.76}$ | $\color{green}{0.76}$ |
+| `walk` | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.90}$ | $\color{green}{0.81}$ | $\color{green}{0.81}$ | $\color{green}{0.79}$ | $\color{green}{0.78}$ | $\color{green}{0.77}$ | $\color{green}{0.77}$ |
 
 ### A settle from dial 20 to 90: luma PSNR
 
@@ -683,7 +690,7 @@ This encoder's less libvpx's, in dB.
 | `browser` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ |
 | `drag` | 0.0 | 0.0 | 0.0 | 0.0 | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ |
 | `video` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ |
-| `walk` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ |
+| `walk` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ |
 
 ### A settle from dial 65 to 90: time
 
@@ -698,7 +705,7 @@ This encoder's least time over libvpx's.
 | `browser` | $\color{red}{1.02}$ | $\color{red}{1.18}$ | $\color{red}{1.31}$ | $\color{red}{1.19}$ | $\color{red}{1.40}$ | $\color{red}{1.34}$ | $\color{red}{1.24}$ | $\color{red}{1.30}$ | $\color{red}{1.37}$ | $\color{red}{1.31}$ |
 | `drag` | $\color{green}{0.94}$ | $\color{green}{0.85}$ | $\color{green}{0.91}$ | $\color{green}{0.85}$ | $\color{red}{1.24}$ | $\color{red}{1.14}$ | $\color{red}{1.05}$ | $\color{green}{0.99}$ | $\color{green}{0.93}$ | $\color{green}{0.92}$ |
 | `video` | $\color{red}{1.06}$ | $\color{red}{1.30}$ | $\color{red}{1.32}$ | $\color{red}{1.31}$ | $\color{red}{1.60}$ | $\color{red}{1.48}$ | $\color{red}{1.41}$ | $\color{red}{1.42}$ | $\color{red}{1.44}$ | $\color{red}{1.34}$ |
-| `walk` | $\color{red}{1.03}$ | $\color{red}{1.27}$ | $\color{red}{1.24}$ | $\color{red}{1.26}$ | $\color{red}{1.54}$ | $\color{red}{1.46}$ | $\color{red}{1.45}$ | $\color{red}{1.42}$ | $\color{red}{1.46}$ | $\color{red}{1.40}$ |
+| `walk` | $\color{red}{1.04}$ | $\color{red}{1.24}$ | $\color{red}{1.25}$ | $\color{red}{1.23}$ | $\color{red}{1.55}$ | $\color{red}{1.38}$ | $\color{red}{1.37}$ | $\color{red}{1.33}$ | $\color{red}{1.36}$ | $\color{red}{1.33}$ |
 
 ### A settle from dial 65 to 90: bytes
 
@@ -713,7 +720,7 @@ This encoder's bytes over libvpx's.
 | `browser` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ |
 | `drag` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.92}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ |
 | `video` | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.94}$ | $\color{green}{0.93}$ |
-| `walk` | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.98}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.94}$ | $\color{green}{0.94}$ |
+| `walk` | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.94}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ |
 
 ### A settle from dial 65 to 90: luma PSNR
 
@@ -728,7 +735,7 @@ This encoder's less libvpx's, in dB.
 | `browser` | $\color{green}{+1.1}$ | $\color{green}{+1.1}$ | $\color{green}{+1.2}$ | $\color{green}{+1.0}$ | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ |
 | `drag` | $\color{green}{+1.1}$ | $\color{green}{+1.2}$ | $\color{green}{+1.2}$ | $\color{green}{+1.2}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ |
 | `video` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ |
-| `walk` | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ |
+| `walk` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ |
 
 ### A settle from dial 80 to 90: time
 
@@ -743,7 +750,7 @@ This encoder's least time over libvpx's.
 | `browser` | $\color{green}{0.88}$ | $\color{green}{0.94}$ | $\color{red}{1.03}$ | $\color{green}{0.96}$ | $\color{red}{1.10}$ | $\color{red}{1.09}$ | $\color{red}{1.04}$ | $\color{red}{1.07}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ |
 | `drag` | $\color{green}{0.79}$ | $\color{green}{0.74}$ | $\color{green}{0.72}$ | $\color{green}{0.68}$ | $\color{green}{0.95}$ | $\color{green}{0.90}$ | $\color{green}{0.84}$ | $\color{green}{0.80}$ | $\color{green}{0.79}$ | $\color{green}{0.76}$ |
 | `video` | $\color{red}{1.03}$ | $\color{red}{1.20}$ | $\color{red}{1.24}$ | $\color{red}{1.15}$ | $\color{red}{1.46}$ | $\color{red}{1.39}$ | $\color{red}{1.33}$ | $\color{red}{1.33}$ | $\color{red}{1.44}$ | $\color{red}{1.32}$ |
-| `walk` | $\color{green}{0.99}$ | $\color{red}{1.17}$ | $\color{red}{1.24}$ | $\color{red}{1.18}$ | $\color{red}{1.49}$ | $\color{red}{1.44}$ | $\color{red}{1.41}$ | $\color{red}{1.38}$ | $\color{red}{1.49}$ | $\color{red}{1.37}$ |
+| `walk` | $\color{green}{0.96}$ | $\color{red}{1.19}$ | $\color{red}{1.18}$ | $\color{red}{1.12}$ | $\color{red}{1.43}$ | $\color{red}{1.32}$ | $\color{red}{1.30}$ | $\color{red}{1.33}$ | $\color{red}{1.41}$ | $\color{red}{1.30}$ |
 
 ### A settle from dial 80 to 90: bytes
 
@@ -758,7 +765,7 @@ This encoder's bytes over libvpx's.
 | `browser` | $\color{green}{0.70}$ | $\color{green}{0.70}$ | $\color{green}{0.64}$ | $\color{green}{0.67}$ | $\color{green}{0.70}$ | $\color{green}{0.76}$ | $\color{green}{0.79}$ | $\color{green}{0.72}$ | $\color{green}{0.73}$ | $\color{green}{0.71}$ |
 | `drag` | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.70}$ |
 | `video` | $\color{green}{0.83}$ | $\color{green}{0.82}$ | $\color{green}{0.81}$ | $\color{green}{0.79}$ | $\color{green}{0.79}$ | $\color{green}{0.79}$ | $\color{green}{0.80}$ | $\color{green}{0.81}$ | $\color{green}{0.85}$ | $\color{green}{0.82}$ |
-| `walk` | $\color{green}{0.85}$ | $\color{green}{0.84}$ | $\color{green}{0.84}$ | $\color{green}{0.85}$ | $\color{green}{0.85}$ | $\color{green}{0.85}$ | $\color{green}{0.86}$ | $\color{green}{0.88}$ | $\color{green}{0.90}$ | $\color{green}{0.88}$ |
+| `walk` | $\color{green}{0.85}$ | $\color{green}{0.84}$ | $\color{green}{0.84}$ | $\color{green}{0.82}$ | $\color{green}{0.82}$ | $\color{green}{0.81}$ | $\color{green}{0.84}$ | $\color{green}{0.85}$ | $\color{green}{0.87}$ | $\color{green}{0.85}$ |
 
 ### A settle from dial 80 to 90: luma PSNR
 
@@ -773,7 +780,7 @@ This encoder's less libvpx's, in dB.
 | `browser` | 0.0 | 0.0 | 0.0 | 0.0 | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ |
 | `drag` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | 0.0 | 0.0 | $\color{green}{+0.1}$ |
 | `video` | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ |
-| `walk` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
+| `walk` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
 
 ### A settle from dial 89 to 90: time
 
@@ -788,7 +795,7 @@ This encoder's least time over libvpx's.
 | `browser` | $\color{green}{0.75}$ | $\color{green}{0.78}$ | $\color{green}{0.88}$ | $\color{green}{0.85}$ | $\color{green}{0.87}$ | $\color{green}{0.89}$ | $\color{green}{0.83}$ | $\color{green}{0.88}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ |
 | `drag` | $\color{green}{0.70}$ | $\color{green}{0.64}$ | $\color{green}{0.66}$ | $\color{green}{0.62}$ | $\color{green}{0.86}$ | $\color{green}{0.79}$ | $\color{green}{0.71}$ | $\color{green}{0.71}$ | $\color{green}{0.68}$ | $\color{green}{0.69}$ |
 | `video` | $\color{green}{0.93}$ | $\color{red}{1.07}$ | $\color{red}{1.04}$ | $\color{red}{1.05}$ | $\color{red}{1.47}$ | $\color{red}{1.33}$ | $\color{red}{1.34}$ | $\color{red}{1.31}$ | $\color{red}{1.40}$ | $\color{red}{1.28}$ |
-| `walk` | $\color{green}{0.89}$ | $\color{red}{1.06}$ | $\color{red}{1.14}$ | $\color{red}{1.08}$ | $\color{red}{1.47}$ | $\color{red}{1.33}$ | $\color{red}{1.40}$ | $\color{red}{1.36}$ | $\color{red}{1.45}$ | $\color{red}{1.36}$ |
+| `walk` | $\color{green}{0.82}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.01}$ | $\color{red}{1.37}$ | $\color{red}{1.32}$ | $\color{red}{1.27}$ | $\color{red}{1.30}$ | $\color{red}{1.34}$ | $\color{red}{1.24}$ |
 
 ### A settle from dial 89 to 90: bytes
 
@@ -803,7 +810,7 @@ This encoder's bytes over libvpx's.
 | `browser` | $\color{green}{0.70}$ | $\color{green}{0.65}$ | $\color{green}{0.67}$ | $\color{green}{0.74}$ | $\color{green}{0.58}$ | $\color{green}{0.79}$ | $\color{green}{0.75}$ | $\color{green}{0.66}$ | $\color{green}{0.70}$ | $\color{green}{0.71}$ |
 | `drag` | $\color{green}{0.53}$ | $\color{green}{0.54}$ | $\color{green}{0.53}$ | $\color{green}{0.53}$ | $\color{green}{0.41}$ | $\color{green}{0.40}$ | $\color{green}{0.42}$ | $\color{green}{0.40}$ | $\color{green}{0.41}$ | $\color{green}{0.39}$ |
 | `video` | $\color{green}{0.75}$ | $\color{green}{0.76}$ | $\color{green}{0.86}$ | $\color{green}{0.88}$ | $\color{red}{1.03}$ | $\color{red}{1.08}$ | $\color{red}{1.19}$ | $\color{red}{1.24}$ | $\color{red}{1.19}$ | $\color{red}{1.32}$ |
-| `walk` | $\color{green}{0.80}$ | $\color{green}{0.82}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{red}{1.16}$ | $\color{red}{1.16}$ | $\color{red}{1.27}$ | $\color{red}{1.30}$ | $\color{red}{1.24}$ | $\color{red}{1.36}$ |
+| `walk` | $\color{green}{0.75}$ | $\color{green}{0.81}$ | $\color{green}{0.84}$ | $\color{green}{0.84}$ | $\color{red}{1.05}$ | $\color{red}{1.09}$ | $\color{red}{1.18}$ | $\color{red}{1.27}$ | $\color{red}{1.15}$ | $\color{red}{1.24}$ |
 
 ### A settle from dial 89 to 90: luma PSNR
 
@@ -839,7 +846,7 @@ the captures whose name holds it.
 | `browser` | busy | a long page in Chromium scrolled by wheel, by key and back: the whole surface |
 | `drag` | busy | a floating terminal dragged around the desktop: a quarter of the picture |
 | `video` | busy | a 4K clip of coloured explosions played full screen, every pixel the video's, paused on its first frame, which is black, until the scenario goes; a keyframe asked at 10 s |
-| `walk` | busy | the video while the client reads late from 4 s to 10 s, so the dial walks down to 20 and back up to 89, then stopped, which leaves the screen black, the desktop settling on that |
+| `walk` | busy | the video while the client reads late from 4 s to 10 s, so the dial walks down to 20 or 30 and partway back up, to 41 to 75, then paused where it stands, the desktop settling at 90 on that frame; captured again on 2026-10-15, where the clip was stopped, which left the screen black and its settle of that |
 
 Sizes: the ten `capture-frames.sh` runs by default, which vp9-wasm's
 benchmark has samples of: 1280×800, 1440×900, 1600×1000 and 1920×1080 at
@@ -847,21 +854,25 @@ scale 1, and the same four desktops at scale 2, 2560×1600, 2880×1800,
 3200×2000 and 3840×2160, with 2048×1536 and 3456×2168. The set is the
 `frame-captures` of 2026-10-13 in the artifacts' backup
 (`/Volumes/dasdata/backup/vp9-artifacts/frame-captures/`, 80 files), its
-`uncover` trimmed on 2026-10-14 to begin where the terminal first moves.
-`video` and `walk` from 2560×1600 up are made from the 1920×1080 session
-frame for frame with the clip scaled to the size, since the capture
-container does not keep up there. Each is measured at quality 90, the dial
+`uncover` trimmed on 2026-10-14 to begin where the terminal first moves,
+and `walk` captured again on 2026-10-15 (its old files in
+`archive/frame-captures-walk-stopped/`). `video` from 2560×1600 up is made
+from the 1920×1080 session frame for frame with the clip scaled to the
+size, and `walk` from 1920×1080 up from the 1600×1000 session, since the
+capture container does not keep up there: `walk` was captured on this
+machine, whose container plays 1920×1080 at 12 to 22 frames a second, and
+the Mac's, which played it at 25, was not to hand. Each is measured at quality 90, the dial
 the captures were made at, on four threads.
 
 The tables are of those captures cut to 120 frames each, under the same
 names, but `walk`, kept whole, read with `CAPTURES` naming their directory
-(`frame-samples/` beside the captures, 11.5 GB against their 22). wlshare's
+(`frame-samples/` beside the captures, 9.3 GB against their 20). wlshare's
 `scripts/capture-samples.sh` cuts them (`vp9cap trim --frames`) from each
 capture's longest run of a size as vp9-wasm's samples are cut: a quiet
 scenario's first 120 frames, a busy one's the 120 in a row whose frames
 said the most pixels changed, the earliest where several tie; `still` (2
 frames) and `uncover` (48 or 49) are shorter and kept whole, and `walk`
-(233 to 256) is kept whole since its dial walks down, back up and settles
+(174 to 207) is kept whole since its dial walks down, back up and settles
 over all of it, a cut of it keeping only the walk down. A cut's first
 frame is the picture as it stood, whole, with a keyframe asked: most cuts
 begin where their capture does, which is that already, and only `flood`'s

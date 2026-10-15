@@ -113,28 +113,32 @@ desktop as drawn:
 [benchmarks.md](benchmarks.md), one run of 2026-10-15 over every size of
 the cut captures, `walk` whole, on the build after release 0.0.19 that
 updates an inter frame's mode, partition and vector probabilities and
-takes the 32×32 intra transform:
+takes the 32×32 intra transform, `walk`'s rows of it captured again and
+measured again the same day, its clip paused for the settle:
 
 - **A video is inside the gate, over libvpx's picture.** `video` takes
   1.01 to 1.05 of libvpx's bytes at +0.6 to +0.8 dB and `walk`, whole,
-  1.03 to 1.09 at +0.5 to +0.7, where the gate the plan began with allows
+  1.01 to 1.09 at +0.4 to +0.7, where the gate the plan began with allows
   15% more bytes at most; without the vectors between pixels they were
   1.22 to 1.27 and 1.16 to 1.25 at up to 0.6 dB under. Everything else
   over a whole capture is at fewer bytes than libvpx's and at its picture
   or better, but `drag` from 2048 to 3456 wide, 0.2 to 0.4 dB under at
   0.40 to 0.49 of the bytes: 75 cells of 80.
 - Every capture at every size takes less time than libvpx: 0.15 to 0.97
-  of it frame for frame, a line of text 0.15 to 0.21, `walk` 0.73 to
-  0.81, `video` 0.83 to 0.97, at 2048×1536 on the line.
+  of it frame for frame, a line of text 0.15 to 0.21, `walk` 0.70 to
+  0.80, `video` 0.83 to 0.97, at 2048×1536 on the line. The frame `walk`'s
+  session settles, the video paused, is 0.79 to 1.06 of libvpx's time up
+  to 1920 wide and 1.17 to 1.33 from 2048, at 0.84 to 0.93 of its bytes
+  and +0.3 to +0.9 dB.
 - A first picture coded alone as a keyframe is over libvpx's at every
-  dial and size, 0.0 to 0.8 dB at 0.85 to 1.06 of its bytes, `terminal`'s
+  dial and size, 0.1 to 0.8 dB at 0.86 to 1.06 of its bytes, `terminal`'s
   at dial 40 0.5 to 5.9 dB at 0.65 to 0.88 of them where it was 2.4 to
-  7.7 dB under; in 0.41 to 0.95 of libvpx's time up to 1920 wide and 0.52
+  7.7 dB under; in 0.41 to 0.97 of libvpx's time up to 1920 wide and 0.52
   to 1.05 from 2048 wide.
 - A settle of a busy picture takes more time than libvpx's: 0.96 to 1.44
   of it from 65 for 1.0 to 1.5 dB more picture at 0.90 to 0.97 of the
-  bytes, a picture of the video 1.03 to 1.60, and `flood`'s 0.96 to 1.84
-  from 80 and 89; a settle of the video from 89 takes 1.03 to 1.36 of
+  bytes, a picture of the video 1.04 to 1.60, and `flood`'s 0.96 to 1.84
+  from 80 and 89; a settle of the video from 89 takes 1.03 to 1.32 of
   libvpx's bytes from 2048 wide.
 
 On the M2 Max ([benchmarks-m2-max.md](benchmarks-m2-max.md), the median of
@@ -622,7 +626,7 @@ made again. What they found the picture short in comes first, since a
 stream coded worse than libvpx's at more bytes is not one a user would
 take for less time:
 
-1. **The rest of the video's bytes**, 1.01 to 1.05 of libvpx's (`walk` 1.03 to 1.09)
+1. **The rest of the video's bytes**, 1.01 to 1.05 of libvpx's (`walk` 1.01 to 1.09)
    with the vectors between pixels back and an inter frame's
    probabilities updated ([taken](#taken-up-on-2026-10-15)). Read again
    with `tools/vpxinspect/`, what is over is this encoder's own: intra
@@ -685,14 +689,16 @@ take for less time:
    2026-10-14. The two measurements took each capture's first picture,
    which for `video` and `walk` is the clip paused on black; they take
    these two's last picture of more than one colour now, and `walk` is
-   measured whole, 233 to 256 frames, its dial walking down, back up to
-   89 and the desktop settling, where its cut kept the walk down alone.
-   `walk` ends on black too: the clip stopped leaves the screen black, and
-   the settle its session asked for is of that, which says nothing, so its
-   last picture of the video is frame 246 of 249 at 1280×800, at dial 89.
-   A capture that pauses the clip where it stands, rather than stopping
-   it, would have the session settle a frame of the video; that is
-   wlshare's to make.
+   measured whole, where its cut kept the walk down alone. `walk` ended on
+   black too, the clip stopped, and the settle its session asked for was
+   of that; on 2026-10-15 wlshare's walk pauses the clip where it stands
+   instead, partway back up the dial, and `walk` was captured again: 174
+   to 207 frames, the dial down to 20 or 30, back up to 41 to 75, and the
+   paused frame settled at 90, which is the picture its keyframe and settle
+   are measured on too. It is captured at 1280×800 to 1600×1000 and made
+   from the 1600×1000 session from 1920×1080 up, the container on this
+   machine playing 1920×1080 at 12 to 22 frames a second and the dial
+   walking only to 40 there.
 
 Then, set again on 2026-10-11 for the raised floor, what a kernel can be
 rewritten for, because it changes no stream: the tests hold the bytes, and the measurement is time alone. Each
@@ -800,7 +806,7 @@ Of a very busy picture alone, and last:
    0.2 dB. Untried: the smaller sizes only where the largest leaves more
    than some error, and what a settle from 80 or 89 needs of them at all.
    The forward half of that time is taken above, with the picture kept.
-18. **The frames of `video` and `walk`**, 0.83 to 0.97 and 0.73 to 0.81 of libvpx's time
+18. **The frames of `video` and `walk`**, 0.83 to 0.97 and 0.70 to 0.80 of libvpx's time
     frame for frame, `video`'s most at 2048×1536 on the line, the nearest the line of the whole captures. Of a
     video's time at 2048×1536 the search between pixels is a fifth and
     coding a refined block at both vectors a tenth
