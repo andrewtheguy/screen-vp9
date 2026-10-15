@@ -94,6 +94,15 @@ const NEW_VECTOR_GAIN: i64 = 4;
 /// `1 / INTRA_MODE_GAIN` less than DC's, for the bits it costs over DC's.
 const INTRA_MODE_GAIN: i64 = 16;
 
+/// How far past an intra square's variance with its bits the best vector's
+/// residual may lie for the square to be coded both ways and take the
+/// cheaper (`decide`), in multiples of it: text arriving on a blank is
+/// intra by any measure, and coding it inter as well was a fifth of a
+/// flood of text's time. libvpx tries intra in an inter frame only where
+/// the inter cost passes a penalty scaled by the quantizer
+/// (`vp9_get_intra_cost_penalty`); this is that gate the other way about.
+const INTRA_OVER: i64 = 2;
+
 /// An 8×8 intra block is coded as four 4×4 blocks, each predicted in a mode
 /// of its own, where the means of its luma 4×4s, each less 128, vary by
 /// more than this many AC steps over 256: libvpx's keyframe threshold for
@@ -1254,8 +1263,10 @@ impl<'a> Tile<'a> {
                 if best.1 <= variance + intra_bits {
                     (Mode::Inter(best.0), best.1, best.2, None)
                 } else {
-                    // A 64×64 is never coded inter, below.
-                    (Mode::Intra { luma: intra, chroma: intra }, variance, moments, (n < 3).then_some(best.0))
+                    // A 64×64 is never coded inter, below; a square the
+                    // vector leaves far from intra's residual is intra.
+                    let near = best.1 <= INTRA_OVER * (variance + intra_bits);
+                    (Mode::Intra { luma: intra, chroma: intra }, variance, moments, (n < 3 && near).then_some(best.0))
                 }
             }
             None => {
@@ -1708,9 +1719,16 @@ impl<'a> Tile<'a> {
         // they say, its coefficients and its 4×4s.
         match (mode, over) {
             (Mode::Intra { .. } | Mode::Intra4 { .. }, Some(mv)) => {
-                let (inter, inter_tx, inter_cost) = self.inter(mi_row, mi_col, n, mv);
+                // At the whole vector, without the search between pixels,
+                // which is most of what an inter block of a video costs:
+                // the square that takes the vector is searched then.
+                let ac = i64::from(self.quantizer.ac_step());
+                let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
+                self.predict_inter(mi_row, mi_col, n, mv, 0..3);
+                let (inter_tx, inter_cost) = self.trial(mi_row, mi_col, n);
+                let inter_cost = inter_cost + RATE_WEIGHT * ac * ac * i64::from(prices.of(mv).0);
                 if self.eobs[0].iter().all(|&eob| eob == 0) {
-                    (inter, inter_tx, false)
+                    (Mode::Inter(mv), inter_tx, false)
                 } else {
                     std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
                     std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
@@ -1727,10 +1745,7 @@ impl<'a> Tile<'a> {
                         }
                     };
                     if inter_cost <= cost {
-                        std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
-                        std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
-                        let Mode::Inter(v) = inter else { unreachable!("an inter block") };
-                        self.predict_inter(mi_row, mi_col, n, v, 0..1);
+                        let (inter, inter_tx, _) = self.inter(mi_row, mi_col, n, mv);
                         (inter, inter_tx, false)
                     } else {
                         (intra, tx, true)
