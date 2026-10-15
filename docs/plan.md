@@ -553,6 +553,7 @@ threads, the machine idle.
 | An inter frame's compressed header updates its inter modes', intra or inter's, the reference's, the luma intra modes' and the partitions' probabilities where its own bools save more than the update costs, as it did the transform sizes' and skips' | every capture that moves 0.94 to 0.99 of its bytes, `browser`, `drag` and `terminal` the most; no decision moves, so the picture and the time are the same |
 | And the vectors', each set to what the frame's bools measure where that saves more than its seven bits (libvpx's `update_mv`) | another 0.987 to 0.998 of the bytes |
 | An intra square of 32×32 and up takes the 32×32 transform, not 16×16 as libvpx's keyframe | `terminal`'s keyframe at dial 40 4.1 to 8.3 dB of luma better for 0.1 to 0.8% more bytes, now over libvpx's; every other keyframe up to 0.5 dB better at its bytes but `browser`'s at 1280×800 at 90, −0.07; the settles −0.02 to +0.36 dB; the captures within 0.4% of their bytes in the same time |
+| A smaller transform size's trial stops at the transform block that takes its cost past the size above's (item 23), and the luma `refine` predicted at the vector it found is kept for `trial` in place of predicting it again (item 25) | every stream the same to the byte; the captures a median of 0.99 of the build before's time, `browser` 0.96 to 0.98 at every size, `video` and `walk` 0.97 to 1.07; the settles a median of 0.98 to 0.99 a pair of dials, from 65 `still`, `video` and `browser` 0.96 to 0.99, `uncover` 0.93 to 0.99: inside the tenth this machine moves by, in one direction over the 80 captures, and nothing to keep them out |
 
 Each update is chosen from the frame's own bools after its blocks are
 decided, as the coefficients' were, so a frame's probabilities are what
@@ -915,8 +916,8 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
     where the largest leaves a residual past a threshold on the moments,
     libvpx's `calculate_tx_size` as a gate on the trial and not in its
     place, since the trials are the settle's 1.0 to 1.4 dB from 65. The
-    first is measured alone, as the time it saves on the losing size; the
-    second with item 17's untried line.
+    first is taken ([measured](#taken-up-on-2026-10-15), a few hundredths
+    of a busy settle); the second is open, with item 17's untried line.
 24. **A still desktop coded finer on the whole frames after a keyframe.**
     On a frame its session knew no damage for, the 8×8s still and at this
     dial are coded as settling for the first frames after a keyframe,
@@ -929,7 +930,9 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
     superblock, with a mask of the 8×8s it holds, shared by the
     partition levels and the search between pixels (zvidlib's
     `InterBuffers`), so that `trial` reads the prediction `refine` made
-    and does not predict the refined vector again, item 18's first line;
+    and does not predict the refined vector again, item 18's first line,
+    which is taken ([measured](#taken-up-on-2026-10-15): the pass down
+    alone from the patch the search filtered across, inside the tenth);
     and the search between pixels at a precision the block's residual at
     the whole vector picks (libaom's `subpel_select`: whole or half where
     it is already under the AC threshold), which reads the block and not
