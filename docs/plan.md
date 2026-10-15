@@ -589,6 +589,9 @@ the level back, and the ground is 47 from there on.
 - **The 4×4 split at 10 steps, an intra block's rounding at 56/128, its
   DC at 64/128**: none moved `terminal`'s keyframe at 40 by more than
   0.4 dB.
+- **The vectors priced at the inter mode probabilities the frame starts
+  from**, now that they move from frame to frame, not at VP9's defaults:
+  within 0.3% of the bytes and 0.04 dB, the time the same.
 
 ### Measured, for what comes next
 
