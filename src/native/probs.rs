@@ -5,7 +5,9 @@
 //! form).
 
 use super::bool_writer::{self, BoolWriter};
-use super::tables::{COEF_PROBS, CoefProbs, PARETO8_FULL, SKIP_PROBS, TX_PROBS_8X8, TX_PROBS_16X16, TX_PROBS_32X32, UPDATE_INDEX};
+use super::tables::{
+    COEF_PROBS, CoefProbs, INTER_MODE_PROBS, INTRA_INTER_PROBS, PARETO8_FULL, PARTITION_PROBS, SINGLE_REF_PROBS, SKIP_PROBS, TX_PROBS_8X8, TX_PROBS_16X16, TX_PROBS_32X32, UPDATE_INDEX, Y_MODE_PROBS,
+};
 use super::tokens::{EOB_TOKEN, TOKENS};
 
 /// The probability an update flag for a probability is coded at.
@@ -26,9 +28,18 @@ const FIXED: usize = 256;
 const TX_SLOTS: [usize; 3] = [0, 2, 6];
 /// Where the skip probabilities start, after `FIXED`.
 const SKIP_SLOTS: usize = 12;
+/// Where an inter frame's probabilities start, after `FIXED`, in the order
+/// its compressed header updates them: the inter modes (7 contexts of 3),
+/// intra or inter (4), the single reference (5 of 2), the luma intra modes
+/// by size group (4 of 9) and the partitions (16 of 3).
+const INTER_MODE_SLOTS: usize = SKIP_SLOTS + 3;
+const INTRA_INTER_SLOTS: usize = INTER_MODE_SLOTS + 7 * 3;
+const SINGLE_REF_SLOTS: usize = INTRA_INTER_SLOTS + 4;
+const Y_MODE_SLOTS: usize = SINGLE_REF_SLOTS + 5 * 2;
+const PARTITION_SLOTS: usize = Y_MODE_SLOTS + 4 * 9;
 /// The entries after `FIXED` for the bools other than tokens that a frame
 /// updates the probabilities of.
-const MODE_SLOTS: usize = SKIP_SLOTS + 3;
+const MODE_SLOTS: usize = PARTITION_SLOTS + 16 * 3;
 
 /// The slot of the first node of the transform size tree of a block whose
 /// largest transform is `max` (1 for 8×8 to 3 for 32×32) at `ctx`.
@@ -39,6 +50,35 @@ pub(super) fn tx_slot(max: usize, ctx: usize) -> usize {
 /// The slot of the skip probability at `ctx`.
 pub(super) fn skip_slot(ctx: usize) -> usize {
     FIXED + SKIP_SLOTS + ctx
+}
+
+/// In an inter frame, the slot of the first node of the inter mode tree at
+/// mode context `ctx`.
+pub(super) fn inter_mode_slot(ctx: usize) -> usize {
+    FIXED + INTER_MODE_SLOTS + ctx * 3
+}
+
+/// In an inter frame, the slot of whether a block is inter at `ctx`.
+pub(super) fn intra_inter_slot(ctx: usize) -> usize {
+    FIXED + INTRA_INTER_SLOTS + ctx
+}
+
+/// In an inter frame, the slot of the single reference tree's first node,
+/// LAST or not, at `ctx`.
+pub(super) fn single_ref_slot(ctx: usize) -> usize {
+    FIXED + SINGLE_REF_SLOTS + ctx * 2
+}
+
+/// In an inter frame, the slot of the first node of the luma intra mode
+/// tree of size group `group`.
+pub(super) fn y_mode_slot(group: usize) -> usize {
+    FIXED + Y_MODE_SLOTS + group * 9
+}
+
+/// In an inter frame, the slot of the first node of the partition tree at
+/// `ctx`.
+pub(super) fn partition_slot(ctx: usize) -> usize {
+    FIXED + PARTITION_SLOTS + ctx * 3
 }
 
 /// Where a bool at `slot` is counted, if the frame updates the probability
@@ -162,13 +202,30 @@ pub(super) struct Probs {
     pub(super) tx32: [[u8; 3]; 2],
     /// Per context.
     pub(super) skip: [u8; 3],
+    /// An inter frame's, as `INTER_MODE_SLOTS` lists them.
+    pub(super) inter_mode: [[u8; 3]; 7],
+    pub(super) intra_inter: [u8; 4],
+    pub(super) single_ref: [[u8; 2]; 5],
+    pub(super) y_mode: [[u8; 9]; 4],
+    pub(super) partition: [[u8; 3]; 16],
     /// Per transform size.
     pub(super) coef: [CoefProbs; 4],
 }
 
 impl Default for Probs {
     fn default() -> Self {
-        Self { tx8: TX_PROBS_8X8, tx16: TX_PROBS_16X16, tx32: TX_PROBS_32X32, skip: SKIP_PROBS, coef: COEF_PROBS }
+        Self {
+            tx8: TX_PROBS_8X8,
+            tx16: TX_PROBS_16X16,
+            tx32: TX_PROBS_32X32,
+            skip: SKIP_PROBS,
+            inter_mode: INTER_MODE_PROBS,
+            intra_inter: INTRA_INTER_PROBS,
+            single_ref: SINGLE_REF_PROBS,
+            y_mode: Y_MODE_PROBS,
+            partition: PARTITION_PROBS,
+            coef: COEF_PROBS,
+        }
     }
 }
 
@@ -321,6 +378,7 @@ impl Probs {
     pub(super) fn table(&self) -> Vec<u8> {
         let mut table: Vec<u8> = (0..FIXED).map(|p| p as u8).collect();
         table.extend(self.tx8.iter().flatten().chain(self.tx16.iter().flatten()).chain(self.tx32.iter().flatten()).chain(&self.skip));
+        table.extend(self.inter_mode.iter().flatten().chain(&self.intra_inter).chain(self.single_ref.iter().flatten()).chain(self.y_mode.iter().flatten()).chain(self.partition.iter().flatten()));
         for kind in self.coef.iter().flatten().flatten() {
             for probs in kind.iter().flatten() {
                 table.extend(probs);
@@ -345,6 +403,17 @@ impl Probs {
     pub(super) fn update_skip(&mut self, w: &mut BoolWriter, counts: &Counts) {
         let costs = Costs::new();
         for (p, &ct) in self.skip.iter_mut().zip(&counts.bools[SKIP_SLOTS..]) {
+            update_one(w, &costs, ct, p);
+        }
+    }
+
+    /// Write the part of an inter frame's compressed header from the inter
+    /// modes to the partitions, and make its updates: each probability
+    /// updated where that saves more than it costs, as the skip ones are.
+    pub(super) fn update_modes(&mut self, w: &mut BoolWriter, counts: &Counts) {
+        let costs = Costs::new();
+        let probs = self.inter_mode.iter_mut().flatten().chain(&mut self.intra_inter).chain(self.single_ref.iter_mut().flatten()).chain(self.y_mode.iter_mut().flatten()).chain(self.partition.iter_mut().flatten());
+        for (p, &ct) in probs.zip(&counts.bools[INTER_MODE_SLOTS..]) {
             update_one(w, &costs, ct, p);
         }
     }

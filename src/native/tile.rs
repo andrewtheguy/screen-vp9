@@ -29,13 +29,12 @@ use super::motion;
 use super::mv::{self, Mv};
 use super::pool::Pool;
 use super::predict::{self, Edges, IntraMode};
-use super::probs::{Counts, skip_slot, tx_slot};
+use super::probs::{Counts, inter_mode_slot, intra_inter_slot, partition_slot, single_ref_slot, skip_slot, tx_slot, y_mode_slot};
 use super::quantize::{self, Quantizer};
 use super::tape::Tape;
 use super::transform::TxType;
 use super::tables::{
-    INTER_MODE_PROBS, INTRA_INTER_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, MV_REF_BLOCKS, PARTITION_PROBS, SINGLE_REF_PROBS,
-    UV_MODE_PROBS, Y_MODE_PROBS,
+    INTER_MODE_PROBS, KF_PARTITION_PROBS, KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, MV_REF_BLOCKS, UV_MODE_PROBS, Y_MODE_PROBS,
 };
 use super::{Column, Geometry, Reconstruction, loopfilter, pixels, tokens, transform};
 
@@ -872,7 +871,7 @@ impl<'a> Tile<'a> {
         let (w, col) = (self.contexts.width, mi_col - self.mi_col_start);
         let (rows, cols) = (mi_row..(mi_row + 8).min(g.mi_rows), 8.min(w - col));
         let ctx = self.partition_context(mi_row, mi_col, SB_LOG2);
-        self.contexts.tape.write(false, PARTITION_PROBS[ctx][0]);
+        self.contexts.tape.put(false, partition_slot(ctx));
         let above = (mi_row > 0).then(|| self.mode_info(mi_row - 1, mi_col));
         let left = (mi_col > self.mi_col_start).then(|| self.mode_info(mi_row, mi_col - 1));
         let before = self.contexts.quiet[sb_col];
@@ -1434,20 +1433,24 @@ impl<'a> Tile<'a> {
         let mode = if has_rows && has_cols { self.choose(mi_row, mi_col, n) } else { None };
         let split = mode.is_none_or(|(mode, _)| matches!(mode, Mode::Intra4 { .. }));
         let ctx = self.partition_context(mi_row, mi_col, n);
-        let probs = if self.previous.is_some() { PARTITION_PROBS[ctx] } else { KF_PARTITION_PROBS[ctx] };
+        // An inter frame's at the probabilities it updates, a keyframe's at
+        // its own.
+        let inter = self.previous.is_some();
+        let tape = &mut self.contexts.tape;
+        let mut put = |bit: bool, node: usize| if inter { tape.put(bit, partition_slot(ctx) + node) } else { tape.write(bit, KF_PARTITION_PROBS[ctx][node]) };
         match (has_rows, has_cols) {
             // PARTITION_NONE is the tree's first leaf; PARTITION_SPLIT its last.
             (true, true) => {
-                self.contexts.tape.write(split, probs[0]);
+                put(split, 0);
                 if split {
-                    self.contexts.tape.write(true, probs[1]);
-                    self.contexts.tape.write(true, probs[2]);
+                    put(true, 1);
+                    put(true, 2);
                 }
             }
             // Split, or a horizontal half the frame cuts.
-            (false, true) => self.contexts.tape.write(split, probs[1]),
+            (false, true) => put(split, 1),
             // Split, or a vertical half the frame cuts.
-            (true, false) => self.contexts.tape.write(split, probs[2]),
+            (true, false) => put(split, 2),
             // Split, and the decoder knows it.
             (false, false) => {}
         }
@@ -1736,7 +1739,7 @@ impl<'a> Tile<'a> {
                     (Some(m), None) | (None, Some(m)) => 2 * usize::from(is_intra(&m)),
                     (None, None) => 0,
                 };
-                self.contexts.tape.write(inter.is_some(), INTRA_INTER_PROBS[ctx]);
+                self.contexts.tape.put(inter.is_some(), intra_inter_slot(ctx));
                 if (!skip || inter.is_none()) && !matches!(mode, Mode::Intra4 { .. }) {
                     self.write_tx(n, tx, above, left);
                 }
@@ -1745,10 +1748,10 @@ impl<'a> Tile<'a> {
                     // `vp9_get_pred_context_single_ref_p1` when LAST is the only
                     // reference: 4 beside an inter block, 2 otherwise.
                     let ctx = if above.is_some_and(|m| !is_intra(&m)) || left.is_some_and(|m| !is_intra(&m)) { 4 } else { 2 };
-                    self.contexts.tape.write(false, SINGLE_REF_PROBS[ctx][0]);
-                    let probs = INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)];
+                    self.contexts.tape.put(false, single_ref_slot(ctx));
+                    let slot = inter_mode_slot(self.mode_context(mi_row, mi_col, n));
                     for (b, node) in mode.bits() {
-                        self.contexts.tape.write(b, probs[node]);
+                        self.contexts.tape.put(b, slot + node);
                     }
                     if mode == InterMode::New {
                         let nearest = self.candidates(mi_row, mi_col, n)[0];
@@ -2057,6 +2060,15 @@ impl<'a> Tile<'a> {
         let (keyframe, uv) = (self.previous.is_none(), Self::intra_of(mode, 1, 0).expect("an intra block"));
         let split4 = matches!(mode, Mode::Intra4 { .. });
         for b in 0..if split4 { 4 } else { 1 } {
+            // An inter frame's by size group, at the probabilities it
+            // updates.
+            if !keyframe {
+                let slot = y_mode_slot(if split4 { 0 } else { (n as usize + 1).min(3) });
+                for &(bit, node) in sub[b].bits() {
+                    self.contexts.tape.put(bit, slot + node);
+                }
+                continue;
+            }
             let probs = self.y_mode_probs(&sub, b, split4, n, above, left);
             for &(bit, node) in sub[b].bits() {
                 self.contexts.tape.write(bit, probs[node]);
