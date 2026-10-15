@@ -846,7 +846,7 @@ the captures whose name holds it.
 | `browser` | busy | a long page in Chromium scrolled by wheel, by key and back: the whole surface |
 | `drag` | busy | a floating terminal dragged around the desktop: a quarter of the picture |
 | `video` | busy | a 4K clip of coloured explosions played full screen, every pixel the video's, paused on its first frame, which is black, until the scenario goes; a keyframe asked at 10 s |
-| `walk` | busy | the video while the client reads late from 4 s to 10 s, so the dial walks down to 20 or 30 and partway back up, to 41 to 75, then paused where it stands, the desktop settling at 90 on that frame; captured again on 2026-10-15, where the clip was stopped, which left the screen black and its settle of that |
+| `walk` | busy | the video while the client reads late from 4 s to 10 s, so the dial walks down to 20 or 30 and partway back up, to 41 to 75, then paused where it stands, the desktop settling at 90 on that frame, which is the picture its keyframes and settles are measured on; captured again so on 2026-10-15: the capture before stopped the clip, which left the screen black, and its session settled that |
 
 Sizes: the ten `capture-frames.sh` runs by default, which vp9-wasm's
 benchmark has samples of: 1280×800, 1440×900, 1600×1000 and 1920×1080 at
