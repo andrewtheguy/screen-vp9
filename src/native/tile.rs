@@ -1563,7 +1563,9 @@ impl<'a> Tile<'a> {
     /// tokens for one coefficient. Its luma levels and ends of block are
     /// left in `levels` and `eobs`, and its cost is given with it. Chroma
     /// takes the size luma chose: deciding each plane's part of the cost
-    /// too saved 0.4–3% of the bytes for a fifth more time.
+    /// too saved 0.4–3% of the bytes for a fifth more time. A size's trial
+    /// stops at the transform block that takes its cost past the size
+    /// above's, which ends the trial as it would have at the end.
     fn trial(&mut self, mi_row: usize, mi_col: usize, n: u32) -> (usize, i64) {
         let ac = i64::from(self.quantizer.ac_step());
         let weight = RATE_WEIGHT * ac * ac;
@@ -1583,6 +1585,11 @@ impl<'a> Tile<'a> {
                 // scale, which is 64 times that in pixels.
                 cost += error * 256_000 + weight * i64::from(bits);
                 self.eobs[0].push(eob);
+                // A size that costs more than the one above it before its
+                // last transform block is coded costs more at the end.
+                if cost >= best.0 {
+                    break;
+                }
             }
             if cost < best.0 {
                 best = (cost, tx);
@@ -1629,6 +1636,8 @@ impl<'a> Tile<'a> {
     /// how good a vector between pixels is shows only coded, a page moved by
     /// a fraction of a pixel saving most of a frame where text barely moves
     /// at all. A block that settles has nothing to find between the pixels.
+    /// The luma at the vector found is what `refine` predicted to find it;
+    /// the chroma is predicted once, at the vector taken.
     fn inter(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> (Mode, usize) {
         let found = if self.still(mi_row, mi_col, n) { None } else { self.refine(mi_row, mi_col, n, mv) };
         let Some(other) = found else {
@@ -1644,7 +1653,7 @@ impl<'a> Tile<'a> {
         let with = |cost: i64, v: Mv| cost + RATE_WEIGHT * ac * ac * i64::from(prices.of(v).0);
         std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
         std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
-        self.predict_inter(mi_row, mi_col, n, other, 0..1);
+        self.take_refined(mi_row, mi_col, n);
         let (other_tx, other_cost) = self.trial(mi_row, mi_col, n);
         if with(other_cost, other) < with(cost, mv) {
             self.predict_inter(mi_row, mi_col, n, other, 1..3);
@@ -2216,7 +2225,34 @@ impl<'a> Tile<'a> {
             _ => around(&mut cost, &mut best, 4),
         }
         around(&mut cost, &mut best, 2);
-        (best.1 != mv).then_some(best.1)
+        if best.1 == mv {
+            return None;
+        }
+        // The luma predicted at the vector found, kept in `predicted` for
+        // `inter`, from the patch filtered across already: the pass down
+        // alone, or a copy where the vector sits on a row.
+        let ((vx, vy), (fx, fy)) = best.1.split();
+        let (x, y) = ((vx - dx + 1) as usize, (vy - dy + 1) as usize);
+        let (across, from, x) = if fx == 0 { (block, stride, x + before) } else { (&planes[fx][..], wide, x) };
+        if fy == 0 {
+            for r in 0..size {
+                prediction[r * size..][..size].copy_from_slice(&across[(y + before + r) * from + x..][..size]);
+            }
+        } else {
+            convolve::down(&across[y * from + x..], from, fy, (size, size), prediction, size);
+        }
+        Some(best.1)
+    }
+
+    /// The luma `refine` predicted at the vector it found, from `predicted`
+    /// into `recon`, where `predict_inter` would put it.
+    fn take_refined(&mut self, mi_row: usize, mi_col: usize, n: u32) {
+        let size = 8 << n;
+        let (stride, x, y) = (self.contexts.stride, mi_col * 8 - self.contexts.x, mi_row * 8 - self.top * 8);
+        let out = &mut self.contexts.planes[0][y * stride + x..];
+        for r in 0..size {
+            out[r * stride..][..size].copy_from_slice(&self.predicted[r * size..][..size]);
+        }
     }
 
     /// The transform blocks of size `tx` (log2 less 2) of a block at
