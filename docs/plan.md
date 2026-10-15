@@ -610,6 +610,20 @@ the level back, and the ground is 47 from there on.
   to 1.24 ungated and 1.07 to 1.14 gated. At the @2 sizes a video's time
   is on libvpx's line, so the whole vector alone is taken, which is inside
   the run's noise on every target.
+- **A refined vector taken without the trial at both** where its luma
+  residual's deviation is under a fraction of the whole vector's, the
+  second line of item 18, three fractions each turn about with the build
+  before over `browser`, `uncover`, `video` and `walk`: at 3/4 `video`
+  0.987 to 0.999 of its bytes for 0.05 to 0.07 dB less in 0.93 to 0.99 of
+  its time and `walk` 0.991 to 1.002 at −0.10 to +0.10 dB, but `browser`
+  1.003 to 1.011 and `uncover` 1.002 to 1.011 of their bytes at −0.05 to
+  +0.14 dB for none of their time; at 7/8 the same the more, `video` −0.08
+  to −0.11 dB in 0.91 to 0.97; at 1/2 `video` 0.994 to 0.997 at −0.02 dB
+  and `walk` 0.993 to 0.999 at −0.09 to +0.03 in the same time. Where the
+  residual says the refined vector is clearly better, the coefficients say
+  otherwise often enough that the trial earns its tenth: skipping it
+  trades the picture for bytes along the line on a video and costs the
+  users' frames both.
 
 ### Measured, for what comes next
 
@@ -983,10 +997,14 @@ Of a very busy picture alone, and last:
     frame for frame, `video`'s most at 2048×1536 on the line, the nearest the line of the whole captures. Of a
     video's time at 2048×1536 the search between pixels is a fifth and
     coding a refined block at both vectors a tenth
-    ([measured](#measured-for-what-comes-next)). Untried: the refined
-    vector's luma prediction kept for the trial, which predicts it again;
-    the trial at both vectors only where they differ by enough to choose
-    between; and in the search before it, profiled on the test pattern
+    ([measured](#measured-for-what-comes-next)). The refined vector's
+    luma prediction is kept for the trial (item 25, taken, inside the
+    tenth), and the trial at both vectors only where the residual says
+    they are near is [measured and not taken](#measured-and-not-taken):
+    at any fraction it trades the picture. Untried: the quarter-pixel
+    level at the one point the half-pixel costs point to, as the
+    half-pixel level is at the whole's, in place of the four around the
+    best; and in the search before it, profiled on the test pattern
     before, the row hashes of an 8×8 row taken once and not twice, the
     projections' sums in sixteen bits, a table of its own in place of the
     standard one, a hundredth of a frame each.
