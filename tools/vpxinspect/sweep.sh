@@ -9,13 +9,15 @@
 # regular filter alone), half-smooth, half-bilinear, nogolden (the last frame
 # the one reference). Each runs the captures `ONLYS` names (`video walk`)
 # from `CAPTURES` (tmp/samples) into tmp/vpxinspect/sweep-<variant>.log,
-# appended to; tools/vpxinspect/summary.py --sweep reads them. Bytes and
-# PSNR, not time: the variants are run one after another.
+# appended to; tools/vpxinspect/summary.py --sweep reads them. The libvpx
+# is the one in `LIBVPX_PREBUILT_DIR`, the line build.sh prints for a DIR of
+# its own, or tmp/vpxinspect/prefix, build.sh's default. Bytes and PSNR,
+# not time: the variants are run one after another.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
-export CARGO_TARGET_DIR=tmp/vpxinspect/target LIBVPX_PREBUILT_DIR="$root/tmp/vpxinspect/prefix" CAPTURES="${CAPTURES:-tmp/samples}"
+export CARGO_TARGET_DIR=tmp/vpxinspect/target LIBVPX_PREBUILT_DIR="${LIBVPX_PREBUILT_DIR:-$root/tmp/vpxinspect/prefix}" CAPTURES="${CAPTURES:-tmp/samples}"
 cargo test --release --features native --lib captures_against_libvpx --no-run 2>/dev/null
 for variant in "${@:-stock}"; do
 	case "$variant" in

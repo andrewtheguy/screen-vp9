@@ -1,8 +1,8 @@
 diff --git a/vp9/decoder/vp9_decodeframe.c b/vp9/decoder/vp9_decodeframe.c
-index 45ef99a..539c841 100644
+index 45ef99adf..c392782df 100644
 --- a/vp9/decoder/vp9_decodeframe.c
 +++ b/vp9/decoder/vp9_decodeframe.c
-@@ -910,6 +910,104 @@ static INLINE void predict_recon_intra(MACROBLOCKD *xd, MODE_INFO *mi,
+@@ -910,6 +910,106 @@ static INLINE void predict_recon_intra(MACROBLOCKD *xd, MODE_INFO *mi,
    }
  }
  
@@ -37,14 +37,16 @@ index 45ef99a..539c841 100644
 +  if (inter) {
 +    vpxi_frame.inter += area;
 +    if (mi->skip) vpxi_frame.skip_inter += area;
-+    vpxi_frame.mode[INTER_OFFSET(mi->mode)] += area;
 +    vpxi_frame.ref[mi->ref_frame[0]] += area;
 +    if (has_second_ref(mi)) vpxi_frame.compound += area;
 +    if (mi->sb_type < BLOCK_8X8) {
 +      int i;
-+      for (i = 0; i < 4; ++i)
++      for (i = 0; i < 4; ++i) {
++        vpxi_frame.mode[INTER_OFFSET(mi->bmi[i].as_mode)] += area / 4;
 +        vpxi_mv(area / 4, &mi->bmi[i].as_mv[0].as_mv, mi->interp_filter);
++      }
 +    } else {
++      vpxi_frame.mode[INTER_OFFSET(mi->mode)] += area;
 +      vpxi_mv(area, &mi->mv[0].as_mv, mi->interp_filter);
 +    }
 +  } else {
@@ -107,7 +109,7 @@ index 45ef99a..539c841 100644
  static void decode_block(TileWorkerData *twd, VP9Decoder *const pbi, int mi_row,
                           int mi_col, BLOCK_SIZE bsize, int bwl, int bhl) {
    VP9_COMMON *const cm = &pbi->common;
-@@ -933,6 +1031,8 @@ static void decode_block(TileWorkerData *twd, VP9Decoder *const pbi, int mi_row,
+@@ -933,6 +1033,8 @@ static void decode_block(TileWorkerData *twd, VP9Decoder *const pbi, int mi_row,
    }
  
    vp9_read_mode_info(twd, pbi, mi_row, mi_col, x_mis, y_mis);
@@ -116,7 +118,7 @@ index 45ef99a..539c841 100644
  
    if (mi->skip) {
      dec_reset_skip_context(xd);
-@@ -1083,6 +1183,8 @@ static void parse_block(TileWorkerData *twd, VP9Decoder *const pbi, int mi_row,
+@@ -1083,6 +1185,8 @@ static void parse_block(TileWorkerData *twd, VP9Decoder *const pbi, int mi_row,
    }
  
    vp9_read_mode_info(twd, pbi, mi_row, mi_col, x_mis, y_mis);
@@ -125,7 +127,7 @@ index 45ef99a..539c841 100644
  
    if (mi->skip) {
      dec_reset_skip_context(xd);
-@@ -1155,6 +1257,7 @@ static PARTITION_TYPE read_partition(TileWorkerData *twd, int mi_row,
+@@ -1155,6 +1259,7 @@ static PARTITION_TYPE read_partition(TileWorkerData *twd, int mi_row,
    PARTITION_TYPE p;
    vpx_reader *r = &twd->bit_reader;
  
@@ -133,7 +135,7 @@ index 45ef99a..539c841 100644
    if (has_rows && has_cols)
      p = (PARTITION_TYPE)vpx_read_tree(r, vp9_partition_tree, probs);
    else if (!has_rows && has_cols)
-@@ -2876,6 +2979,7 @@ static int read_compressed_header(VP9Decoder *pbi, const uint8_t *data,
+@@ -2876,6 +2981,7 @@ static int read_compressed_header(VP9Decoder *pbi, const uint8_t *data,
      vpx_internal_error(&cm->error, VPX_CODEC_MEM_ERROR,
                         "Failed to allocate bool decoder 0");
  
@@ -141,7 +143,7 @@ index 45ef99a..539c841 100644
    cm->tx_mode = xd->lossless ? ONLY_4X4 : read_tx_mode(&r);
    if (cm->tx_mode == TX_MODE_SELECT) read_tx_mode_probs(&fc->tx_probs, &r);
    read_coef_probs(fc, cm->tx_mode, &r);
-@@ -2978,6 +3082,20 @@ void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
+@@ -2978,6 +3084,20 @@ void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
      return;
    }
  
@@ -162,7 +164,7 @@ index 45ef99a..539c841 100644
    data += vpx_rb_bytes_read(&rb);
    if (!read_is_valid(data, first_partition_size, data_end))
      vpx_internal_error(&cm->error, VPX_CODEC_CORRUPT_FRAME,
-@@ -3063,4 +3181,13 @@ void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
+@@ -3063,4 +3183,13 @@ void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
    // Non frame parallel update frame context here.
    if (cm->refresh_frame_context && !context_updated)
      cm->frame_contexts[cm->frame_context_idx] = *cm->fc;
@@ -177,7 +179,7 @@ index 45ef99a..539c841 100644
 +           sizeof(vpxi_frame) / sizeof(double));
  }
 diff --git a/vp9/decoder/vp9_decodemv.c b/vp9/decoder/vp9_decodemv.c
-index 0989cde..4ebc4d9 100644
+index 0989cde58..075d05738 100644
 --- a/vp9/decoder/vp9_decodemv.c
 +++ b/vp9/decoder/vp9_decodemv.c
 @@ -23,6 +23,7 @@
@@ -239,7 +241,17 @@ index 0989cde..4ebc4d9 100644
        r, vp9_switchable_interp_tree, cm->fc->switchable_interp_prob[ctx]);
    FRAME_COUNTS *counts = xd->counts;
    if (counts) ++counts->switchable_interp[ctx][type];
-@@ -793,11 +802,16 @@ static void read_inter_frame_mode_info(VP9Decoder *const pbi,
+@@ -759,6 +768,9 @@ static void read_inter_block_mode_info(VP9Decoder *const pbi,
+           xd->corrupted |= 1;
+           return;
+         }
++        /* Each sub-block's mode, for the inspection build's counts: libvpx
++         * keeps only the vectors of an inter block's sub-blocks. */
++        mi->bmi[j].as_mode = b_mode;
+ 
+         if (num_4x4_h == 2) mi->bmi[j + 2] = mi->bmi[j];
+         if (num_4x4_w == 2) mi->bmi[j + 1] = mi->bmi[j];
+@@ -793,11 +805,16 @@ static void read_inter_frame_mode_info(VP9Decoder *const pbi,
    MODE_INFO *const mi = xd->mi[0];
    int inter_block;
  
@@ -257,7 +269,7 @@ index 0989cde..4ebc4d9 100644
    if (inter_block)
      read_inter_block_mode_info(pbi, xd, mi, mi_row, mi_col, r);
 diff --git a/vp9/decoder/vp9_detokenize.c b/vp9/decoder/vp9_detokenize.c
-index d957dc3..acf9468 100644
+index d957dc34e..acf946813 100644
 --- a/vp9/decoder/vp9_detokenize.c
 +++ b/vp9/decoder/vp9_detokenize.c
 @@ -56,6 +56,8 @@ static INLINE int read_bool(vpx_reader *r, int prob, BD_VALUE *value,
@@ -286,7 +298,7 @@ index d957dc3..acf9468 100644
    return eob;
  }
 diff --git a/vp9/encoder/vp9_encoder.c b/vp9/encoder/vp9_encoder.c
-index 3f42655..509d1d1 100644
+index 3f4265552..509d1d1c3 100644
 --- a/vp9/encoder/vp9_encoder.c
 +++ b/vp9/encoder/vp9_encoder.c
 @@ -4336,6 +4336,9 @@ static int get_ref_frame_flags(const VP9_COMP *cpi) {
@@ -300,7 +312,7 @@ index 3f42655..509d1d1 100644
  }
  
 diff --git a/vp9/encoder/vp9_speed_features.c b/vp9/encoder/vp9_speed_features.c
-index 3268f64..6e0ca94 100644
+index 3268f6464..6e0ca946d 100644
 --- a/vp9/encoder/vp9_speed_features.c
 +++ b/vp9/encoder/vp9_speed_features.c
 @@ -9,6 +9,7 @@
@@ -337,7 +349,7 @@ index 3268f64..6e0ca94 100644
      // Whole pel only
      cpi->find_fractional_mv_step = vp9_skip_sub_pixel_tree;
 diff --git a/vpx_dsp/bitreader.c b/vpx_dsp/bitreader.c
-index 90cbbba..a4eb7d6 100644
+index 90cbbba53..a4eb7d69c 100644
 --- a/vpx_dsp/bitreader.c
 +++ b/vpx_dsp/bitreader.c
 @@ -9,6 +9,11 @@
@@ -353,7 +365,7 @@ index 90cbbba..a4eb7d6 100644
  
  #include "vpx_dsp/bitreader.h"
 diff --git a/vpx_dsp/bitreader.h b/vpx_dsp/bitreader.h
-index a5927ea..468e399 100644
+index a5927ea2a..468e39965 100644
 --- a/vpx_dsp/bitreader.h
 +++ b/vpx_dsp/bitreader.h
 @@ -14,12 +14,14 @@
@@ -381,7 +393,7 @@ index a5927ea..468e399 100644
      const unsigned char shift = vpx_norm[(unsigned char)range];
 diff --git a/vpx_dsp/vpxi.h b/vpx_dsp/vpxi.h
 new file mode 100644
-index 0000000..87f34ae
+index 000000000..87f34ae28
 --- /dev/null
 +++ b/vpx_dsp/vpxi.h
 @@ -0,0 +1,27 @@

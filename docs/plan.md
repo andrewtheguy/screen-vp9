@@ -541,7 +541,15 @@ take for less time:
    and intra-against-inter weight were set on screen content, and its
    partitions and modes at 2.8 of libvpx's bytes. A switchable filter per
    block, the one part of libvpx's sub-pixel coding not taken, held
-   libvpx within 3.4% of its bytes when it was taken away.
+   libvpx within 3.4% of its bytes when it was taken away. And the
+   search's probe: its count starts again with each superblock row of each
+   frame, so a row with fewer than `SEARCH_PROBE` blocks to refine is never
+   probed, and a frame whose rows are all like that cannot turn the search
+   back on, a small video in a window among them. Counted across frames
+   instead, `browser` took 1.8 to 7.1% more bytes at up to 0.14 dB less
+   and `video` the same: the search, once a page probes it on, takes
+   vectors on a page that do not pay, which its model does not see. That is
+   to be fixed first, and the count after it.
 2. **`terminal`'s keyframe at dial 40**: why a few lines on a flat ground
    lose 2.4 to 7.7 dB to libvpx at dial 40 and none at 65. The 4×4 split
    at 80 steps (item 11) and the intra rounding (item 12) are the
