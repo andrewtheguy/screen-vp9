@@ -23,7 +23,9 @@ release 0.0.18 (commit `33f78b4`), over the captures of 2026-10-13 cut to
 120 frames each ([Test material](#test-material)): the three took 41
 minutes. The whole captures were run again the same day with the vectors
 between pixels back ([plan.md](plan.md#where-a-videos-bytes-go-on-2026-10-14)),
-30 minutes, and their tables are of that build; a keyframe and a settle
+30 minutes, and their tables are of that build, before the search's probe
+was made to measure only, which moved `browser` by up to 4% of its bytes
+and the rest by less ([plan.md](plan.md#what-is-open)); a keyframe and a settle
 search no vector, and theirs are of 0.0.18, every stream of theirs the
 same to the byte. A time on this machine moves by a tenth from one run to the next,
 so a ratio within a tenth of 1.00 is on the line. The same measurements on

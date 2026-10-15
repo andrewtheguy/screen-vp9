@@ -143,8 +143,10 @@ pixel and then a quarter, on its luma at the filter it is coded with, the
 vector found kept only where a Laplacian model of the coded residual says
 it and its bits do better. A frame refines every block where the frames
 before saved a sixteenth of what the blocks refined would cost
-(`SEARCH_PAYS`), each frame weighing half the one after, and otherwise one
-block in 32 (`SEARCH_PROBE`), to see whether it pays again.
+(`SEARCH_PAYS`), each frame weighing half the one after, and otherwise
+probes one block in 32 of each superblock row, counted across frames
+(`SEARCH_PROBE`): it measures what the search would save there and keeps
+the block's vector, to see whether it pays again.
 
 A square is split rather than coded whole where its residual varies by more
 than a fraction of the quantizer's step (`SPLIT_VARIANCE`, `INTER_SPLIT`),

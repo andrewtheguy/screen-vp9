@@ -45,8 +45,10 @@ use pool::Pool;
 
 /// The share of what the blocks it refines would cost that the search
 /// between pixels has to save, as `tile::laplacian` models it, for it to
-/// refine every block of the next frame; where it saves less, it refines one
-/// block in `SEARCH_PROBE`, to see whether it pays again. Set on the first
+/// refine every block of the next frame; where it saves less, it probes one
+/// block in `SEARCH_PROBE` of each superblock row, counted across frames:
+/// measures what the search would save there, and keeps the vector it came
+/// with, to see whether it pays again. Set on the first
 /// plan's recordings, where it saved a median of 3% a frame of a desktop and
 /// 11–14% of a recorded video, and probing one block in 32 cost 2–3% of the
 /// time. On the captures of 2026-10-13 a capture nothing in moves between

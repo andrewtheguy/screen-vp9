@@ -542,14 +542,27 @@ take for less time:
    partitions and modes at 2.8 of libvpx's bytes. A switchable filter per
    block, the one part of libvpx's sub-pixel coding not taken, held
    libvpx within 3.4% of its bytes when it was taken away. And the
-   search's probe: its count starts again with each superblock row of each
-   frame, so a row with fewer than `SEARCH_PROBE` blocks to refine is never
-   probed, and a frame whose rows are all like that cannot turn the search
-   back on, a small video in a window among them. Counted across frames
-   instead, `browser` took 1.8 to 7.1% more bytes at up to 0.14 dB less
-   and `video` the same: the search, once a page probes it on, takes
-   vectors on a page that do not pay, which its model does not see. That is
-   to be fixed first, and the count after it.
+   search's gate, `SEARCH_PAYS`: on `browser` at 1920×1080 the search run
+   on every block saves 6% of the bytes at +0.1 dB for a fifth more of its
+   time, and the gate keeps it off, so the line is to be set again on
+   every capture, time against bytes.
+
+   **The probe, taken on 2026-10-14.** Its count started again with each
+   superblock row of each frame, so a row with fewer than `SEARCH_PROBE`
+   blocks to refine was never probed, and a frame whose rows were all like
+   that could not turn the search back on, a small video in a window among
+   them; and a probed block took the vector it found. Counted across
+   frames alone, `browser` took 1.8 to 7.1% more bytes at up to 0.14 dB
+   less: a block refined among blocks that were not leaves their vectors
+   predicting worse. The search run on every block or on none did not
+   lose. So a probe now measures and keeps the block's vector, and the
+   count is kept per superblock row across frames. Against the build
+   before, turn about over every cut capture: `browser` 0.96 to 1.01 of
+   its bytes at −0.01 to +0.15 dB, `uncover` at 1920 wide 1.014, every
+   other capture within 0.3% and 0.07 dB, the time's median ratio 1.00;
+   `terminal` at 2048 wide, played again three times, 1.05 of a frame of
+   0.9 ms, the sparse rows probed now. The tables of
+   [benchmarks.md](benchmarks.md) are of the build before it.
 2. **`terminal`'s keyframe at dial 40**: why a few lines on a flat ground
    lose 2.4 to 7.7 dB to libvpx at dial 40 and none at 65. The 4×4 split
    at 80 steps (item 11) and the intra rounding (item 12) are the

@@ -370,6 +370,10 @@ pub(super) struct Contexts {
     /// row.
     pub(super) searched: [f64; 2],
     searched_rows: Vec<[f64; 2]>,
+    /// Per superblock row, the blocks the search between pixels could have
+    /// refined, counted across frames, so that a row with fewer than
+    /// `search_every` of them a frame is probed in its turn.
+    probes: Vec<usize>,
     /// Per superblock row, its bools, to be coded once the frame's
     /// probabilities are chosen.
     pub(super) tapes: Vec<Tape>,
@@ -397,6 +401,7 @@ impl Contexts {
             use_last: false,
             searched: [0.0; 2],
             searched_rows: vec![[0.0; 2]; geometry.sb_rows],
+            probes: vec![0; geometry.sb_rows],
             tapes: (0..geometry.sb_rows).map(|_| Tape::new()).collect(),
             edges: (0..geometry.sb_rows * sb_cols).map(|_| OnceLock::new()).collect(),
             coded: vec![false; geometry.sb_rows * sb_cols],
@@ -453,15 +458,15 @@ impl Contexts {
     /// A job for each superblock row of the column, which `column` holds
     /// the pixels of.
     fn jobs<'a>(&'a mut self, column: &'a mut Column) -> impl Iterator<Item = Job<'a>> {
-        let Contexts { mode_info, last_mode_info, width, sb_cols, use_last, searched_rows, tapes, edges, coded, quiet, .. } = self;
+        let Contexts { mode_info, last_mode_info, width, sb_cols, use_last, searched_rows, probes, tapes, edges, coded, quiet, .. } = self;
         let (width, sb_cols, use_last) = (*width, *sb_cols, *use_last);
         let (last_mode_info, edges) = (&last_mode_info[..], &edges[..]);
         let (x, stride) = (column.x, column.stride);
         let [p0, p1, p2] = &mut column.planes;
         let rows = 64 * stride;
         let planes = p0.chunks_mut(rows).zip(p1.chunks_mut(rows)).zip(p2.chunks_mut(rows));
-        let rows = mode_info.chunks_mut(8 * width).zip(planes).zip(tapes.iter_mut().zip(searched_rows)).zip(coded.chunks_mut(sb_cols)).zip(quiet.chunks_mut(sb_cols));
-        rows.enumerate().map(move |(sb_row, ((((mode_info, ((p0, p1), p2)), (tape, searched)), coded), quiet))| Job {
+        let rows = mode_info.chunks_mut(8 * width).zip(planes).zip(tapes.iter_mut().zip(searched_rows.iter_mut().zip(probes))).zip(coded.chunks_mut(sb_cols)).zip(quiet.chunks_mut(sb_cols));
+        rows.enumerate().map(move |(sb_row, ((((mode_info, ((p0, p1), p2)), (tape, (searched, probes))), coded), quiet))| Job {
             sb_row,
             x,
             stride,
@@ -474,6 +479,7 @@ impl Contexts {
             planes: [p0, p1, p2],
             tape,
             searched,
+            probes,
             coded,
             quiet,
         })
@@ -530,6 +536,8 @@ struct Job<'a> {
     planes: [&'a mut [u8]; 3],
     tape: &'a mut Tape,
     searched: &'a mut [f64; 2],
+    /// `Contexts::probes`, the row's.
+    probes: &'a mut usize,
     /// Per superblock of the row, whether a block of it is active.
     coded: &'a mut [bool],
     /// Per superblock of the row, `Contexts::quiet`.
@@ -728,8 +736,6 @@ struct Tile<'a> {
     /// them, and which are there yet.
     line_sums: [[([u16; 8], [u16; 8]); 3]; 64],
     summed: u64,
-    /// The blocks the search between pixels could have refined so far.
-    searches: usize,
     /// The superblock being coded, per vector other than zero measured at
     /// so far: per 8×8, the moments of its residual at that vector, and
     /// which of them are measured yet.
@@ -788,7 +794,6 @@ impl<'a> Tile<'a> {
             measures: [Measure::default(); 64],
             line_sums: [[([0; 8], [0; 8]); 3]; 64],
             summed: 0,
-            searches: 0,
             moved,
             levels,
             eobs,
@@ -2101,7 +2106,8 @@ impl<'a> Tile<'a> {
     /// pixel from the best. The patch around `mv` is filtered across once
     /// per sixteenth the vectors tried ask for, so each of them is at most a
     /// pass down. A block the picture does not hold whole keeps `mv`, as
-    /// does one whose luma `mv` predicts exactly.
+    /// does one whose luma `mv` predicts exactly, and one only probed, the
+    /// search measured and not taken.
     fn refine(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> Mv {
         let src = self.source;
         let size = 8 << n;
@@ -2111,8 +2117,8 @@ impl<'a> Tile<'a> {
         }
         let previous = self.previous.as_ref().expect("an inter frame");
         let reference = previous.reference;
-        self.searches += 1;
-        if !self.searches.is_multiple_of(previous.search_every) {
+        *self.contexts.probes += 1;
+        if !self.contexts.probes.is_multiple_of(previous.search_every) {
             return mv;
         }
         let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
@@ -2204,7 +2210,10 @@ impl<'a> Tile<'a> {
         let saved = if best.1 == mv { 0.0 } else { (came - coded(best.2, best.1)).max(0.0) };
         self.contexts.searched[0] += came;
         self.contexts.searched[1] += saved;
-        if saved > 0.0 { best.1 } else { mv }
+        // A probe only measures: a block refined alone among blocks that
+        // were not leaves their vectors predicting worse, which cost
+        // `browser` more than the vector saved.
+        if saved > 0.0 && previous.search_every == 1 { best.1 } else { mv }
     }
 
     /// The transform blocks of size `tx` (log2 less 2) of a block at
