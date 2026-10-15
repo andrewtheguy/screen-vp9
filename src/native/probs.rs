@@ -5,6 +5,7 @@
 //! form).
 
 use super::bool_writer::{self, BoolWriter};
+use super::mv;
 use super::tables::{
     COEF_PROBS, CoefProbs, INTER_MODE_PROBS, INTRA_INTER_PROBS, PARETO8_FULL, PARTITION_PROBS, SINGLE_REF_PROBS, SKIP_PROBS, TX_PROBS_8X8, TX_PROBS_16X16, TX_PROBS_32X32, UPDATE_INDEX, Y_MODE_PROBS,
 };
@@ -12,6 +13,8 @@ use super::tokens::{EOB_TOKEN, TOKENS};
 
 /// The probability an update flag for a probability is coded at.
 pub(super) const DIFF_UPDATE_PROB: u8 = 252;
+/// The probability an update flag for a vector's probability is coded at.
+pub(super) const MV_UPDATE_PROB: u8 = 252;
 
 /// The third node, whose probability gives the eight after it.
 const PIVOT_NODE: usize = 2;
@@ -37,9 +40,12 @@ const INTRA_INTER_SLOTS: usize = INTER_MODE_SLOTS + 7 * 3;
 const SINGLE_REF_SLOTS: usize = INTRA_INTER_SLOTS + 4;
 const Y_MODE_SLOTS: usize = SINGLE_REF_SLOTS + 5 * 2;
 const PARTITION_SLOTS: usize = Y_MODE_SLOTS + 4 * 9;
+/// Where a vector's probabilities start, after `FIXED`, as `mv::PROBS`
+/// orders them.
+const MV_SLOTS: usize = PARTITION_SLOTS + 16 * 3;
 /// The entries after `FIXED` for the bools other than tokens that a frame
 /// updates the probabilities of.
-const MODE_SLOTS: usize = PARTITION_SLOTS + 16 * 3;
+const MODE_SLOTS: usize = MV_SLOTS + mv::PROBS;
 
 /// The slot of the first node of the transform size tree of a block whose
 /// largest transform is `max` (1 for 8×8 to 3 for 32×32) at `ctx`.
@@ -79,6 +85,11 @@ pub(super) fn y_mode_slot(group: usize) -> usize {
 /// `ctx`.
 pub(super) fn partition_slot(ctx: usize) -> usize {
     FIXED + PARTITION_SLOTS + ctx * 3
+}
+
+/// The slot of the vector's probability `i` of `mv::PROBS`.
+pub(super) fn mv_slot(i: usize) -> usize {
+    FIXED + MV_SLOTS + i
 }
 
 /// Where a bool at `slot` is counted, if the frame updates the probability
@@ -208,6 +219,8 @@ pub(super) struct Probs {
     pub(super) single_ref: [[u8; 2]; 5],
     pub(super) y_mode: [[u8; 9]; 4],
     pub(super) partition: [[u8; 3]; 16],
+    /// As `mv::PROBS` orders them.
+    pub(super) mv: [u8; mv::PROBS],
     /// Per transform size.
     pub(super) coef: [CoefProbs; 4],
 }
@@ -224,6 +237,7 @@ impl Default for Probs {
             single_ref: SINGLE_REF_PROBS,
             y_mode: Y_MODE_PROBS,
             partition: PARTITION_PROBS,
+            mv: mv::DEFAULT_PROBS,
             coef: COEF_PROBS,
         }
     }
@@ -378,7 +392,7 @@ impl Probs {
     pub(super) fn table(&self) -> Vec<u8> {
         let mut table: Vec<u8> = (0..FIXED).map(|p| p as u8).collect();
         table.extend(self.tx8.iter().flatten().chain(self.tx16.iter().flatten()).chain(self.tx32.iter().flatten()).chain(&self.skip));
-        table.extend(self.inter_mode.iter().flatten().chain(&self.intra_inter).chain(self.single_ref.iter().flatten()).chain(self.y_mode.iter().flatten()).chain(self.partition.iter().flatten()));
+        table.extend(self.inter_mode.iter().flatten().chain(&self.intra_inter).chain(self.single_ref.iter().flatten()).chain(self.y_mode.iter().flatten()).chain(self.partition.iter().flatten()).chain(&self.mv));
         for kind in self.coef.iter().flatten().flatten() {
             for probs in kind.iter().flatten() {
                 table.extend(probs);
@@ -413,8 +427,26 @@ impl Probs {
     pub(super) fn update_modes(&mut self, w: &mut BoolWriter, counts: &Counts) {
         let costs = Costs::new();
         let probs = self.inter_mode.iter_mut().flatten().chain(&mut self.intra_inter).chain(self.single_ref.iter_mut().flatten()).chain(self.y_mode.iter_mut().flatten()).chain(self.partition.iter_mut().flatten());
-        for (p, &ct) in probs.zip(&counts.bools[INTER_MODE_SLOTS..]) {
+        for (p, &ct) in probs.zip(&counts.bools[INTER_MODE_SLOTS..MV_SLOTS]) {
             update_one(w, &costs, ct, p);
+        }
+    }
+
+    /// Write the vectors' part of an inter frame's compressed header, and
+    /// make its updates (libvpx's `vp9_write_nmv_probs`): each probability
+    /// set to what the frame's own bools measure, odd, in seven bits, where
+    /// that saves more than it costs (libvpx's `update_mv`).
+    pub(super) fn update_mv(&mut self, w: &mut BoolWriter, counts: &Counts) {
+        let costs = Costs::new();
+        let flag = |update: bool| i64::from(bool_writer::cost(update, MV_UPDATE_PROB));
+        for (p, &ct) in self.mv.iter_mut().zip(&counts.bools[MV_SLOTS..]) {
+            let new = binary_prob(ct) | 1;
+            let update = costs.branch(ct, *p) + flag(false) > costs.branch(ct, new) + flag(true) + (7 << 8);
+            w.write(update, MV_UPDATE_PROB);
+            if update {
+                w.literal(u32::from(new >> 1), 7);
+                *p = new;
+            }
         }
     }
 

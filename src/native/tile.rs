@@ -29,7 +29,7 @@ use super::motion;
 use super::mv::{self, Mv};
 use super::pool::Pool;
 use super::predict::{self, Edges, IntraMode};
-use super::probs::{Counts, inter_mode_slot, intra_inter_slot, partition_slot, single_ref_slot, skip_slot, tx_slot, y_mode_slot};
+use super::probs::{Counts, inter_mode_slot, intra_inter_slot, mv_slot, partition_slot, single_ref_slot, skip_slot, tx_slot, y_mode_slot};
 use super::quantize::{self, Quantizer};
 use super::tape::Tape;
 use super::transform::TxType;
@@ -1756,7 +1756,7 @@ impl<'a> Tile<'a> {
                     if mode == InterMode::New {
                         let nearest = self.candidates(mi_row, mi_col, n)[0];
                         let tape = &mut self.contexts.tape;
-                        mv::code(mv - nearest, |b, p| tape.write(b, p));
+                        mv::code(mv - nearest, |b, i| tape.put(b, mv_slot(i)));
                     }
                 } else {
                     self.write_modes(mode, sub, n, above, left);

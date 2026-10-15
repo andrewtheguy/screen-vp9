@@ -1,7 +1,7 @@
 //! Motion vectors, to a quarter of a pixel: the vectors a decoder predicts
 //! for a block are clamped as libvpx clamps them (`clamp_mv_ref`), and a new
 //! vector is coded against the nearest of them as libvpx reads it
-//! (`read_mv`), at the default probabilities and, high precision being off
+//! (`read_mv`), at the frame's probabilities and, high precision being off
 //! in the frame header, without the eighth-pixel bit. With every vector in
 //! quarters, so is every vector a decoder predicts, and libvpx's rounding of
 //! a predicted vector to quarters (`lower_mv_precision`) leaves it as it is.
@@ -22,6 +22,54 @@ const BORDER: i32 = 16 << 3;
 const JOINT_TREE: [i8; 6] = [0, 2, -1, 4, -2, -3];
 const CLASS_TREE: [i8; 20] = [0, 2, -1, 4, 6, 8, -2, -3, 10, 12, -4, -5, -6, 14, 16, 18, -7, -8, -9, -10];
 const FP_TREE: [i8; 6] = [0, 2, -1, 4, -2, -3];
+
+/// A vector's probabilities, one after another in the order a compressed
+/// header updates them: the joints (3); per component the sign, the classes
+/// (10), class 0 and the bits (10); per component class 0's fractions (2 of
+/// 3) and the fractions (3).
+pub(super) const PROBS: usize = 3 + 2 * COMPONENT + 2 * FRACTIONS;
+const COMPONENT: usize = 1 + 10 + 1 + 10;
+const FRACTIONS: usize = 2 * 3 + 3;
+/// Where each is in `PROBS`, a component's from `3 + comp * COMPONENT` and
+/// its fractions' from `FRACTIONS_AT + comp * FRACTIONS`.
+const SIGN: usize = 0;
+const CLASSES: usize = 1;
+const CLASS0: usize = 11;
+const BITS: usize = 12;
+const FRACTIONS_AT: usize = 3 + 2 * COMPONENT;
+const FP: usize = 6;
+
+/// VP9's default vector probabilities, as `PROBS` orders them.
+pub(super) const DEFAULT_PROBS: [u8; PROBS] = {
+    let mut p = [0; PROBS];
+    let mut i = 0;
+    while i < 3 {
+        p[i] = MV_JOINT_PROBS[i];
+        i += 1;
+    }
+    let mut comp = 0;
+    while comp < 2 {
+        let at = 3 + comp * COMPONENT;
+        p[at + SIGN] = MV_SIGN_PROBS[comp];
+        p[at + CLASS0] = MV_CLASS0_PROBS[comp];
+        let mut i = 0;
+        while i < 10 {
+            p[at + CLASSES + i] = MV_CLASS_PROBS[comp][i];
+            p[at + BITS + i] = MV_BITS_PROBS[comp][i];
+            i += 1;
+        }
+        let at = FRACTIONS_AT + comp * FRACTIONS;
+        let mut i = 0;
+        while i < 3 {
+            p[at + i] = MV_CLASS0_FP_PROBS[comp][0][i];
+            p[at + 3 + i] = MV_CLASS0_FP_PROBS[comp][1][i];
+            p[at + FP + i] = MV_FP_PROBS[comp][i];
+            i += 1;
+        }
+        comp += 1;
+    }
+    p
+};
 
 /// A motion vector in eighths of a pixel, as the bitstream counts it.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Debug)]
@@ -79,8 +127,9 @@ impl std::ops::Sub for Mv {
     }
 }
 
-/// Code `leaf` of `tree` at `probs` through `bit`, root first.
-fn tree(tree: &[i8], probs: &[u8], leaf: i8, bit: &mut impl FnMut(bool, u8)) {
+/// Code `leaf` of `tree`, whose probabilities are from `base` in `PROBS`,
+/// through `bit`, root first.
+fn tree(tree: &[i8], base: usize, leaf: i8, bit: &mut impl FnMut(bool, usize)) {
     // The path from the leaf back up: each entry's pair of branches starts
     // at an even index, which its parent's entry holds.
     let mut path = [(false, 0); 10];
@@ -88,7 +137,7 @@ fn tree(tree: &[i8], probs: &[u8], leaf: i8, bit: &mut impl FnMut(bool, u8)) {
     let mut at = tree.iter().position(|&t| t == -leaf).expect("a leaf of the tree");
     loop {
         let node = at & !1;
-        path[depth] = (at & 1 == 1, probs[node >> 1]);
+        path[depth] = (at & 1 == 1, base + (node >> 1));
         depth += 1;
         if node == 0 {
             break;
@@ -103,30 +152,32 @@ fn tree(tree: &[i8], probs: &[u8], leaf: i8, bit: &mut impl FnMut(bool, u8)) {
 /// Code one non-zero component of a difference, `comp` 0 down and 1
 /// across: its sign, its class, the whole pixels within the class and the
 /// quarters, the eighth bit implied.
-fn component(v: i32, comp: usize, bit: &mut impl FnMut(bool, u8)) {
+fn component(v: i32, comp: usize, bit: &mut impl FnMut(bool, usize)) {
     debug_assert!(v != 0 && v % 2 == 0, "a component in quarters, {v}");
-    bit(v < 0, MV_SIGN_PROBS[comp]);
+    let (at, fractions) = (3 + comp * COMPONENT, FRACTIONS_AT + comp * FRACTIONS);
+    bit(v < 0, at + SIGN);
     let z = v.unsigned_abs() - 1;
     let class = if z >= 8192 { 10 } else { (z >> 3).checked_ilog2().unwrap_or(0) };
     let offset = z - if class == 0 { 0 } else { 2 << (class + 2) };
     let (d, fr) = (offset >> 3, (offset >> 1) & 3);
-    tree(&CLASS_TREE, &MV_CLASS_PROBS[comp], class as i8, bit);
+    tree(&CLASS_TREE, at + CLASSES, class as i8, bit);
     if class == 0 {
-        bit(d == 1, MV_CLASS0_PROBS[comp]);
-        tree(&FP_TREE, &MV_CLASS0_FP_PROBS[comp][d as usize], fr as i8, bit);
+        bit(d == 1, at + CLASS0);
+        tree(&FP_TREE, fractions + 3 * d as usize, fr as i8, bit);
     } else {
         for i in 0..class {
-            bit((d >> i) & 1 == 1, MV_BITS_PROBS[comp][i as usize]);
+            bit((d >> i) & 1 == 1, at + BITS + i as usize);
         }
-        tree(&FP_TREE, &MV_FP_PROBS[comp], fr as i8, bit);
+        tree(&FP_TREE, fractions + FP, fr as i8, bit);
     }
 }
 
 /// Code `diff`, a new vector less the one it is coded against, through
-/// `bit`: which of its parts are not zero, then each of those, down first.
-pub(super) fn code(diff: Mv, mut bit: impl FnMut(bool, u8)) {
+/// `bit`, each bool with where its probability is in `PROBS`: which of its
+/// parts are not zero, then each of those, down first.
+pub(super) fn code(diff: Mv, mut bit: impl FnMut(bool, usize)) {
     let joint = 2 * i8::from(diff.row != 0) + i8::from(diff.col != 0);
-    tree(&JOINT_TREE, &MV_JOINT_PROBS, joint, &mut bit);
+    tree(&JOINT_TREE, 0, joint, &mut bit);
     if diff.row != 0 {
         component(diff.row, 0, &mut bit);
     }
@@ -135,7 +186,8 @@ pub(super) fn code(diff: Mv, mut bit: impl FnMut(bool, u8)) {
     }
 }
 
-/// What coding `diff` costs, in 256ths of a bit.
+/// What coding `diff` costs at the default probabilities, in 256ths of a
+/// bit.
 pub(super) fn cost(diff: Mv) -> u32 {
     /// What each joint costs, and per component what each value it can take
     /// costs, from `-LIMIT`, in quarters.
@@ -148,13 +200,13 @@ pub(super) fn cost(diff: Mv) -> u32 {
     const LIMIT: i32 = 2048 * 8;
     static COSTS: std::sync::LazyLock<Costs> = std::sync::LazyLock::new(|| {
         /// What the bools `code` codes cost.
-        fn priced(code: impl FnOnce(&mut dyn FnMut(bool, u8))) -> u32 {
+        fn priced(code: impl FnOnce(&mut dyn FnMut(bool, usize))) -> u32 {
             let mut total = 0;
-            code(&mut |b, p| total += super::bool_writer::cost(b, p));
+            code(&mut |b, i| total += super::bool_writer::cost(b, DEFAULT_PROBS[i]));
             total
         }
         Costs {
-            joints: std::array::from_fn(|joint| priced(|mut bit| tree(&JOINT_TREE, &MV_JOINT_PROBS, joint as i8, &mut bit))),
+            joints: std::array::from_fn(|joint| priced(|mut bit| tree(&JOINT_TREE, 0, joint as i8, &mut bit))),
             components: std::array::from_fn(|comp| (-LIMIT..=LIMIT).step_by(2).map(|v| if v == 0 { 0 } else { priced(|mut bit| component(v, comp, &mut bit)) }).collect()),
         }
     });
@@ -211,7 +263,7 @@ mod tests {
         diffs.extend([Mv { row: 2, col: 0 }, Mv { row: 0, col: -6 }]);
         let mut w = BoolWriter::new();
         for &d in &diffs {
-            code(d, |b, p| w.write(b, p));
+            code(d, |b, i| w.write(b, DEFAULT_PROBS[i]));
         }
         let data = w.finish();
         let mut r = BoolReader::new(&data);
@@ -227,7 +279,7 @@ mod tests {
     fn a_difference_costs_its_bools() {
         for d in [Mv::ZERO, Mv::pixels(0, 1), Mv { row: -6, col: 0 }, Mv { row: 2046 * 8 + 6, col: -16384 }, Mv { row: 16384, col: 30 }] {
             let mut total = 0;
-            code(d, |b, p| total += super::super::bool_writer::cost(b, p));
+            code(d, |b, i| total += super::super::bool_writer::cost(b, DEFAULT_PROBS[i]));
             assert_eq!(cost(d), total, "{d:?}");
         }
     }
