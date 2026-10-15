@@ -553,6 +553,7 @@ threads, the machine idle.
 | An inter frame's compressed header updates its inter modes', intra or inter's, the reference's, the luma intra modes' and the partitions' probabilities where its own bools save more than the update costs, as it did the transform sizes' and skips' | every capture that moves 0.94 to 0.99 of its bytes, `browser`, `drag` and `terminal` the most; no decision moves, so the picture and the time are the same |
 | And the vectors', each set to what the frame's bools measure where that saves more than its seven bits (libvpx's `update_mv`) | another 0.987 to 0.998 of the bytes |
 | An intra square of 32×32 and up takes the 32×32 transform, not 16×16 as libvpx's keyframe | `terminal`'s keyframe at dial 40 4.1 to 8.3 dB of luma better for 0.1 to 0.8% more bytes, now over libvpx's; every other keyframe up to 0.5 dB better at its bytes but `browser`'s at 1280×800 at 90, −0.07; the settles −0.02 to +0.36 dB; the captures within 0.4% of their bytes in the same time |
+| An intra square of an inter frame chosen over a vector, where the vector's residual is within `INTRA_OVER`, 2, of intra's variance with its bits, is coded inter at the whole vector too, taken where it codes no coefficient, else its luma coded intra and the cheaper taken in error and bits with each mode's bits, the square that takes the vector searched between pixels then; decided before the partition is written, since four 4×4s are a split (item 22) | over the target captures turn about with the build before: `video` 0.990 to 0.997 of its bytes and `walk` 0.989 to 0.998 at the same picture in 0.98 to 1.04 of the time; `browser`, `drag`, `terminal` and `uncover` within 0.3% of their bytes and 0.03 dB; `flood`, for reference, 0.997 to 0.998 in 1.07 to 1.14. Against libvpx the same day, `video` 1.00 to 1.05 of its bytes at +0.6 to +0.9 dB in 0.86 to 0.95 of its time and `walk` 1.01 to 1.08 at +0.4 to +0.7 in 0.71 to 0.80, but `video` at 2048×1536@2, the cell on the line: 1.01 to 1.02 of libvpx's time in three runs, where the build before it read 0.99 to 1.00 in three. Predicting the luma alone for the trial and not coding a square that takes the vector at it twice changed no stream and no time |
 | A smaller transform size's trial stops at the transform block that takes its cost past the size above's (item 23), and the luma `refine` predicted at the vector it found is kept for `trial` in place of predicting it again (item 25) | every stream the same to the byte; the captures a median of 0.99 of the build before's time, `browser` 0.96 to 0.98 at every size, `video` and `walk` 0.97 to 1.07; the settles a median of 0.98 to 0.99 a pair of dials, from 65 `still`, `video` and `browser` 0.96 to 0.99, `uncover` 0.93 to 0.99: inside the tenth this machine moves by, in one direction over the 80 captures, and nothing to keep them out |
 
 Each update is chosen from the frame's own bools after its blocks are
@@ -600,6 +601,15 @@ the level back, and the ground is 47 from there on.
 - **The vectors priced at the inter mode probabilities the frame starts
   from**, now that they move from frame to frame, not at VP9's defaults:
   within 0.3% of the bytes and 0.04 dB, the time the same.
+- **Item 22 with the search between pixels in its trial**, the inter
+  candidate refined and coded at both vectors as an inter block is: twice
+  the bytes, `video` 0.981 to 0.993 and `walk` 0.987 to 0.992, for 1.03
+  to 1.10 of a video's time ungated and 0.99 to 1.07 gated at
+  `INTRA_OVER` 2 or 4, since on a video the squares the moments give intra
+  are near inter anyway and the trial runs on most of them; `flood` 1.08
+  to 1.24 ungated and 1.07 to 1.14 gated. At the @2 sizes a video's time
+  is on libvpx's line, so the whole vector alone is taken, which is inside
+  the run's noise on every target.
 
 ### Measured, for what comes next
 
@@ -908,7 +918,16 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
     (libvpx's `vp9_get_intra_cost_penalty`), which is why libvpx's intra
     is rarer in a frame of the video, its intra 4×4s and 8×8s a quarter
     of this encoder's area. `INTRA_BITS` is the penalty's cousin on the
-    moments; the trial is on the coded block.
+    moments; the trial is on the coded block. Taken
+    ([measured](#taken-up-on-2026-10-15)) at the whole vector, with the
+    penalty the other way about (`INTRA_OVER`): a third to a half of a
+    percent of a video's bytes for a fiftieth of its time, which puts
+    `video` at 2048×1536@2 a hundredth or two over libvpx's time, the
+    cell that was on the line (item 18 is where that is bought back).
+    With the search between pixels in the trial it is a percent, for a
+    twentieth of a video's time ([not taken](#measured-and-not-taken));
+    what is left of the intra excess is to be read again with
+    `tools/vpxinspect/`.
 23. **The settle's smaller transform sizes cut short.** A smaller size's
     trial stops as soon as its running cost, transform block by transform
     block, passes the size above's (`rusty_vp9`'s `rd_cost_y`), which

@@ -1657,22 +1657,29 @@ impl<'a> Tile<'a> {
     /// how good a vector between pixels is shows only coded, a page moved by
     /// a fraction of a pixel saving most of a frame where text barely moves
     /// at all. A block that settles has nothing to find between the pixels.
+    /// `known` is the transform size and cost of the luma coded at `mv`
+    /// already, by `decide`, its levels in `levels`.
     /// The luma at the vector found is what `refine` predicted to find it;
     /// the chroma is predicted once, at the vector taken.
-    fn inter(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv) -> (Mode, usize, i64) {
+    fn inter(&mut self, mi_row: usize, mi_col: usize, n: u32, mv: Mv, known: Option<(usize, i64)>) -> (Mode, usize, i64) {
         let found = if self.still(mi_row, mi_col, n) { None } else { self.refine(mi_row, mi_col, n, mv) };
         let ac = i64::from(self.quantizer.ac_step());
         let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
         let with = |cost: i64, v: Mv| cost + RATE_WEIGHT * ac * ac * i64::from(prices.of(v).0);
+        // The luma coded at `mv`: `trial` reads the luma alone, so the
+        // chroma is predicted once, at the vector taken. With `known` the
+        // levels are in `levels` but the prediction is not in `recon`.
+        let (tx, cost) = match known {
+            Some(known) => known,
+            None => {
+                self.predict_inter(mi_row, mi_col, n, mv, 0..1);
+                self.trial(mi_row, mi_col, n)
+            }
+        };
         let Some(other) = found else {
-            self.predict_inter(mi_row, mi_col, n, mv, 0..3);
-            let (tx, cost) = self.trial(mi_row, mi_col, n);
+            self.predict_inter(mi_row, mi_col, n, mv, if known.is_some() { 0..3 } else { 1..3 });
             return (Mode::Inter(mv), tx, with(cost, mv));
         };
-        // `trial` reads the luma alone, so the chroma is predicted once, at
-        // the vector taken.
-        self.predict_inter(mi_row, mi_col, n, mv, 0..1);
-        let (tx, cost) = self.trial(mi_row, mi_col, n);
         std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
         std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
         self.take_refined(mi_row, mi_col, n);
@@ -1705,7 +1712,7 @@ impl<'a> Tile<'a> {
             Mode::Intra { .. } => (mode, self.intra_transform_size(n, moments, count)),
             Mode::Intra4 { .. } => (mode, 0),
             Mode::Inter(mv) => {
-                let (mode, tx, _) = self.inter(mi_row, mi_col, n, mv);
+                let (mode, tx, _) = self.inter(mi_row, mi_col, n, mv, None);
                 (mode, tx)
             }
             Mode::Unchanged => (mode, largest),
@@ -1724,10 +1731,12 @@ impl<'a> Tile<'a> {
                 // the square that takes the vector is searched then.
                 let ac = i64::from(self.quantizer.ac_step());
                 let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
-                self.predict_inter(mi_row, mi_col, n, mv, 0..3);
-                let (inter_tx, inter_cost) = self.trial(mi_row, mi_col, n);
-                let inter_cost = inter_cost + RATE_WEIGHT * ac * ac * i64::from(prices.of(mv).0);
+                // `trial` reads the luma alone.
+                self.predict_inter(mi_row, mi_col, n, mv, 0..1);
+                let (inter_tx, trial_cost) = self.trial(mi_row, mi_col, n);
+                let inter_cost = trial_cost + RATE_WEIGHT * ac * ac * i64::from(prices.of(mv).0);
                 if self.eobs[0].iter().all(|&eob| eob == 0) {
+                    self.predict_inter(mi_row, mi_col, n, mv, 1..3);
                     (Mode::Inter(mv), inter_tx, false)
                 } else {
                     std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
@@ -1745,7 +1754,11 @@ impl<'a> Tile<'a> {
                         }
                     };
                     if inter_cost <= cost {
-                        let (inter, inter_tx, _) = self.inter(mi_row, mi_col, n, mv);
+                        // Coded at the vector already: its levels back, and
+                        // only the search between pixels to do.
+                        std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
+                        std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
+                        let (inter, inter_tx, _) = self.inter(mi_row, mi_col, n, mv, Some((inter_tx, trial_cost)));
                         (inter, inter_tx, false)
                     } else {
                         (intra, tx, true)
