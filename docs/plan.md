@@ -624,6 +624,18 @@ the level back, and the ground is 47 from there on.
   otherwise often enough that the trial earns its tenth: skipping it
   trades the picture for bytes along the line on a video and costs the
   users' frames both.
+- **The quarter-pixel level at fewer points**, where the half-pixel level
+  went where the whole pixels around said: the one quarter pixel the
+  parabola's least rounds to, or a quarter pixel from the best towards
+  it on each axis and their corner, in place of the four around the best
+  and a corner (libvpx's `FIRST_LEVEL_CHECKS`). Each turn about with the
+  build before: `video` 1.002 to 1.006 of its bytes at −0.02 to −0.03 dB
+  in 0.95 to 1.03 of its time, `walk` 1.000 to 1.005 at −0.11 to +0.09 in
+  0.93 to 1.00; `browser` and `uncover` within 0.3% and 0.04 dB in 0.93 to
+  1.02, the one point 1.19 once on `uncover` at 2048×1536. The quarter
+  level's four points are not where a video's time is, and the parabola
+  through whole pixels misses the quarter pixel often enough to cost
+  bytes and picture both.
 
 ### Measured, for what comes next
 
@@ -1001,13 +1013,13 @@ Of a very busy picture alone, and last:
     luma prediction is kept for the trial (item 25, taken, inside the
     tenth), and the trial at both vectors only where the residual says
     they are near is [measured and not taken](#measured-and-not-taken):
-    at any fraction it trades the picture. Untried: the quarter-pixel
-    level at the one point the half-pixel costs point to, as the
-    half-pixel level is at the whole's, in place of the four around the
-    best; and in the search before it, profiled on the test pattern
-    before, the row hashes of an 8×8 row taken once and not twice, the
-    projections' sums in sixteen bits, a table of its own in place of the
-    standard one, a hundredth of a frame each.
+    at any fraction it trades the picture, and so does the quarter-pixel
+    level at the one point or the axes the half-pixel costs point to, in
+    place of the four around the best and a corner. Untried: in the search
+    before it, profiled on the test pattern before, the row hashes of an
+    8×8 row taken once and not twice, the projections' sums in sixteen
+    bits, a table of its own in place of the standard one, a hundredth of
+    a frame each.
 19. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
     four (27 ms of wall time for 86 of processor time at 1920×1080). No
     thread was found waiting; what is left is memory, and not looked into.
