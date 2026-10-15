@@ -643,6 +643,17 @@ the level back, and the ground is 47 from there on.
   pixels `video` and `walk` take 0.70 of the time for 1.2 of the bytes;
   taking the refined vector without coding both, 0.90 to 0.95, the second
   trial being a tenth of a video's time and the search the rest.
+- **Where `video`'s time goes at 2048×1536@2**, profiled by symbol on the
+  build of item 22 with the trial and search as they are, of the coder's
+  own samples: the filter between pixels 13% (across 6, down 5, the
+  prediction of a chosen vector 2), the forward transform 7, `partition`
+  6, the residual's moments 6, the token estimate 5 and the tokens
+  written 2, the tape 4, the quantizer 4, `choose` 3, `trial` 3,
+  `intra_mode` 3, `refine`'s costing of a vector 3, the subtraction 2,
+  and the whole-pixel search 4 in all (the hashing 2, its index 1, the
+  projections 1). Nothing is a tenth: the time is the trial's body, and
+  the search between pixels is where the plan's levers were, both
+  measured above to trade the picture.
 - **`drag` from 2048 wide is under libvpx's picture whole as well as cut**:
   over its 402 frames 0.09 to 0.26 of libvpx's bytes at 0.12 to 0.34 dB
   under from 2048 to 3456 wide and +0.67 at 3840, where the cut, its
@@ -1015,11 +1026,12 @@ Of a very busy picture alone, and last:
     they are near is [measured and not taken](#measured-and-not-taken):
     at any fraction it trades the picture, and so does the quarter-pixel
     level at the one point or the axes the half-pixel costs point to, in
-    place of the four around the best and a corner. Untried: in the search
-    before it, profiled on the test pattern before, the row hashes of an
-    8×8 row taken once and not twice, the projections' sums in sixteen
-    bits, a table of its own in place of the standard one, a hundredth of
-    a frame each.
+    place of the four around the best and a corner. The whole-pixel search
+    is 4% of the video's coder ([profiled](#measured-for-what-comes-next)):
+    the row hashes of an 8×8 row taken once and not twice, the
+    projections' sums in sixteen bits and a table of its own are under a
+    hundredth each, and left. What is left is the trial's body, which
+    items 20 and 21 reshape.
 19. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
     four (27 ms of wall time for 86 of processor time at 1920×1080). No
     thread was found waiting; what is left is memory, and not looked into.
