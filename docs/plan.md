@@ -808,6 +808,18 @@ the machine idle.
   for 0.1 dB, `walk` 1.06 for 0.35. Held to the inter blocks, 17 cost
   `video` 1.024 for 0.05 dB and the intra blocks alone moved `drag` 0.17
   dB; held to inter blocks at anchored vectors, `video` is untouched.
+- **The transform sizes under the largest tried only where the largest
+  leaves a residual past a threshold on the moments** (item 23's second
+  line, libvpx's `calculate_tx_size` as a gate on the trial, and item
+  17's untried line), the residual's variance a pixel over its planes
+  under 4/16, 16/16 or 64/16 of a step squared taking the largest alone,
+  over the settles of `still`, `uncover`, `browser`, `video`, `walk` and
+  `terminal` at 1920×1080 and 2048×1536@2: from 65 0.71 to 0.90 of the
+  bytes and time at −0.5 to −3.5 dB even at 4/16; from 80 0.35 to 0.83 at
+  −0.2 to −0.7; from 89 0.41 to 0.95 at −0.03 to −0.11. A settle's
+  residual is the coarse dial's quantization error, under a sixteenth of a
+  step squared nearly everywhere, and the smaller sizes are what code it:
+  a settle needs them from every dial.
 - **The search between pixels to a precision the block picks** (item 25's
   second line, libaom's `subpel_select`), alone over `video`, `walk`,
   `browser`, `uncover` and `drag` at 1920×1080 and 2048×1536@2. None where
@@ -1064,7 +1076,9 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
     libvpx's `calculate_tx_size` as a gate on the trial and not in its
     place, since the trials are the settle's 1.0 to 1.4 dB from 65. The
     first is taken ([measured](#taken-up-on-2026-10-15), a few hundredths
-    of a busy settle); the second is open, with item 17's untried line.
+    of a busy settle); the second, with item 17's untried line, is
+    [measured and not taken](#measured-and-not-taken-1) on 2026-10-16: at
+    any threshold it takes a settle's decibels.
 24. **A still desktop coded finer on the whole frames after a keyframe**:
     its premise was not `drag`'s ([measured and
     taken another way](#taken-up-on-2026-10-16)). `drag`'s frames after the
@@ -1103,8 +1117,10 @@ Of a very busy picture alone, and last:
    The time is in the transform sizes under the largest, which are the
    settle's 1.0 to 1.4 dB over libvpx's from 65; from 80 they buy 0.0 to
    0.2 dB. Untried: the smaller sizes only where the largest leaves more
-   than some error, and what a settle from 80 or 89 needs of them at all.
-   The forward half of that time is taken above, with the picture kept.
+   than some error, and what a settle from 80 or 89 needs of them at all:
+   [measured and not taken](#measured-and-not-taken-1) on 2026-10-16, the
+   smaller sizes buying a settle from 80 0.2 to 0.7 dB and from 89 up to
+   0.1. The forward half of that time is taken above, with the picture kept.
 18. **The frames of `video` and `walk`**, 0.85 to 1.01 and 0.71 to 0.81 of libvpx's time
     frame for frame, `video`'s most at 2048×1536 on the line at 1.01, the nearest the line of the whole captures. Of a
     video's time at 2048×1536 the search between pixels is a fifth and
