@@ -402,6 +402,30 @@ pub(super) fn estimate(costs: &Costs, kind: Kind, ctx: usize, levels: &[i16], eo
     total
 }
 
+/// `estimate` from `ctx`, given `bits`, what it says from context 0: the
+/// context the blocks above and left give is coded at by the first token
+/// alone, or by the end of block of a block with none, and every scan
+/// starts at the first coefficient.
+pub(super) fn recontext(costs: &Costs, kind: Kind, ctx: usize, levels: &[i16], eob: usize, bits: u32) -> u32 {
+    let first = token_context(kind.tx, kind.chroma, kind.inter);
+    let column = if eob == 0 { EOB_TOKEN } else { AFTER_MORE + token(levels[0]) };
+    bits - u32::from(costs.0[first][column]) + u32::from(costs.0[first + ctx][column])
+}
+
+/// The token of a level: the level itself up to four, then
+/// `CATEGORY1_TOKEN` to `CATEGORY6_TOKEN` by its size.
+fn token(level: i16) -> usize {
+    match level.unsigned_abs() {
+        l @ 0..=4 => usize::from(l),
+        5..=6 => 5,
+        7..=10 => 6,
+        11..=18 => 7,
+        19..=34 => 8,
+        35..=66 => 9,
+        _ => 10,
+    }
+}
+
 /// How a transform block's tokens are coded: the probabilities of its
 /// size, as log2 less 2, whether it is chroma and whether its block is
 /// inter, in the scan of its size and type.
@@ -535,6 +559,36 @@ mod tests {
             let ctx = round % 3;
             let mut map = [(round % 251) as u8; 1024];
             assert_eq!(estimate(&costs, kind, ctx, &levels, eob, &mut map), estimate_by_one(&costs, kind, ctx, &levels, eob), "round {round}: {n}x{n} {tx_type:?}, eob {eob}");
+        }
+    }
+
+    #[test]
+    fn the_estimate_moved_to_a_context_is_the_estimate_from_it() {
+        let costs = Costs::new(&Probs::default());
+        let mut state = 0x9e37_79b9_u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        let types = [TxType::DctDct, TxType::AdstDct, TxType::DctAdst, TxType::AdstAdst];
+        for round in 0..4000 {
+            let tx = round % 4;
+            let tx_type = if tx == 3 { TxType::DctDct } else { types[round / 4 % 4] };
+            let n = 4 << tx;
+            // Every token at the first coefficient, blocks with nothing
+            // in them among the rest.
+            let (range, one_in) = ([2, 5, 12, 80, 20_000][round / 16 % 5], [1, 2, 5, 400][round / 80 % 4]);
+            let levels: Vec<i16> = (0..n * n).map(|_| if next() % one_in == 0 { ((next() % (2 * range + 1)) as i32 - range as i32) as i16 } else { 0 }).collect();
+            let order = scan(tx, tx_type).order;
+            let eob = order.iter().rposition(|&rc| levels[usize::from(rc)] != 0).map_or(0, |i| i + 1);
+            let kind = Kind { tx, tx_type, chroma: round % 3 == 0, inter: round % 5 == 0 };
+            let mut map = [0u8; 1024];
+            let from_0 = estimate(&costs, kind, 0, &levels, eob, &mut map);
+            for ctx in 0..3 {
+                assert_eq!(recontext(&costs, kind, ctx, &levels, eob, from_0), estimate(&costs, kind, ctx, &levels, eob, &mut map), "round {round}: {n}x{n} {tx_type:?}, eob {eob}, context {ctx}");
+            }
         }
     }
 
