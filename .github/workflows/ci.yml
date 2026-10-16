@@ -25,5 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: rustup update stable && rustup default stable && rustup component add clippy
+      # With the Rust coder, which is where the crate's own tests are, and
+      # without it, which is the build a machine under x86-64-v3 takes:
+      # `.cargo/config.toml` asks for x86-64-v3 on amd64 whatever the
+      # features, so there the environment puts the target's baseline back.
+      - run: cargo clippy --all-targets --features native -- -D warnings
+      - run: cargo test --features native
       - run: cargo clippy --all-targets -- -D warnings
+        env:
+          RUSTFLAGS: ${{ runner.arch == 'X64' && '-C target-cpu=x86-64' || '' }}
+          RUSTDOCFLAGS: ${{ runner.arch == 'X64' && '-C target-cpu=x86-64' || '' }}
       - run: cargo test
+        env:
+          RUSTFLAGS: ${{ runner.arch == 'X64' && '-C target-cpu=x86-64' || '' }}
+          RUSTDOCFLAGS: ${{ runner.arch == 'X64' && '-C target-cpu=x86-64' || '' }}

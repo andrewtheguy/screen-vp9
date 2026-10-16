@@ -1,0 +1,9 @@
+# The Rust coder is built for x86-64-v3 on amd64, which is above the target's
+# baseline; a user building this crate with the `native` feature for amd64
+# sets the same (see `src/native/lanes.rs`). Cargo cannot set a flag by
+# feature, so a build here without the feature is x86-64-v3 as well:
+# `RUSTFLAGS` and `RUSTDOCFLAGS` in the environment replace these, which is
+# how CI makes the build a machine under x86-64-v3 takes.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+rustdocflags = ["-C", "target-cpu=x86-64-v3"]

@@ -3,15 +3,14 @@
 VP9 for a desktop picture, as [wlshare](https://github.com/andrewtheguy/wlshare)
 and the [remotex](https://github.com/andrewtheguy/remotex) gateway both code
 it, which are its only users. One `Stream` and one `Encoder`, coded by the
-coder their maker names: `Coder::Libvpx`, libvpx set up for a desktop, which
-is the one there is. The name is kept so that another coder can take its place
-without a user's calls changing but for the name.
+coder their maker names:
 
-The encoder written here in Rust, which was `screen-vp9-native`, lives on the
-[`native-encoder`](https://github.com/andrewtheguy/screen-vp9/tree/native-encoder)
-branch: **EXPERIMENTAL**, built for x86-64-v3 on amd64 and NEON on arm64, and
-not released. `main` and its tags are libvpx alone and ask nothing of a machine
-that libvpx does not.
+- `Coder::Libvpx`: libvpx, set up for a desktop. The default.
+- `Coder::Native`: the encoder written here in Rust, which was
+  `screen-vp9-native` until it came home here. **EXPERIMENTAL**, and built
+  only with the `native` feature.
+
+The stream is the same kind either way and nothing else a user calls differs.
 
 - `Encoder`: 8-bit 4:4:4, VP9 profile 1, and nothing else. A quantizer pinned
   to a 1–100 quality dial rather than a bitrate, no lag, no dropped frames, no
@@ -32,7 +31,8 @@ that libvpx does not.
   a window dragged across one in the quarter of it that moved.
 - A frame told where its picture changed codes the blocks those rectangles
   touch and leaves every other as the decoder has it: through libvpx's active
-  map, a 4K frame with one small change in 11 ms for 26.
+  map, a 4K frame with one small change in 11 ms for 26, and by the Rust coder
+  in a segment a decoder reads nothing more of and does not loop filter.
 - `Stream`: the encoder and its picture together, which is how both users
   drive it. It reads a packed picture where that changed, straight from the
   framebuffer or the mirror and for no longer than the conversion takes, and
@@ -51,12 +51,28 @@ that libvpx does not.
   the same way. It is told what each frame left the client holding and says
   when a quiet desktop is owed its settle, half a second on.
 
+The Rust coder is built for NEON on arm64 and for x86-64-v3 on amd64 (AVX2,
+BMI1 and BMI2, LZCNT, MOVBE, FMA: Haswell and Excavator on), and a build with
+the `native` feature is refused under them. NEON is in every arm64 target's
+baseline; x86-64-v3 is above amd64's, so a user's amd64 build with the
+feature sets `-C target-cpu=x86-64-v3`, as this repository's
+`.cargo/config.toml` does. That is a floor, raised when a higher one is
+measured to buy enough, and no processor under it is kept working. Without
+the feature the crate is libvpx alone and asks nothing of the machine that
+libvpx does not, which is the build for an older processor.
+
 libvpx is [libvpx-prebuilt](https://github.com/andrewtheguy/libvpx-prebuilt)'s
-static archive, which the build fetches: the coder, and the decoder every
-frame made in a test is held to.
+static archive, which the build fetches: one of the two coders, and the
+decoder every frame the Rust coder makes in a test is held to. How the Rust
+coder works is in [docs/encoder.md](docs/encoder.md), what it was measured at
+in [docs/benchmarks.md](docs/benchmarks.md) (on an Apple M2 Max in
+[docs/benchmarks-m2-max.md](docs/benchmarks-m2-max.md)), and how it was planned and
+decided in [docs/plan.md](docs/plan.md).
 
 Use it by release tag:
 
 ```toml
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.25" }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.22" }
+# and with the Rust coder:
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.22", features = ["native"] }
 ```
