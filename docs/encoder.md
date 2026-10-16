@@ -161,7 +161,8 @@ where part of it is unchanged and the rest did not move, and where it is a
 64×64 predicted from the previous frame.
 
 A keyframe's squares are intra. An 8×8 is coded in each mode in turn, by its
-error on the coefficients and its bits at the frame's probabilities
+error on the coefficients and its bits at the frame's probabilities, each
+transform block's levels as `reconstruct` will keep them
 (`intra_trial`), pruned as libvpx's realtime encoder prunes its own; one
 whose four quarters' means differ is four 4×4s, each with a mode of its own
 (`intra4_trial`); the chroma is in DC or in the luma's mode, by cost

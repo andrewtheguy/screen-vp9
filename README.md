@@ -72,7 +72,7 @@ decided in [docs/plan.md](docs/plan.md).
 Use it by release tag:
 
 ```toml
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.21" }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.22" }
 # and with the Rust coder:
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.21", features = ["native"] }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.22", features = ["native"] }
 ```

@@ -1950,11 +1950,14 @@ impl<'a> Tile<'a> {
                 self.transform(0, px, py, side, tx_type);
                 let levels = &mut self.levels[0][i * area..][..area];
                 let (eob, e) = self.quantizer.quantize_with_error(side, true, scan.inverse, &self.coeffs[..area], levels);
+                let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: false, inter: false };
+                // The levels `reconstruct` will keep, which are what the
+                // block costs and what the blocks after it predict from.
+                let (eob, bits_0, e) = worth_coding(self.costs, &mut self.map, self.quantizer, side, kind, &self.coeffs[..area], levels, eob, e);
                 error += e;
                 let (col4, row4) = (x / 4, y / 4);
                 let ctx = usize::from(above_nz[col4..col4 + n4].iter().any(|&a| a != 0)) + usize::from(left_nz[row4..row4 + n4].iter().any(|&l| l != 0));
-                let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: false, inter: false };
-                bits += i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.map));
+                bits += i64::from(tokens::recontext(self.costs, kind, ctx, levels, eob, bits_0));
                 let coded = u8::from(eob > 0);
                 coded_any |= eob > 0;
                 for k in 0..n4 {
@@ -2028,7 +2031,10 @@ impl<'a> Tile<'a> {
                 let levels = &mut self.levels[0][b * 16..][..16];
                 let (eob, error) = self.quantizer.quantize_with_error(4, true, scan.inverse, &self.coeffs[..16], levels);
                 let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
-                let bits = bits + i64::from(tokens::estimate(self.costs, kind, ctx, levels, eob, &mut self.map));
+                // As `reconstruct` keeps them: a 4×4 whose levels are not
+                // worth their bits is weighed as the nothing it will code.
+                let (eob, bits_0, error) = worth_coding(self.costs, &mut self.map, self.quantizer, 4, kind, &self.coeffs[..16], levels, eob, error);
+                let bits = bits + i64::from(tokens::recontext(self.costs, kind, ctx, levels, eob, bits_0));
                 let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
                 if cost < best.0 {
                     best = (cost, mode, eob);
