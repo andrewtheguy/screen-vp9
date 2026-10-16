@@ -1,12 +1,12 @@
 [package]
 name = "screen-vp9"
-version = "0.0.24"
+version = "0.0.25"
 edition = "2024"
 license = "MIT AND BSD-3-Clause"
 repository = "https://github.com/andrewtheguy/screen-vp9"
-description = "VP9 for a desktop picture, as wlshare and the remotex gateway both code it: 8-bit 4:4:4 pinned to a 1–100 quality dial, coded by libvpx or by the encoder written here in Rust, BT.601 planes in front of it, the decoder, what a frame says about itself, and the walk of the dial a link will bear"
+description = "VP9 for a desktop picture, as wlshare and the remotex gateway both code it: 8-bit 4:4:4 pinned to a 1–100 quality dial, coded by libvpx, BT.601 planes in front of it, the decoder, what a frame says about itself, and the walk of the dial a link will bear"
 
-# The encoders both users code a desktop with, and the one place libvpx is
+# The encoder both users code a desktop with, and the one place libvpx is
 # spoken to. Platform-independent and dependency-light on purpose: the wlshare
 # daemon and the remotex gateway both build it, each pinned to a release tag of
 # this repository, and a change to how a desktop is coded is made here once for
@@ -18,8 +18,8 @@ log = "0.4"
 # crate's build script — nothing to configure, assemble or install. The archives
 # cover macOS arm64, Linux x86_64 and aarch64 and Windows x86_64, which is every
 # place a user of this crate is built. VP9-only, built `--enable-realtime-only`.
-# Its encoder is one of the two coders, and its decoder the independent one
-# every frame the Rust coder makes in a test is held to.
+# Its encoder is the coder, and its decoder the independent one every frame
+# made in a test is held to.
 vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewtheguy/libvpx-prebuilt", tag = "v1.16.0-20260924182850-e78d74f" }
 # The conversions between packed RGB or BGRX and the planes an encoder takes
 # and the decoder gives back: pure Rust with AVX2 and NEON paths chosen at run
@@ -27,16 +27,3 @@ vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewthe
 # professional mode is the one to the planes whose every path, NEON with and
 # without RDM, AVX2, SSE and scalar, makes the same planes of a colour.
 yuv = { version = "0.8", features = ["professional_mode"] }
-
-[features]
-# The encoder written here in Rust, `Coder::Native`. EXPERIMENTAL. Off unless
-# asked for, because it is built for NEON on arm64 and for x86-64-v3 on amd64
-# and the build is refused under them: a build without it is libvpx alone, for
-# any machine libvpx runs on.
-native = []
-
-# The measurements of the Rust coder against libvpx, a program run by hand;
-# it needs the Rust coder.
-[[example]]
-name = "against_libvpx"
-required-features = ["native"]
