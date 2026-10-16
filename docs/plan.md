@@ -115,32 +115,34 @@ desktop as drawn:
 
 [benchmarks.md](benchmarks.md), one run of 2026-10-15 over every size of
 the cut captures, `walk` whole, on the build after release 0.0.19 that
-updates an inter frame's mode, partition and vector probabilities and
-takes the 32×32 intra transform, `walk`'s rows of it captured again and
-measured again the same day, its clip paused for the settle:
+updates an inter frame's mode, partition and vector probabilities, takes
+the 32×32 intra transform, codes an intra square of an inter frame inter
+at its vector too and cuts a smaller transform size's trial short, `walk`
+captured again the same day, its clip paused for the settle:
 
 - **A video is inside the gate, over libvpx's picture.** `video` takes
-  1.01 to 1.05 of libvpx's bytes at +0.6 to +0.8 dB and `walk`, whole,
-  1.01 to 1.09 at +0.4 to +0.7, where the gate the plan began with allows
+  1.00 to 1.05 of libvpx's bytes at +0.6 to +0.9 dB, 1.00 from 2880
+  wide, and `walk`, whole, 1.01 to 1.08 at +0.4 to +0.7, where the gate
+  the plan began with allows
   15% more bytes at most; without the vectors between pixels they were
   1.22 to 1.27 and 1.16 to 1.25 at up to 0.6 dB under. Everything else
   over a whole capture is at fewer bytes than libvpx's and at its picture
   or better, but `drag` from 2048 to 3456 wide, 0.2 to 0.4 dB under at
   0.40 to 0.49 of the bytes: 75 cells of 80.
-- Every capture at every size takes less time than libvpx: 0.15 to 0.97
-  of it frame for frame, a line of text 0.15 to 0.21, `walk` 0.70 to
-  0.80, `video` 0.83 to 0.97, at 2048×1536 on the line. The frame `walk`'s
-  session settles, the video paused, is 0.79 to 1.06 of libvpx's time up
-  to 1920 wide and 1.17 to 1.33 from 2048, at 0.84 to 0.93 of its bytes
-  and +0.3 to +0.9 dB.
+- Every capture at every size takes less time than libvpx but `video`
+  at 2048×1536, on the line at 1.01: 0.14 to 1.01 of it frame for frame,
+  a line of text 0.14 to 0.22, `walk` 0.71 to 0.81, `video` 0.85 to
+  1.01. The frame `walk`'s session settles, the video paused, is 0.86 to
+  1.21 of libvpx's time up to 1920 wide and 1.16 to 1.57 from 2048, one
+  frame's time, at 0.84 to 0.92 of its bytes and +0.3 to +0.9 dB.
 - A first picture coded alone as a keyframe is over libvpx's at every
   dial and size, 0.1 to 0.8 dB at 0.86 to 1.06 of its bytes, `terminal`'s
   at dial 40 0.5 to 5.9 dB at 0.65 to 0.88 of them where it was 2.4 to
-  7.7 dB under; in 0.41 to 0.97 of libvpx's time up to 1920 wide and 0.52
-  to 1.05 from 2048 wide.
-- A settle of a busy picture takes more time than libvpx's: 0.96 to 1.44
+  7.7 dB under; in 0.38 to 0.98 of libvpx's time up to 1920 wide and 0.49
+  to 1.04 from 2048 wide.
+- A settle of a busy picture takes more time than libvpx's: 0.98 to 1.46
   of it from 65 for 1.0 to 1.5 dB more picture at 0.90 to 0.97 of the
-  bytes, a picture of the video 1.04 to 1.60, and `flood`'s 0.96 to 1.84
+  bytes, a picture of the video 1.04 to 1.61, and `flood`'s 0.99 to 1.96
   from 80 and 89; a settle of the video from 89 takes 1.03 to 1.32 of
   libvpx's bytes from 2048 wide.
 
@@ -782,7 +784,7 @@ made again. What they found the picture short in comes first, since a
 stream coded worse than libvpx's at more bytes is not one a user would
 take for less time:
 
-1. **The rest of the video's bytes**, 1.01 to 1.05 of libvpx's (`walk` 1.01 to 1.09)
+1. **The rest of the video's bytes**, 1.00 to 1.05 of libvpx's (`walk` 1.01 to 1.08)
    with the vectors between pixels back and an inter frame's
    probabilities updated ([taken](#taken-up-on-2026-10-15)). Read again
    with `tools/vpxinspect/`, what is over is this encoder's own: intra
@@ -1033,15 +1035,15 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
 
 Of a very busy picture alone, and last:
 
-17. **A settle of a busy picture takes up to 1.8 of libvpx's time**, more
+17. **A settle of a busy picture takes up to twice libvpx's time**, more
    from 2048 wide than under it ([benchmarks.md](benchmarks.md), the run
-   of 2026-10-15): from 65 `still`, `uncover` and `browser` 0.96 to 1.44,
-   `flood` 0.75 to 1.60 and a picture of the video 1.04 to 1.60, 1.33 to
-   1.60 from 2048 wide; from 80 and 89 `flood` 0.96 to 1.84 and the video
-   0.82 to 1.47. The settle `walk`'s own session asks for, its clip paused
-   partway up the dial at 41 to 75, is 0.79 to 1.06 of libvpx's time up to
-   1920 wide and 1.17 to 1.33 from 2048, at 0.84 to 0.93 of its bytes and
-   +0.3 to +0.9 dB. libvpx's settle
+   of 2026-10-15): from 65 `still`, `uncover` and `browser` 0.98 to 1.46,
+   `flood` 0.77 to 1.72 and a picture of the video 1.04 to 1.61, 1.33 to
+   1.61 from 2048 wide; from 80 and 89 `flood` 0.99 to 1.96 and the video
+   0.87 to 1.52. The settle `walk`'s own session asks for, its clip paused
+   partway up the dial at 41 to 75, is 0.86 to 1.21 of libvpx's time up to
+   1920 wide and 1.16 to 1.57 from 2048, one frame's time, at 0.84 to 0.92
+   of its bytes and +0.3 to +0.9 dB. libvpx's settle
    time read at two levels because the measurement made a fresh encoder a
    pass and its second frame paid page faults, or did not; on encoders
    kept warm it is 0.5 to 0.65 of what it read, and this is what is left.
@@ -1050,8 +1052,8 @@ Of a very busy picture alone, and last:
    0.2 dB. Untried: the smaller sizes only where the largest leaves more
    than some error, and what a settle from 80 or 89 needs of them at all.
    The forward half of that time is taken above, with the picture kept.
-18. **The frames of `video` and `walk`**, 0.83 to 0.97 and 0.70 to 0.80 of libvpx's time
-    frame for frame, `video`'s most at 2048×1536 on the line, the nearest the line of the whole captures. Of a
+18. **The frames of `video` and `walk`**, 0.85 to 1.01 and 0.71 to 0.81 of libvpx's time
+    frame for frame, `video`'s most at 2048×1536 on the line at 1.01, the nearest the line of the whole captures. Of a
     video's time at 2048×1536 the search between pixels is a fifth and
     coding a refined block at both vectors a tenth
     ([measured](#measured-for-what-comes-next)). The refined vector's
