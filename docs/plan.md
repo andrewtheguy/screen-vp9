@@ -924,6 +924,14 @@ the machine idle.
   to 1.00. libvpx's fastest gives up more of its picture than this
   encoder's does, and is faster on a video: `Fastest` is not a faster
   coder of one.
+- **The tile phase of a busy keyframe** (item 19), `flood`'s keyframes at
+  1920×1080 at 40, 65 and 90 under `perf stat`, alone, on one thread and
+  four: four 3.27 to 3.35 times as fast as one, the cycles over all 2% more
+  and the instructions a cycle 2.36 to one's 2.41, the cache misses 17.5%
+  of the references to one's 18.1%. Nothing waits on memory; the clock
+  went from 3.12 GHz on one core to 2.85 on four, which is 9% of the four,
+  and the rest is the frame's serial part, its headers and each tile
+  column's bools.
 - **Where `video`'s bytes are over at 1920×1080**, read with
   `tools/vpxinspect/` on the build of item 24 (`VPXI_FRAMES` per frame):
   the intra blocks of its inter frames, its two keyframes being of black.
@@ -1247,7 +1255,10 @@ Of a very busy picture alone, and last:
     items 20 and 21 reshape.
 19. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
     four (27 ms of wall time for 86 of processor time at 1920×1080). No
-    thread was found waiting; what is left is memory, and not looked into.
+    thread was found waiting, and on 2026-10-16 nothing waits on memory
+    either ([measured](#measured-for-what-comes-next-1)): the processor's
+    clock falls by a tenth with four cores busy, and the rest is the
+    frame's serial part.
 
 ## Main risk
 
