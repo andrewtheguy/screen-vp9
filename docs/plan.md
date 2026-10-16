@@ -808,6 +808,21 @@ the machine idle.
   for 0.1 dB, `walk` 1.06 for 0.35. Held to the inter blocks, 17 cost
   `video` 1.024 for 0.05 dB and the intra blocks alone moved `drag` 0.17
   dB; held to inter blocks at anchored vectors, `video` is untouched.
+- **The intra blocks of an inter frame, five ways** (what item 22 left,
+  the reading [below](#measured-for-what-comes-next-1)), each turn about
+  with the build before over `video` and `walk` at 1920×1080 and
+  2048×1536@2 and `browser`, `uncover`, `terminal` and `flood` or `drag`
+  at 1920×1080. `INTRA_OVER` at 4, 8 and without limit, every intra
+  square near or far coded inter too: within 0.8% of the bytes and 0.11
+  dB, no time. Their transform held to 16×16 as libvpx's is: nothing, and
+  `walk` −0.1 dB. No 4×4s in an inter frame: `video` 0.986 to 0.992 of its
+  bytes and `walk` 0.975 to 0.981 at −0.04 to −0.06 dB, `terminal` 1.004
+  at −0.13. Split at 4, 16 and 64 times `SPLIT_VARIANCE`'s variance in an
+  inter frame: `video` 0.994 to 1.000 at −0.02 to −0.13 dB, `walk` 0.97 to
+  0.99 at −0.02 to −0.14. Each is bytes for decibels along the curve on a
+  video, and not the 2.25 times libvpx's bytes a pixel of intra the
+  reading found: what makes an intra block of a video dear is not its
+  size, its transform, its 4×4s or how often it is coded both ways.
 - **A square coded whole first and its quarters tried only where the
   whole is dear a pixel** (item 20's `rusty_vp9` gate on the whole-first
   form of 2026-10-15), the whole's coded cost a pixel under 1/16 to 4/16
@@ -1083,9 +1098,12 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
     `video` at 2048×1536@2 a hundredth or two over libvpx's time, the
     cell that was on the line (item 18 is where that is bought back).
     With the search between pixels in the trial it is a percent, for a
-    twentieth of a video's time ([not taken](#measured-and-not-taken));
-    what is left of the intra excess is to be read again with
-    `tools/vpxinspect/`.
+    twentieth of a video's time ([not taken](#measured-and-not-taken)).
+    Read again on 2026-10-16 ([measured](#measured-for-what-comes-next-1)),
+    the intra blocks of a video's inter frames cost 2.25 times libvpx's
+    bytes a pixel of intra, and five ways of coding them less or larger
+    are [measured and not taken](#measured-and-not-taken-1): what makes
+    them dear is open.
 23. **The settle's smaller transform sizes cut short.** A smaller size's
     trial stops as soon as its running cost, transform block by transform
     block, passes the size above's (`rusty_vp9`'s `rd_cost_y`), which
