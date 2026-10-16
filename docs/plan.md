@@ -808,6 +808,21 @@ the machine idle.
   for 0.1 dB, `walk` 1.06 for 0.35. Held to the inter blocks, 17 cost
   `video` 1.024 for 0.05 dB and the intra blocks alone moved `drag` 0.17
   dB; held to inter blocks at anchored vectors, `video` is untouched.
+- **A switchable filter per block** (item 1's last line): built as an
+  experiment, the regular filter in a scalar pass, each inter block's
+  filter coded as VP9 codes it when a frame's is switchable, an inactive
+  block's and a quiet superblock's included, at the default probabilities;
+  a block between pixels takes the filter whose luma residual is less, its
+  luma coded again at regular where that wins, a block at whole pixels the
+  filter that costs least beside its neighbours'. libvpx's decoder held
+  every test's stream. Turn about with it off: `video` 0.988 to 1.009 of
+  its bytes at −0.01 to −0.05 dB from 1280 to 3840 wide, `walk` 1.016 to
+  1.018, the screens 0.999 to 1.028, `terminal` the most, in the symbols.
+  With their probabilities updated the screens' symbols would cost next
+  to nothing; a video's gain is a percent at most, for a second
+  prediction of every block between pixels where its time is on
+  libvpx's line, and the kernels across and down would be written again
+  for taps whose pairs pass sixteen bits in `maddubs`. Not taken.
 - **The intra blocks of an inter frame, five ways** (what item 22 left,
   the reading [below](#measured-for-what-comes-next-1)), each turn about
   with the build before over `video` and `walk` at 1920×1080 and
@@ -899,7 +914,10 @@ take for less time:
    coded inter and intra both and the cheaper taken, as `trial` takes a
    vector, and the rectangles. A switchable filter per block, the one
    part of libvpx's sub-pixel coding not taken, held libvpx within 3.4%
-   of its bytes when it was taken away.
+   of its bytes when it was taken away, and is [measured and not
+   taken](#measured-and-not-taken-1) here on 2026-10-16: a percent of a
+   video's bytes at most. Coding a square both ways is item 22, taken;
+   rectangles are item 21, which libvpx does not code here.
 
    **The search's judgement, taken on 2026-10-14.** A Laplacian model of
    the coded residual judged both whether a refined vector was taken and,
