@@ -29,12 +29,13 @@ it, 20 to 25.
 
 ## What it is for
 
-One crate, taken by the wlshare daemon and the remotex gateway in place of
-`screen-vp9`, pinned by a release tag. Both hold a `Stream` and hand it a
-desktop as drawn:
+The wlshare daemon's, which holds a `Stream` coded by it where the client
+asks and hands it a desktop as drawn. The remotex gateway takes the crate too,
+but codes with libvpx alone: it is built for amd64's baseline, under this
+encoder's floor.
 
 - **Nearly every frame comes with rectangles**: the damage since the
-  client's last frame (wlshare) or what the mirror changed in (remotex). A
+  client's last frame. A
   terminal typed into names 0.4% of a 1920×1080 picture a frame, a window
   dragged a quarter, and a page scrolled, a video and a window uncovered
   all of it, because the compositor damages the whole surface.
@@ -43,7 +44,7 @@ desktop as drawn:
   coarser.
 - **Frames are paced, so the cost that matters is one frame's latency**, on
   every core but one or two, eight at most: four threads on the six-core
-  hosts both were tuned on.
+  hosts wlshare and remotex were tuned on.
 - **The dial is 90 in practice**, and the walk's steps under it on a slow
   link, down to 20.
 
