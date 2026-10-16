@@ -539,7 +539,9 @@ fn keyframes_against_libvpx() -> Vec<String> {
 /// after the dial walked: the Rust coder's `settle`, and libvpx's whole
 /// frame at the second dial, which is what its settle is. Each is coded
 /// `PASSES` times (5 if unset) from the same keyframe, turn about, for the
-/// least time; its bytes, time and PSNR per pair.
+/// least time; its bytes, time and PSNR per pair. With `IVF` set to a
+/// directory, each keyframe and its settle are written there as
+/// `<capture>-q<from>-<to>-<encoder>.ivf`.
 fn settles_against_libvpx() {
     let threads = threads();
     let pairs: Vec<(u8, u8)> = std::env::var("SETTLES").map_or_else(
@@ -581,6 +583,9 @@ fn settles_against_libvpx() {
                     r.0 = frames[1].len();
                     r.2 = psnr(luma_mse(&picture, &decoded).max(1e-3));
                     r.3 = psnr(mse(&picture, &decoded).max(1e-3));
+                    if let Some(dir) = std::env::var_os("IVF") {
+                        write_ivf(&std::path::Path::new(&dir).join(format!("{}-q{from}-{to}-{}.ivf", capture_name(&path), ["libvpx", "rust"][c])), (w, h), &frames);
+                    }
                 }
             }
             pair_line(&format!("q{from}:{to}"), &result);
