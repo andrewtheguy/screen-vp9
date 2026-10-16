@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "screen-vp9"
-version = "0.0.22"
+version = "0.0.23"
 dependencies = [
  "libvpx-prebuilt-sys",
  "log",
