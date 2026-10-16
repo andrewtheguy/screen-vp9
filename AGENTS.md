@@ -1,6 +1,13 @@
 # Repository instructions
 
 - Strict no backward-compatibility or legacy paths no matter what.
+- This is the `native-encoder` branch: `main` with the encoder written here in
+  Rust on top, which `main` does not carry. `main` is libvpx alone and is what
+  is released; this branch is never merged back into it. A feature `main`
+  gains that the Rust coder does not have (a public speed, say) is not refused
+  here: the Rust coder answers it with an error of its own and libvpx does
+  it. The branch is not tagged: a user's own native branch pins it by commit
+  (`rev`).
 - One crate, `screen-vp9`: how the wlshare daemon and the remotex gateway code
   a desktop as VP9, 8-bit 4:4:4 and nothing else, which each pins by a release
   tag of this repository. It holds two coders behind one `Stream` and one
@@ -38,7 +45,7 @@
   with it; libvpx's are in `src/libvpx.rs` and run either way. Every encoder
   gets an independent decoder in its tests.
 - Do not run `cargo fmt`. Errors are `thiserror`: every caller branches on them.
-- A release is the version in `Cargo.toml` bumped and tagged `v<version>` on
-  `main`, with a GitHub release for the tag (`gh release create v<version>
+- A release, made on `main` and never here, is the version in `Cargo.toml`
+  bumped and tagged `v<version>` on `main`, with a GitHub release for the tag (`gh release create v<version>
   --verify-tag --title v<version>`) whose notes say what changed since the
   last tag, breaking API first; users pin the tag.
