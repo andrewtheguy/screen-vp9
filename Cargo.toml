@@ -34,3 +34,9 @@ yuv = { version = "0.8", features = ["professional_mode"] }
 # and the build is refused under them: a build without it is libvpx alone, for
 # any machine libvpx runs on.
 native = []
+
+# The measurements of the Rust coder against libvpx, a program run by hand;
+# it needs the Rust coder.
+[[example]]
+name = "against_libvpx"
+required-features = ["native"]
