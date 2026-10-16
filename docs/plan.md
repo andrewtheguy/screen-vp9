@@ -913,6 +913,17 @@ the machine idle.
 
 ### Measured, for what comes next
 
+- **`Speed::Fastest` against libvpx at its fastest** (item 16), on every
+  scenario at 1920×1080 and 2048×1536@2, each at its own speed, beside the
+  usual speed against libvpx's usual. Over a capture the screens at 0.10
+  to 0.81 of libvpx's bytes at +0.2 to +1.7 dB in 0.14 to 1.06 of its
+  time, `drag` at 2048×1536 the slowest; `video` and `walk` 0.90 to 0.95
+  of its bytes at +0.3 to +0.7 dB but in 1.24 to 1.69 of its time. The
+  keyframes at 90: the screens' +1.4 to +1.9 dB at 0.62 to 0.78 of the
+  bytes in 0.43 to 0.88 of the time, a video's −0.18 to −0.28 dB at 0.99
+  to 1.00. libvpx's fastest gives up more of its picture than this
+  encoder's does, and is faster on a video: `Fastest` is not a faster
+  coder of one.
 - **Where `video`'s bytes are over at 1920×1080**, read with
   `tools/vpxinspect/` on the build of item 24 (`VPXI_FRAMES` per frame):
   the intra blocks of its inter frames, its two keyframes being of black.
@@ -1109,7 +1120,10 @@ Then, as before:
 15. **A gate that fails a build.** The comparison is in the tests again, so
     it can be one; its lines are not decided, and a time on this machine
     moves by a tenth from run to run.
-16. **`Speed::Fastest` was not measured in this replan.**
+16. **`Speed::Fastest`**: [measured on
+    2026-10-16](#measured-for-what-comes-next-1) against libvpx at its
+    fastest, the screens at a third to four fifths of its bytes and a
+    better picture, a video in 1.24 to 1.69 of its time.
 
 Read in the other encoders on 2026-10-15
 ([above](#read-in-the-other-encoders-on-2026-10-15)), each measured turn
