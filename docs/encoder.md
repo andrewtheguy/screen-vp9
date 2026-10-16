@@ -10,8 +10,9 @@ decoder. Why it is this way, in the order it was built, is in
 ## What it is
 
 A VP9 encoder in Rust for a desktop picture, 8-bit 4:4:4 (profile 1, BT.601
-at studio swing) and nothing else, built for what the wlshare daemon and the
-remotex gateway ask of it. Three things shape everything in it:
+at studio swing) and nothing else, built for what the wlshare daemon asks of
+it: the remotex gateway codes with libvpx alone, since it is built for amd64's
+baseline, under this encoder's floor. Three things shape everything in it:
 
 - **Nearly every frame comes with rectangles.** A user says where the picture
   changed, and a frame costs those rectangles, not the picture.
