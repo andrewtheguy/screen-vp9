@@ -808,6 +808,22 @@ the machine idle.
   for 0.1 dB, `walk` 1.06 for 0.35. Held to the inter blocks, 17 cost
   `video` 1.024 for 0.05 dB and the intra blocks alone moved `drag` 0.17
   dB; held to inter blocks at anchored vectors, `video` is untouched.
+- **A square coded whole first and its quarters tried only where the
+  whole is dear a pixel** (item 20's `rusty_vp9` gate on the whole-first
+  form of 2026-10-15), the whole's coded cost a pixel under 1/16 to 4/16
+  of a step squared keeping it, each turn about with the build before
+  over `video`, `walk`, `browser`, `uncover` and `terminal` at 1920×1080
+  and 2048×1536@2: at 1/16 `video` 0.955 to 0.989 of its bytes at −0.31
+  to −0.36 dB in 1.08 to 1.26 of its time, `walk` 0.92 to 0.95 at −0.5,
+  `browser` 1.03 to 1.20 at −0.04 to −0.23, `terminal` 1.07 at −0.19; at
+  2/16 and up the whole kept nearly everywhere, `video` −0.7 dB and the
+  screens 1.06 to 1.40 of their bytes at −0.1 to −1.9 dB. A whole that
+  codes cheap a pixel is still coded better in quarters, and the gate
+  keeps it whole: ungated, the form is what 2026-10-15 measured, `video`
+  0.96 to 0.98 of its bytes in 1.5 to 1.6 of its time. The chroma counted
+  as it is coded, item 20's other line, is not tried: weighed by its
+  moments it already cost `video` 1.13 to 1.24 of its time, and coding it
+  costs more.
 - **The transform sizes under the largest tried only where the largest
   leaves a residual past a threshold on the moments** (item 23's second
   line, libvpx's `calculate_tx_size` as a gate on the trial, and item
@@ -1041,8 +1057,10 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
     same vector (item 25), which the whole-first form needs to be cheap;
     the chroma in the comparison as it is coded and not as its deviation,
     since by the luma alone the screens' squares with intra quarters lose
-    up to 4% of their bytes; and `rusty_vp9`'s gate on the whole's cost
-    per pixel, untried.
+    up to 4% of their bytes, not tried for its time; and `rusty_vp9`'s
+    gate on the whole's cost per pixel, [measured and not
+    taken](#measured-and-not-taken-1) on 2026-10-16: it keeps whole what
+    the quarters code better.
 21. **Rectangles**: not taken up, [measured on
     2026-10-16](#measured-for-what-comes-next-1): libvpx codes none on
     `video` and `walk` at 1920×1080, its inter area 8×8s 5%, 16×16s 26%,
