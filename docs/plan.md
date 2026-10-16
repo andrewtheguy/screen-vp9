@@ -808,6 +808,16 @@ the machine idle.
   for 0.1 dB, `walk` 1.06 for 0.35. Held to the inter blocks, 17 cost
   `video` 1.024 for 0.05 dB and the intra blocks alone moved `drag` 0.17
   dB; held to inter blocks at anchored vectors, `video` is untouched.
+- **An intra block's rounding at 56/128 for 48 on keyframes alone**
+  (item 12's untried line), alone over `browser`, `terminal`, `drag` at
+  1920×1080 and 2048×1536@2, `uncover`, `video` and `walk`: the screens'
+  keyframes +0.29 to +0.59 dB for 0.1 to 1.7% more bytes, a video's +0.17
+  to +0.32 for 2.8 to 3.8%; the captures of `browser`, `terminal` and
+  `uncover` +0.11 to +0.32 at 0.994 to 1.001, `video` and `walk` the same
+  (their keyframes black), `drag` at 2048×1536@2 0.983 at +0.13 but at
+  1920×1080 0.980 at −0.21, the frames after a finer keyframe coarser by
+  more than it gained, as at 56 everywhere. A trade on the keyframes and
+  `drag`'s loss not understood: left for a decision, not taken.
 - **The 4×4 split at 10 for 80, and a 4×4 offered the 8×8's mode** where
   it is a diagonal (item 11), alone over the keyframes and captures of
   `browser`, `terminal`, `uncover`, `video` and `walk` at 1920×1080 and
@@ -1083,9 +1093,12 @@ Then, as before:
    8×8 coded each way first, which is untried for its time.
 12. **An intra block's rounding past 48/128**: 56/128 buys a keyframe
    another 0.4 dB for 0.5% more bytes at dial 65 and up, and costs `walk`
-   3% of its capture for 0.11 dB and `drag`'s capture 0.06 dB. Why
-   `drag` loses is not known; a rounding by block size or by frame kind
-   is untried.
+   3% of its capture for 0.11 dB and `drag`'s capture 0.06 dB. On
+   keyframes alone, [measured on 2026-10-16](#measured-and-not-taken-1),
+   `walk`'s capture is the same and the screens' keyframes gain 0.3 to
+   0.6 dB, but a video's keyframe costs 3 to 4% of its bytes and `drag`'s
+   capture at 1920×1080 0.21 dB. Why `drag` loses is not known; a rounding
+   by block size is untried.
 13. **arm64's floor**: measured, and NEON stays the floor,
    [above](#arm64-on-2026-10-11).
 14. **The first keyframe of a stream runs on cold buffers**: measured on
