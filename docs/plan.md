@@ -909,6 +909,30 @@ the machine idle.
   `drag`'s gain, which is in the transform size the trial takes. 12 and 8
   for 17 bought `drag` 0.05 to 0.1 dB more and `browser` 2 to 4% more of
   its bytes.
+- **The settle's trials made cheaper** (item 17), over the settles from
+  65, 80 and 89 of `still`, `uncover`, `browser`, `video`, `walk` and
+  `terminal` at 1920×1080 and 2048×1536@2, each way turn about on four
+  threads. A settle transforms its luma 1.8 times over in the trial, and
+  of the trial's time the forward transforms are 27%, the token estimate
+  27%, quantizing 11% and the residual 11%; the trial is a quarter of a
+  settle from 65 (`video` at 2048×1536, one thread), the loop filter a
+  fifth. Every way of trying fewer sizes takes the picture: the largest
+  alone 0.74 to 0.85 of the time at −2.2, −0.5 and −0.05 dB (medians from
+  65, 80 and 89); no 4×4 in a block over 8×8 0.89 to 0.97 at −0.49, −0.14
+  and 0.00; two sizes at most 0.85 to 0.93 at −0.88 to −0.02; a size
+  given up once its running cost, a quarter of its blocks in or more, is
+  past its share of the size above's by a quarter, a half or twice it,
+  0.92 to 0.97 at −0.86 to −0.12 from 65. What a cut saves in time it
+  saves in the smaller sizes, which are what codes a settle's residual.
+  Exactly, with every stream the same: a block `worth_coding` clears is
+  1 to 2% of those it weighs from 65, and a sign bit a level as the bound
+  on their bits decides none of them; the residual, made once a size and
+  not once for the sizes, is a tenth of the trial. Starting from the
+  size the last block took, or the blocks left or above coded at, and
+  going the cheaper way, finds the smaller sizes' minimum where going
+  down from the largest stops at the 32×32's: the cost is not one valley
+  over the sizes. From 80 1.09 to 1.99 of the bytes at +0.1 to +1.2 dB
+  and from 89 1.05 to 2.7 at +0.0 to +0.2, in 0.98 to 1.32 of the time.
 
 ### Measured, for what comes next
 
@@ -1236,6 +1260,10 @@ Of a very busy picture alone, and last:
    [measured and not taken](#measured-and-not-taken-1) on 2026-10-16, the
    smaller sizes buying a settle from 80 0.2 to 0.7 dB and from 89 up to
    0.1. The forward half of that time is taken above, with the picture kept.
+   The trials made cheaper, by fewer sizes, by a size given up early or
+   by starting from the size the blocks around took, are [measured and not
+   taken](#measured-and-not-taken-1) on 2026-10-16: each cut takes the
+   picture, and what is exact is a few hundredths of a settle.
 18. **The frames of `video` and `walk`**, 0.85 to 1.01 and 0.71 to 0.81 of libvpx's time
     frame for frame, `video`'s most at 2048×1536 on the line at 1.01, the nearest the line of the whole captures. Of a
     video's time at 2048×1536 the search between pixels is a fifth and
