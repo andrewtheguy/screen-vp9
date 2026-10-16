@@ -808,6 +808,17 @@ the machine idle.
   for 0.1 dB, `walk` 1.06 for 0.35. Held to the inter blocks, 17 cost
   `video` 1.024 for 0.05 dB and the intra blocks alone moved `drag` 0.17
   dB; held to inter blocks at anchored vectors, `video` is untouched.
+- **The 4×4 split at 10 for 80, and a 4×4 offered the 8×8's mode** where
+  it is a diagonal (item 11), alone over the keyframes and captures of
+  `browser`, `terminal`, `uncover`, `video` and `walk` at 1920×1080 and
+  `walk` at 2048×1536@2. At 10 the screens' keyframes 0.990 to 1.001 of
+  their bytes for +0.01 to +0.55 dB, `terminal`'s at 40 the most, but a
+  video's 1.06 to 1.13 at −0.31 to +0.17, and `walk`'s capture 1.02 to
+  1.03: a busy picture's 8×8s are in 4×4s, which is why a churning
+  picture costs more at a low dial with it. The mode the moments choose
+  for an 8×8 split so is never a diagonal, so offering it changes no
+  stream; a diagonal there wants the 8×8 coded each way first, the
+  keyframe's time.
 - **`INTRA_MODE_GAIN` at 4, 8, 32 and 64** for 16 (item 9), alone over
   the keyframes at 40, 65 and 90 and the captures of `browser`,
   `terminal`, `drag`, `uncover`, `video` and `walk` at 1920×1080 and two
@@ -1064,9 +1075,12 @@ Then, as before:
    made one, [above](#arm64-on-2026-10-11). Left: the decoder's conversion
    back to `B, G, R, X` differs by path as well, and `yuv` has no mode for
    it that does not; that is a viewer's pixels and not a stream.
-11. **The 4×4 split threshold**: what makes it safe at 10 is a diagonal mode
-   for a 4×4 where the 8×8 would have taken one, and knowing why a churning
-   picture costs more at a low dial with it.
+11. **The 4×4 split threshold**: [measured on
+   2026-10-16](#measured-and-not-taken-1). At 10 a busy picture's 8×8s are
+   4×4s, a video's keyframe 1.06 to 1.13 of its bytes, which is why a
+   churning picture costs more at a low dial; the screens' keyframes gain
+   up to 0.55 dB. A diagonal 4×4 where the 8×8 would take one wants the
+   8×8 coded each way first, which is untried for its time.
 12. **An intra block's rounding past 48/128**: 56/128 buys a keyframe
    another 0.4 dB for 0.5% more bytes at dial 65 and up, and costs `walk`
    3% of its capture for 0.11 dB and `drag`'s capture 0.06 dB. Why
