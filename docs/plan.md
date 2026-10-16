@@ -115,12 +115,11 @@ encoder's floor.
 
 ## Where it stands
 
-[benchmarks.md](benchmarks.md), one run of 2026-10-15 over every size of
-the cut captures, `walk` whole, on the build after release 0.0.19 that
-updates an inter frame's mode, partition and vector probabilities, takes
-the 32×32 intra transform, codes an intra square of an inter frame inter
-at its vector too and cuts a smaller transform size's trial short, `walk`
-captured again the same day, its clip paused for the settle:
+[benchmarks.md](benchmarks.md), one run of 2026-10-16 over every size of
+the cut captures, `walk` whole, on the build after release 0.0.22 that
+weighs a bit at half in an inter block at a vector the search's anchors
+gave ([taken](#taken-up-on-2026-10-16)), the keyframes and settles the
+streams of 2026-10-15:
 
 - **A video is inside the gate, over libvpx's picture.** `video` takes
   1.00 to 1.05 of libvpx's bytes at +0.6 to +0.9 dB, 1.00 from 2880
@@ -129,12 +128,12 @@ captured again the same day, its clip paused for the settle:
   15% more bytes at most; without the vectors between pixels they were
   1.22 to 1.27 and 1.16 to 1.25 at up to 0.6 dB under. Everything else
   over a whole capture is at fewer bytes than libvpx's and at its picture
-  or better, but `drag` from 2048 to 3456 wide, 0.2 to 0.4 dB under at
-  0.40 to 0.49 of the bytes: 75 cells of 80.
+  or better, 80 cells of 80: `drag` from 2048 to 3456 wide, which was 0.2
+  to 0.4 dB under, is 0.2 to 0.5 over at 0.39 to 0.48 of the bytes.
 - Every capture at every size takes less time than libvpx but `video`
-  at 2048×1536, on the line at 1.01: 0.14 to 1.01 of it frame for frame,
-  a line of text 0.14 to 0.22, `walk` 0.71 to 0.81, `video` 0.85 to
-  1.01. The frame `walk`'s session settles, the video paused, is 0.86 to
+  at 2048×1536, on the line at 1.00: 0.15 to 1.00 of it frame for frame,
+  a line of text 0.15 to 0.21, `walk` 0.72 to 0.83, `video` 0.86 to
+  1.00. The frame `walk`'s session settles, the video paused, is 0.86 to
   1.21 of libvpx's time up to 1920 wide and 1.16 to 1.57 from 2048, one
   frame's time, at 0.84 to 0.92 of its bytes and +0.3 to +0.9 dB.
 - A first picture coded alone as a keyframe is over libvpx's at every
@@ -1272,6 +1271,9 @@ And, since the captures were made again, that a video is past what this
 encoder's subset could code at libvpx's bytes. The 16 to 27% was sub-pixel
 motion ([measured](#where-a-videos-bytes-go-on-2026-10-14)), and with the
 vectors between pixels back and its frames' probabilities updated a video
-is 1 to 9% over libvpx's bytes at a better picture, in 0.73 to 0.97 of
+is 0 to 8% over libvpx's bytes at a better picture, in 0.72 to 1.00 of
 libvpx's time: at 2048×1536 the time is on the line, and what a video
-costs is now the risk to the gate.
+costs is now the risk to the gate. What is left of its bytes is the
+intra blocks of its frames, at 2.25 times libvpx's bytes a pixel of
+intra, and five ways of coding them less or larger did not reach it
+([measured](#measured-and-not-taken-1)).

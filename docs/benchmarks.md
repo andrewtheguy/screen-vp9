@@ -20,16 +20,16 @@ two keep the least time of five passes, each on one encoder kept across
 them, as a session's is. `tools/tables.py` makes the tables below from
 their logs.
 
-They were run on 2026-10-15 on a six-core Intel i5-8500T (x86-64-v3) under
+They were run on 2026-10-16 on a six-core Intel i5-8500T (x86-64-v3) under
 WSL2, four threads, the machine idle and one measurement at a time, on the
-build after release 0.0.19 that updates an inter frame's mode, partition
-and vector probabilities, takes the 32×32 intra transform, codes an intra
-square of an inter frame inter at its vector too and takes the cheaper,
-and cuts a smaller transform size's trial short
-([plan.md](plan.md#taken-up-on-2026-10-15)), over the captures of
-2026-10-13 cut to 120 frames each, `walk` whole and captured again that
-day with its clip paused for the settle ([Test
-material](#test-material)): the three took 47 minutes. A time on this
+build after release 0.0.22 that weighs a bit in an inter block at a vector
+the motion search's anchors gave at half the weight elsewhere
+([plan.md](plan.md#taken-up-on-2026-10-16)), over the captures of
+2026-10-13 cut to 120 frames each, `walk` whole and captured again on
+2026-10-15 with its clip paused for the settle ([Test
+material](#test-material)): the three took 45 minutes. The keyframes and
+settles are the streams of 2026-10-15 to the byte, the change being in
+the frames after them, and were measured again with the rest. A time on this
 machine moves by a tenth from one run to the next, so a ratio within a
 tenth of 1.00 is on the line. The same
 measurements on an Apple M2 Max, in
@@ -59,19 +59,20 @@ the other; a number on the line is left plain.
   1.27 and 1.16 to 1.25 at up to 0.6 dB under: where a video's bytes go
   is measured in [plan.md](plan.md#where-a-videos-bytes-go-on-2026-10-14).
 - **Everything else over a whole capture is libvpx's picture or better, at
-  fewer bytes, but `drag` from 2048 to 3456 wide**, 0.2 to 0.4 dB under at
-  0.40 to 0.49 of the bytes, which the capture whole is too, at a quarter
-  to a tenth of them ([plan.md](plan.md#measured-for-what-comes-next)):
-  `browser` +0.8 to +1.6 dB at 0.18–0.30×, `uncover` +0.8 to +1.1 at
-  0.42–0.86×, `flood` +0.4 to +0.8 at 0.76–0.95×, `still` +0.3 to +0.4 at
-  0.98–1.00×, `terminal` +0.1 to +0.4 at 0.77–0.93×, `drag` elsewhere
-  +0.2 to +0.4 at 0.22–0.25×. That is 75 cells of 80 at libvpx's picture
-  or over.
+  fewer bytes**, `drag` from 2048 to 3456 wide now among it: `drag` +0.2
+  to +0.5 dB there at 0.39 to 0.48 of the bytes, and +1.2 to +1.4 under
+  2048 and +0.9 at 3840 at 0.23–0.25×, where it was 0.2 to 0.4 dB under
+  from 2048 wide, the window's error coded again at its vector as
+  libvpx codes it ([plan.md](plan.md#taken-up-on-2026-10-16));
+  `browser` +1.2 to +1.9 dB at 0.18–0.33×, `uncover` +0.8 to +1.2 at
+  0.42–0.87×, `flood` +0.4 to +0.8 at 0.76–0.96×, `still` +0.3 to +0.4 at
+  0.98–1.00×, `terminal` +0.1 to +0.4 at 0.78–0.93×. That is every cell
+  of 80 at libvpx's picture or over, from 75.
 - **Every capture at every size takes less time than libvpx but `video`
-  at 2048×1536, on the line at 1.01**, frame for frame and summed: a line
-  of text 0.14–0.22, `browser` 0.38–0.45, `flood` 0.39–0.56, `drag`
-  0.46–0.57, `uncover` 0.51–0.68, `walk` 0.71–0.81, `video` 0.85–1.01,
-  `still`'s two keyframes 0.51–0.89.
+  at 2048×1536, on the line at 1.00**, and summed at 1920×1080, 1.03:
+  frame for frame a line of text 0.15–0.21, `browser` 0.39–0.46, `flood`
+  0.40–0.57, `drag` 0.48–0.59, `uncover` 0.52–0.71, `walk` 0.72–0.83,
+  `video` 0.86–1.00, `still`'s two keyframes 0.53–0.74.
 - **A keyframe inside a capture is 0.1 to 0.6 dB over libvpx's** at
   0.97–1.01× the bytes (`terminal`'s 0.77–0.95×), in 0.38 to 0.80 of its
   time but `flood`'s from 2048 wide, 0.93 to 1.02.
@@ -271,13 +272,13 @@ Under 1.00 is fewer bytes than libvpx.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.92}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.91}$ | $\color{green}{0.78}$ | $\color{green}{0.79}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.77}$ | $\color{green}{0.77}$ |
+| `terminal` | $\color{green}{0.92}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.91}$ | $\color{green}{0.79}$ | $\color{green}{0.79}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.78}$ | $\color{green}{0.78}$ |
 | `still` | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | 1.00 | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
-| `uncover` | $\color{green}{0.86}$ | $\color{green}{0.84}$ | $\color{green}{0.64}$ | $\color{green}{0.65}$ | $\color{green}{0.50}$ | $\color{green}{0.47}$ | $\color{green}{0.48}$ | $\color{green}{0.52}$ | $\color{green}{0.56}$ | $\color{green}{0.42}$ |
-| `flood` | $\color{green}{0.89}$ | $\color{green}{0.76}$ | $\color{green}{0.84}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.93}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ |
-| `browser` | $\color{green}{0.25}$ | $\color{green}{0.23}$ | $\color{green}{0.21}$ | $\color{green}{0.30}$ | $\color{green}{0.22}$ | $\color{green}{0.19}$ | $\color{green}{0.19}$ | $\color{green}{0.18}$ | $\color{green}{0.20}$ | $\color{green}{0.18}$ |
-| `drag` | $\color{green}{0.23}$ | $\color{green}{0.23}$ | $\color{green}{0.24}$ | $\color{green}{0.22}$ | $\color{green}{0.40}$ | $\color{green}{0.47}$ | $\color{green}{0.49}$ | $\color{green}{0.47}$ | $\color{green}{0.44}$ | $\color{green}{0.25}$ |
-| `video` | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{red}{1.04}$ | $\color{red}{1.04}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | 1.00 | 1.00 | 1.00 | 1.00 |
+| `uncover` | $\color{green}{0.87}$ | $\color{green}{0.85}$ | $\color{green}{0.66}$ | $\color{green}{0.68}$ | $\color{green}{0.50}$ | $\color{green}{0.48}$ | $\color{green}{0.48}$ | $\color{green}{0.53}$ | $\color{green}{0.56}$ | $\color{green}{0.42}$ |
+| `flood` | $\color{green}{0.89}$ | $\color{green}{0.76}$ | $\color{green}{0.84}$ | $\color{green}{0.91}$ | $\color{green}{0.92}$ | $\color{green}{0.93}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ |
+| `browser` | $\color{green}{0.26}$ | $\color{green}{0.23}$ | $\color{green}{0.26}$ | $\color{green}{0.33}$ | $\color{green}{0.22}$ | $\color{green}{0.20}$ | $\color{green}{0.19}$ | $\color{green}{0.18}$ | $\color{green}{0.20}$ | $\color{green}{0.18}$ |
+| `drag` | $\color{green}{0.23}$ | $\color{green}{0.24}$ | $\color{green}{0.24}$ | $\color{green}{0.23}$ | $\color{green}{0.39}$ | $\color{green}{0.46}$ | $\color{green}{0.48}$ | $\color{green}{0.43}$ | $\color{green}{0.43}$ | $\color{green}{0.25}$ |
+| `video` | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | 1.00 | 1.00 | 1.00 | 1.00 |
 | `walk` | $\color{red}{1.08}$ | $\color{red}{1.07}$ | $\color{red}{1.06}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ |
 
 ### Encode time, the median of the per-frame ratios
@@ -286,14 +287,14 @@ Under 1.00 is faster than libvpx, frame for frame.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.20}$ | $\color{green}{0.17}$ | $\color{green}{0.15}$ | $\color{green}{0.14}$ | $\color{green}{0.22}$ | $\color{green}{0.18}$ | $\color{green}{0.18}$ | $\color{green}{0.16}$ | $\color{green}{0.16}$ | $\color{green}{0.16}$ |
-| `still` | $\color{green}{0.51}$ | $\color{green}{0.63}$ | $\color{green}{0.63}$ | $\color{green}{0.68}$ | $\color{green}{0.75}$ | $\color{green}{0.69}$ | $\color{green}{0.70}$ | $\color{green}{0.70}$ | $\color{green}{0.89}$ | $\color{green}{0.70}$ |
-| `uncover` | $\color{green}{0.68}$ | $\color{green}{0.68}$ | $\color{green}{0.65}$ | $\color{green}{0.64}$ | $\color{green}{0.58}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ | $\color{green}{0.53}$ | $\color{green}{0.53}$ | $\color{green}{0.51}$ |
-| `flood` | $\color{green}{0.39}$ | $\color{green}{0.44}$ | $\color{green}{0.48}$ | $\color{green}{0.50}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ | $\color{green}{0.55}$ | $\color{green}{0.54}$ | $\color{green}{0.54}$ | $\color{green}{0.53}$ |
-| `browser` | $\color{green}{0.39}$ | $\color{green}{0.40}$ | $\color{green}{0.38}$ | $\color{green}{0.40}$ | $\color{green}{0.45}$ | $\color{green}{0.45}$ | $\color{green}{0.43}$ | $\color{green}{0.41}$ | $\color{green}{0.39}$ | $\color{green}{0.42}$ |
-| `drag` | $\color{green}{0.46}$ | $\color{green}{0.49}$ | $\color{green}{0.48}$ | $\color{green}{0.49}$ | $\color{green}{0.54}$ | $\color{green}{0.54}$ | $\color{green}{0.54}$ | $\color{green}{0.52}$ | $\color{green}{0.52}$ | $\color{green}{0.57}$ |
-| `video` | $\color{green}{0.85}$ | $\color{green}{0.94}$ | $\color{green}{0.95}$ | $\color{green}{0.92}$ | $\color{red}{1.01}$ | $\color{green}{0.94}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.92}$ | $\color{green}{0.88}$ |
-| `walk` | $\color{green}{0.79}$ | $\color{green}{0.78}$ | $\color{green}{0.78}$ | $\color{green}{0.74}$ | $\color{green}{0.81}$ | $\color{green}{0.76}$ | $\color{green}{0.72}$ | $\color{green}{0.73}$ | $\color{green}{0.76}$ | $\color{green}{0.71}$ |
+| `terminal` | $\color{green}{0.19}$ | $\color{green}{0.16}$ | $\color{green}{0.16}$ | $\color{green}{0.15}$ | $\color{green}{0.21}$ | $\color{green}{0.18}$ | $\color{green}{0.18}$ | $\color{green}{0.17}$ | $\color{green}{0.16}$ | $\color{green}{0.16}$ |
+| `still` | $\color{green}{0.53}$ | $\color{green}{0.64}$ | $\color{green}{0.66}$ | $\color{green}{0.64}$ | $\color{green}{0.74}$ | $\color{green}{0.74}$ | $\color{green}{0.71}$ | $\color{green}{0.71}$ | $\color{green}{0.73}$ | $\color{green}{0.72}$ |
+| `uncover` | $\color{green}{0.71}$ | $\color{green}{0.71}$ | $\color{green}{0.66}$ | $\color{green}{0.66}$ | $\color{green}{0.58}$ | $\color{green}{0.57}$ | $\color{green}{0.54}$ | $\color{green}{0.54}$ | $\color{green}{0.53}$ | $\color{green}{0.52}$ |
+| `flood` | $\color{green}{0.40}$ | $\color{green}{0.43}$ | $\color{green}{0.48}$ | $\color{green}{0.51}$ | $\color{green}{0.57}$ | $\color{green}{0.56}$ | $\color{green}{0.56}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ | $\color{green}{0.54}$ |
+| `browser` | $\color{green}{0.39}$ | $\color{green}{0.42}$ | $\color{green}{0.41}$ | $\color{green}{0.42}$ | $\color{green}{0.46}$ | $\color{green}{0.43}$ | $\color{green}{0.42}$ | $\color{green}{0.42}$ | $\color{green}{0.41}$ | $\color{green}{0.42}$ |
+| `drag` | $\color{green}{0.48}$ | $\color{green}{0.48}$ | $\color{green}{0.50}$ | $\color{green}{0.49}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ | $\color{green}{0.57}$ | $\color{green}{0.53}$ | $\color{green}{0.53}$ | $\color{green}{0.59}$ |
+| `video` | $\color{green}{0.86}$ | $\color{green}{0.94}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | 1.00 | $\color{green}{0.93}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.93}$ | $\color{green}{0.90}$ |
+| `walk` | $\color{green}{0.79}$ | $\color{green}{0.77}$ | $\color{green}{0.79}$ | $\color{green}{0.75}$ | $\color{green}{0.83}$ | $\color{green}{0.77}$ | $\color{green}{0.75}$ | $\color{green}{0.75}$ | $\color{green}{0.75}$ | $\color{green}{0.72}$ |
 
 ### Encode time, the whole capture's
 
@@ -301,14 +302,14 @@ Every frame's time summed, this encoder's over libvpx's: where the long frames w
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.22}$ | $\color{green}{0.19}$ | $\color{green}{0.18}$ | $\color{green}{0.17}$ | $\color{green}{0.26}$ | $\color{green}{0.22}$ | $\color{green}{0.21}$ | $\color{green}{0.19}$ | $\color{green}{0.18}$ | $\color{green}{0.18}$ |
-| `still` | $\color{green}{0.48}$ | $\color{green}{0.57}$ | $\color{green}{0.59}$ | $\color{green}{0.55}$ | $\color{green}{0.70}$ | $\color{green}{0.67}$ | $\color{green}{0.69}$ | $\color{green}{0.65}$ | $\color{green}{0.77}$ | $\color{green}{0.68}$ |
-| `uncover` | $\color{green}{0.62}$ | $\color{green}{0.63}$ | $\color{green}{0.61}$ | $\color{green}{0.59}$ | $\color{green}{0.56}$ | $\color{green}{0.54}$ | $\color{green}{0.53}$ | $\color{green}{0.51}$ | $\color{green}{0.49}$ | $\color{green}{0.47}$ |
-| `flood` | $\color{green}{0.39}$ | $\color{green}{0.45}$ | $\color{green}{0.47}$ | $\color{green}{0.51}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ | $\color{green}{0.55}$ | $\color{green}{0.54}$ |
-| `browser` | $\color{green}{0.39}$ | $\color{green}{0.40}$ | $\color{green}{0.39}$ | $\color{green}{0.40}$ | $\color{green}{0.44}$ | $\color{green}{0.43}$ | $\color{green}{0.42}$ | $\color{green}{0.39}$ | $\color{green}{0.38}$ | $\color{green}{0.40}$ |
-| `drag` | $\color{green}{0.46}$ | $\color{green}{0.48}$ | $\color{green}{0.48}$ | $\color{green}{0.48}$ | $\color{green}{0.55}$ | $\color{green}{0.54}$ | $\color{green}{0.54}$ | $\color{green}{0.51}$ | $\color{green}{0.50}$ | $\color{green}{0.53}$ |
-| `video` | $\color{green}{0.86}$ | $\color{green}{0.94}$ | $\color{green}{0.96}$ | $\color{green}{0.93}$ | $\color{red}{1.01}$ | $\color{green}{0.95}$ | $\color{green}{0.93}$ | $\color{green}{0.92}$ | $\color{green}{0.92}$ | $\color{green}{0.89}$ |
-| `walk` | $\color{green}{0.80}$ | $\color{green}{0.81}$ | $\color{green}{0.81}$ | $\color{green}{0.77}$ | $\color{green}{0.84}$ | $\color{green}{0.79}$ | $\color{green}{0.76}$ | $\color{green}{0.76}$ | $\color{green}{0.77}$ | $\color{green}{0.73}$ |
+| `terminal` | $\color{green}{0.23}$ | $\color{green}{0.19}$ | $\color{green}{0.19}$ | $\color{green}{0.17}$ | $\color{green}{0.25}$ | $\color{green}{0.22}$ | $\color{green}{0.21}$ | $\color{green}{0.20}$ | $\color{green}{0.19}$ | $\color{green}{0.18}$ |
+| `still` | $\color{green}{0.50}$ | $\color{green}{0.59}$ | $\color{green}{0.64}$ | $\color{green}{0.60}$ | $\color{green}{0.69}$ | $\color{green}{0.70}$ | $\color{green}{0.68}$ | $\color{green}{0.69}$ | $\color{green}{0.70}$ | $\color{green}{0.69}$ |
+| `uncover` | $\color{green}{0.66}$ | $\color{green}{0.65}$ | $\color{green}{0.62}$ | $\color{green}{0.61}$ | $\color{green}{0.56}$ | $\color{green}{0.56}$ | $\color{green}{0.53}$ | $\color{green}{0.51}$ | $\color{green}{0.51}$ | $\color{green}{0.49}$ |
+| `flood` | $\color{green}{0.39}$ | $\color{green}{0.45}$ | $\color{green}{0.47}$ | $\color{green}{0.51}$ | $\color{green}{0.57}$ | $\color{green}{0.56}$ | $\color{green}{0.57}$ | $\color{green}{0.56}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ |
+| `browser` | $\color{green}{0.39}$ | $\color{green}{0.41}$ | $\color{green}{0.40}$ | $\color{green}{0.41}$ | $\color{green}{0.45}$ | $\color{green}{0.43}$ | $\color{green}{0.41}$ | $\color{green}{0.41}$ | $\color{green}{0.40}$ | $\color{green}{0.41}$ |
+| `drag` | $\color{green}{0.48}$ | $\color{green}{0.49}$ | $\color{green}{0.49}$ | $\color{green}{0.49}$ | $\color{green}{0.57}$ | $\color{green}{0.56}$ | $\color{green}{0.56}$ | $\color{green}{0.53}$ | $\color{green}{0.53}$ | $\color{green}{0.57}$ |
+| `video` | $\color{green}{0.85}$ | $\color{green}{0.95}$ | $\color{green}{0.97}$ | $\color{red}{1.03}$ | 1.00 | $\color{green}{0.98}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.90}$ |
+| `walk` | $\color{green}{0.79}$ | $\color{green}{0.82}$ | $\color{green}{0.82}$ | $\color{green}{0.79}$ | $\color{green}{0.85}$ | $\color{green}{0.80}$ | $\color{green}{0.78}$ | $\color{green}{0.78}$ | $\color{green}{0.77}$ | $\color{green}{0.74}$ |
 
 ### Luma PSNR, this encoder less libvpx, in dB
 
@@ -318,12 +319,12 @@ Above zero is a better picture than libvpx at the same dial.
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | `terminal` | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
 | `still` | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
-| `uncover` | $\color{green}{+0.9}$ | $\color{green}{+0.9}$ | $\color{green}{+0.9}$ | $\color{green}{+0.8}$ | $\color{green}{+1.1}$ | $\color{green}{+1.0}$ | $\color{green}{+1.0}$ | $\color{green}{+0.9}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ |
-| `flood` | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ |
-| `browser` | $\color{green}{+0.8}$ | $\color{green}{+1.0}$ | $\color{green}{+1.2}$ | $\color{green}{+1.0}$ | $\color{green}{+1.5}$ | $\color{green}{+1.6}$ | $\color{green}{+1.6}$ | $\color{green}{+1.6}$ | $\color{green}{+1.5}$ | $\color{green}{+1.6}$ |
-| `drag` | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{red}{-0.4}$ | $\color{red}{-0.4}$ | $\color{red}{-0.3}$ | $\color{red}{-0.2}$ | $\color{red}{-0.2}$ | $\color{green}{+0.3}$ |
-| `video` | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.9}$ |
-| `walk` | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ |
+| `uncover` | $\color{green}{+1.1}$ | $\color{green}{+1.1}$ | $\color{green}{+1.1}$ | $\color{green}{+0.9}$ | $\color{green}{+1.2}$ | $\color{green}{+1.1}$ | $\color{green}{+1.1}$ | $\color{green}{+0.9}$ | $\color{green}{+0.9}$ | $\color{green}{+0.8}$ |
+| `flood` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ |
+| `browser` | $\color{green}{+1.2}$ | $\color{green}{+1.5}$ | $\color{green}{+1.4}$ | $\color{green}{+1.3}$ | $\color{green}{+1.7}$ | $\color{green}{+1.9}$ | $\color{green}{+1.8}$ | $\color{green}{+1.9}$ | $\color{green}{+1.9}$ | $\color{green}{+1.9}$ |
+| `drag` | $\color{green}{+1.4}$ | $\color{green}{+1.3}$ | $\color{green}{+1.2}$ | $\color{green}{+1.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.9}$ |
+| `video` | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ | $\color{green}{+0.8}$ |
+| `walk` | $\color{green}{+0.7}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ |
 
 ## Against libvpx, the frames apart
 
@@ -334,181 +335,181 @@ time ratio the median of the per-frame ratios, and the bytes the mean per frame.
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 117 | 2.15 | $\color{green}{0.41}$ | $\color{green}{0.19}$ | 116 B | 94 B | $\color{green}{0.81}$ | $\color{green}{+0.2}$ |
-| 1440×900 | 117 | 3.08 | $\color{green}{0.51}$ | $\color{green}{0.17}$ | 118 B | 102 B | $\color{green}{0.87}$ | $\color{green}{+0.1}$ |
-| 1600×1000 | 117 | 3.45 | $\color{green}{0.52}$ | $\color{green}{0.15}$ | 124 B | 113 B | $\color{green}{0.91}$ | $\color{green}{+0.2}$ |
-| 1920×1080 | 117 | 4.16 | $\color{green}{0.58}$ | $\color{green}{0.14}$ | 145 B | 120 B | $\color{green}{0.83}$ | $\color{green}{+0.1}$ |
-| 2048×1536@2 | 117 | 4.17 | $\color{green}{0.93}$ | $\color{green}{0.22}$ | 224 B | 171 B | $\color{green}{0.77}$ | $\color{green}{+0.3}$ |
-| 2560×1600@2 | 117 | 5.19 | $\color{green}{0.95}$ | $\color{green}{0.18}$ | 185 B | 142 B | $\color{green}{0.77}$ | $\color{green}{+0.4}$ |
-| 2880×1800@2 | 117 | 6.69 | $\color{green}{1.17}$ | $\color{green}{0.17}$ | 191 B | 149 B | $\color{green}{0.78}$ | $\color{green}{+0.4}$ |
-| 3200×2000@2 | 117 | 8.11 | $\color{green}{1.33}$ | $\color{green}{0.16}$ | 192 B | 154 B | $\color{green}{0.80}$ | $\color{green}{+0.4}$ |
-| 3456×2168@2 | 117 | 9.06 | $\color{green}{1.41}$ | $\color{green}{0.16}$ | 217 B | 157 B | $\color{green}{0.72}$ | $\color{green}{+0.4}$ |
-| 3840×2160@2 | 117 | 10.1 | $\color{green}{1.56}$ | $\color{green}{0.15}$ | 244 B | 176 B | $\color{green}{0.72}$ | $\color{green}{+0.4}$ |
+| 1280×800 | 117 | 2.24 | $\color{green}{0.43}$ | $\color{green}{0.19}$ | 116 B | 94 B | $\color{green}{0.81}$ | $\color{green}{+0.2}$ |
+| 1440×900 | 117 | 3.28 | $\color{green}{0.53}$ | $\color{green}{0.16}$ | 118 B | 102 B | $\color{green}{0.87}$ | $\color{green}{+0.1}$ |
+| 1600×1000 | 117 | 3.27 | $\color{green}{0.52}$ | $\color{green}{0.16}$ | 124 B | 112 B | $\color{green}{0.91}$ | $\color{green}{+0.2}$ |
+| 1920×1080 | 117 | 4.21 | $\color{green}{0.61}$ | $\color{green}{0.15}$ | 145 B | 121 B | $\color{green}{0.83}$ | $\color{green}{+0.1}$ |
+| 2048×1536@2 | 117 | 4.35 | $\color{green}{0.93}$ | $\color{green}{0.21}$ | 224 B | 172 B | $\color{green}{0.77}$ | $\color{green}{+0.3}$ |
+| 2560×1600@2 | 117 | 5.30 | $\color{green}{0.96}$ | $\color{green}{0.18}$ | 185 B | 142 B | $\color{green}{0.77}$ | $\color{green}{+0.4}$ |
+| 2880×1800@2 | 117 | 6.64 | $\color{green}{1.19}$ | $\color{green}{0.18}$ | 191 B | 149 B | $\color{green}{0.78}$ | $\color{green}{+0.4}$ |
+| 3200×2000@2 | 117 | 7.89 | $\color{green}{1.32}$ | $\color{green}{0.17}$ | 192 B | 154 B | $\color{green}{0.80}$ | $\color{green}{+0.4}$ |
+| 3456×2168@2 | 117 | 9.06 | $\color{green}{1.45}$ | $\color{green}{0.16}$ | 217 B | 158 B | $\color{green}{0.73}$ | $\color{green}{+0.4}$ |
+| 3840×2160@2 | 117 | 10.3 | $\color{green}{1.63}$ | $\color{green}{0.16}$ | 244 B | 177 B | $\color{green}{0.73}$ | $\color{green}{+0.4}$ |
 
 ### `terminal`, a scroll
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 1 | 10.6 | $\color{green}{7.43}$ | $\color{green}{0.70}$ | 51 kB | 49 kB | $\color{green}{0.95}$ | 0.0 |
-| 1440×900 | 1 | 12.8 | $\color{green}{7.85}$ | $\color{green}{0.61}$ | 50 kB | 48 kB | $\color{green}{0.95}$ | 0.0 |
-| 1600×1000 | 1 | 13.6 | $\color{green}{8.19}$ | $\color{green}{0.60}$ | 50 kB | 48 kB | $\color{green}{0.95}$ | 0.0 |
-| 1920×1080 | 1 | 13.3 | $\color{green}{8.63}$ | $\color{green}{0.65}$ | 51 kB | 48 kB | $\color{green}{0.94}$ | $\color{green}{+0.1}$ |
-| 2048×1536@2 | 1 | 22.6 | $\color{green}{15.3}$ | $\color{green}{0.67}$ | 135 kB | 104 kB | $\color{green}{0.77}$ | $\color{green}{+0.2}$ |
-| 2560×1600@2 | 1 | 26.2 | $\color{green}{16.3}$ | $\color{green}{0.62}$ | 134 kB | 104 kB | $\color{green}{0.78}$ | $\color{green}{+0.3}$ |
-| 2880×1800@2 | 1 | 28.3 | $\color{green}{17.7}$ | $\color{green}{0.63}$ | 133 kB | 106 kB | $\color{green}{0.80}$ | $\color{green}{+0.3}$ |
-| 3200×2000@2 | 1 | 35.0 | $\color{green}{19.9}$ | $\color{green}{0.57}$ | 121 kB | 96 kB | $\color{green}{0.80}$ | $\color{green}{+0.4}$ |
-| 3456×2168@2 | 1 | 34.6 | $\color{green}{20.1}$ | $\color{green}{0.58}$ | 130 kB | 101 kB | $\color{green}{0.78}$ | $\color{green}{+0.2}$ |
-| 3840×2160@2 | 1 | 37.6 | $\color{green}{20.9}$ | $\color{green}{0.56}$ | 133 kB | 104 kB | $\color{green}{0.78}$ | $\color{green}{+0.3}$ |
+| 1280×800 | 1 | 10.7 | $\color{green}{8.02}$ | $\color{green}{0.75}$ | 51 kB | 49 kB | $\color{green}{0.95}$ | 0.0 |
+| 1440×900 | 1 | 12.6 | $\color{green}{7.41}$ | $\color{green}{0.59}$ | 50 kB | 48 kB | $\color{green}{0.95}$ | $\color{green}{+0.1}$ |
+| 1600×1000 | 1 | 12.0 | $\color{green}{8.31}$ | $\color{green}{0.69}$ | 50 kB | 48 kB | $\color{green}{0.95}$ | 0.0 |
+| 1920×1080 | 1 | 12.6 | $\color{green}{7.77}$ | $\color{green}{0.62}$ | 51 kB | 48 kB | $\color{green}{0.95}$ | $\color{green}{+0.1}$ |
+| 2048×1536@2 | 1 | 23.1 | $\color{green}{15.8}$ | $\color{green}{0.68}$ | 135 kB | 105 kB | $\color{green}{0.78}$ | $\color{green}{+0.2}$ |
+| 2560×1600@2 | 1 | 25.3 | $\color{green}{16.6}$ | $\color{green}{0.66}$ | 134 kB | 105 kB | $\color{green}{0.78}$ | $\color{green}{+0.3}$ |
+| 2880×1800@2 | 1 | 28.1 | $\color{green}{17.0}$ | $\color{green}{0.61}$ | 133 kB | 106 kB | $\color{green}{0.80}$ | $\color{green}{+0.3}$ |
+| 3200×2000@2 | 1 | 29.6 | $\color{green}{17.5}$ | $\color{green}{0.59}$ | 121 kB | 97 kB | $\color{green}{0.80}$ | $\color{green}{+0.3}$ |
+| 3456×2168@2 | 1 | 34.1 | $\color{green}{19.5}$ | $\color{green}{0.57}$ | 130 kB | 102 kB | $\color{green}{0.78}$ | $\color{green}{+0.2}$ |
+| 3840×2160@2 | 1 | 36.5 | $\color{green}{20.1}$ | $\color{green}{0.55}$ | 133 kB | 105 kB | $\color{green}{0.79}$ | $\color{green}{+0.3}$ |
 
 ### `drag`, a quarter of the picture
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 118 | 10.6 | $\color{green}{4.91}$ | $\color{green}{0.46}$ | 5850 B | 210 B | $\color{green}{0.04}$ | $\color{green}{+0.3}$ |
-| 1440×900 | 118 | 10.4 | $\color{green}{5.03}$ | $\color{green}{0.49}$ | 5841 B | 209 B | $\color{green}{0.04}$ | $\color{green}{+0.4}$ |
-| 1600×1000 | 118 | 10.8 | $\color{green}{5.22}$ | $\color{green}{0.48}$ | 5618 B | 207 B | $\color{green}{0.04}$ | $\color{green}{+0.2}$ |
-| 1920×1080 | 118 | 11.5 | $\color{green}{5.42}$ | $\color{green}{0.49}$ | 6086 B | 199 B | $\color{green}{0.03}$ | $\color{green}{+0.2}$ |
-| 2048×1536@2 | 118 | 21.5 | $\color{green}{11.7}$ | $\color{green}{0.54}$ | 7332 B | 833 B | $\color{green}{0.11}$ | $\color{red}{-0.4}$ |
-| 2560×1600@2 | 118 | 22.6 | $\color{green}{11.9}$ | $\color{green}{0.53}$ | 5708 B | 820 B | $\color{green}{0.14}$ | $\color{red}{-0.4}$ |
-| 2880×1800@2 | 118 | 24.0 | $\color{green}{13.0}$ | $\color{green}{0.54}$ | 5329 B | 812 B | $\color{green}{0.15}$ | $\color{red}{-0.3}$ |
-| 3200×2000@2 | 118 | 25.9 | $\color{green}{13.3}$ | $\color{green}{0.52}$ | 5703 B | 822 B | $\color{green}{0.14}$ | $\color{red}{-0.2}$ |
-| 3456×2168@2 | 118 | 26.6 | $\color{green}{13.5}$ | $\color{green}{0.52}$ | 6359 B | 831 B | $\color{green}{0.13}$ | $\color{red}{-0.2}$ |
-| 3840×2160@2 | 118 | 24.1 | $\color{green}{13.7}$ | $\color{green}{0.57}$ | 14 kB | 833 B | $\color{green}{0.06}$ | $\color{green}{+0.3}$ |
+| 1280×800 | 118 | 10.2 | $\color{green}{4.94}$ | $\color{green}{0.48}$ | 5850 B | 246 B | $\color{green}{0.04}$ | $\color{green}{+1.4}$ |
+| 1440×900 | 118 | 10.2 | $\color{green}{4.97}$ | $\color{green}{0.48}$ | 5841 B | 255 B | $\color{green}{0.04}$ | $\color{green}{+1.4}$ |
+| 1600×1000 | 118 | 10.9 | $\color{green}{5.28}$ | $\color{green}{0.50}$ | 5725 B | 258 B | $\color{green}{0.04}$ | $\color{green}{+1.2}$ |
+| 1920×1080 | 118 | 11.4 | $\color{green}{5.49}$ | $\color{green}{0.49}$ | 6086 B | 239 B | $\color{green}{0.04}$ | $\color{green}{+1.2}$ |
+| 2048×1536@2 | 118 | 20.7 | $\color{green}{11.7}$ | $\color{green}{0.56}$ | 7332 B | 716 B | $\color{green}{0.10}$ | $\color{green}{+0.3}$ |
+| 2560×1600@2 | 118 | 21.8 | $\color{green}{12.0}$ | $\color{green}{0.55}$ | 5708 B | 724 B | $\color{green}{0.13}$ | $\color{green}{+0.2}$ |
+| 2880×1800@2 | 118 | 23.2 | $\color{green}{13.1}$ | $\color{green}{0.56}$ | 5329 B | 722 B | $\color{green}{0.14}$ | $\color{green}{+0.4}$ |
+| 3200×2000@2 | 118 | 25.6 | $\color{green}{13.5}$ | $\color{green}{0.53}$ | 6453 B | 749 B | $\color{green}{0.12}$ | $\color{green}{+0.5}$ |
+| 3456×2168@2 | 118 | 26.3 | $\color{green}{13.7}$ | $\color{green}{0.53}$ | 6359 B | 734 B | $\color{green}{0.12}$ | $\color{green}{+0.4}$ |
+| 3840×2160@2 | 118 | 23.4 | $\color{green}{13.8}$ | $\color{green}{0.59}$ | 14 kB | 729 B | $\color{green}{0.05}$ | $\color{green}{+0.9}$ |
 
 ### `browser`, a page scrolled
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 118 | 18.4 | $\color{green}{7.23}$ | $\color{green}{0.39}$ | 9303 B | 1067 B | $\color{green}{0.12}$ | $\color{green}{+0.8}$ |
-| 1440×900 | 118 | 20.1 | $\color{green}{7.86}$ | $\color{green}{0.40}$ | 13 kB | 1614 B | $\color{green}{0.12}$ | $\color{green}{+1.0}$ |
-| 1600×1000 | 119 | 24.3 | $\color{green}{9.33}$ | $\color{green}{0.38}$ | 15 kB | 1976 B | $\color{green}{0.13}$ | $\color{green}{+1.2}$ |
-| 1920×1080 | 118 | 26.7 | $\color{green}{10.6}$ | $\color{green}{0.40}$ | 12 kB | 1666 B | $\color{green}{0.14}$ | $\color{green}{+1.0}$ |
-| 2048×1536@2 | 118 | 35.0 | $\color{green}{15.4}$ | $\color{green}{0.45}$ | 40 kB | 5837 B | $\color{green}{0.14}$ | $\color{green}{+1.5}$ |
-| 2560×1600@2 | 118 | 46.1 | $\color{green}{20.4}$ | $\color{green}{0.45}$ | 50 kB | 6575 B | $\color{green}{0.13}$ | $\color{green}{+1.7}$ |
-| 2880×1800@2 | 118 | 54.5 | $\color{green}{23.2}$ | $\color{green}{0.43}$ | 52 kB | 6262 B | $\color{green}{0.12}$ | $\color{green}{+1.6}$ |
-| 3200×2000@2 | 118 | 67.1 | $\color{green}{26.7}$ | $\color{green}{0.41}$ | 65 kB | 6556 B | $\color{green}{0.10}$ | $\color{green}{+1.6}$ |
-| 3456×2168@2 | 118 | 75.6 | $\color{green}{29.5}$ | $\color{green}{0.39}$ | 74 kB | 9135 B | $\color{green}{0.12}$ | $\color{green}{+1.6}$ |
-| 3840×2160@2 | 118 | 78.0 | $\color{green}{32.0}$ | $\color{green}{0.41}$ | 73 kB | 7262 B | $\color{green}{0.10}$ | $\color{green}{+1.6}$ |
+| 1280×800 | 118 | 18.0 | $\color{green}{7.02}$ | $\color{green}{0.39}$ | 9303 B | 1131 B | $\color{green}{0.12}$ | $\color{green}{+1.2}$ |
+| 1440×900 | 118 | 20.0 | $\color{green}{8.15}$ | $\color{green}{0.42}$ | 13 kB | 1673 B | $\color{green}{0.12}$ | $\color{green}{+1.5}$ |
+| 1600×1000 | 119 | 23.8 | $\color{green}{9.31}$ | $\color{green}{0.41}$ | 15 kB | 2728 B | $\color{green}{0.18}$ | $\color{green}{+1.4}$ |
+| 1920×1080 | 118 | 25.5 | $\color{green}{10.7}$ | $\color{green}{0.42}$ | 12 kB | 1997 B | $\color{green}{0.16}$ | $\color{green}{+1.3}$ |
+| 2048×1536@2 | 118 | 33.3 | $\color{green}{15.1}$ | $\color{green}{0.46}$ | 40 kB | 6116 B | $\color{green}{0.15}$ | $\color{green}{+1.8}$ |
+| 2560×1600@2 | 118 | 45.7 | $\color{green}{19.6}$ | $\color{green}{0.43}$ | 50 kB | 6855 B | $\color{green}{0.14}$ | $\color{green}{+1.9}$ |
+| 2880×1800@2 | 118 | 53.7 | $\color{green}{22.5}$ | $\color{green}{0.42}$ | 52 kB | 6546 B | $\color{green}{0.13}$ | $\color{green}{+1.9}$ |
+| 3200×2000@2 | 118 | 64.8 | $\color{green}{27.3}$ | $\color{green}{0.42}$ | 65 kB | 6967 B | $\color{green}{0.11}$ | $\color{green}{+1.9}$ |
+| 3456×2168@2 | 118 | 74.3 | $\color{green}{30.1}$ | $\color{green}{0.41}$ | 74 kB | 9622 B | $\color{green}{0.13}$ | $\color{green}{+1.9}$ |
+| 3840×2160@2 | 118 | 76.3 | $\color{green}{32.0}$ | $\color{green}{0.42}$ | 73 kB | 7701 B | $\color{green}{0.10}$ | $\color{green}{+1.9}$ |
 
 ### `flood`, a window of new text
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 119 | 136.5 | $\color{green}{53.0}$ | $\color{green}{0.39}$ | 734 kB | 649 kB | $\color{green}{0.88}$ | $\color{green}{+0.4}$ |
-| 1440×900 | 119 | 131.1 | $\color{green}{56.0}$ | $\color{green}{0.43}$ | 913 kB | 687 kB | $\color{green}{0.75}$ | $\color{green}{+0.5}$ |
-| 1600×1000 | 119 | 164.6 | $\color{green}{81.2}$ | $\color{green}{0.48}$ | 1157 kB | 966 kB | $\color{green}{0.83}$ | $\color{green}{+0.4}$ |
-| 1920×1080 | 119 | 217.0 | $\color{green}{109.0}$ | $\color{green}{0.50}$ | 1592 kB | 1444 kB | $\color{green}{0.91}$ | $\color{green}{+0.4}$ |
-| 2048×1536@2 | 119 | 215.0 | $\color{green}{120.2}$ | $\color{green}{0.56}$ | 1438 kB | 1310 kB | $\color{green}{0.91}$ | $\color{green}{+0.8}$ |
-| 2560×1600@2 | 119 | 283.5 | $\color{green}{156.2}$ | $\color{green}{0.55}$ | 1855 kB | 1722 kB | $\color{green}{0.93}$ | $\color{green}{+0.8}$ |
-| 2880×1800@2 | 119 | 372.6 | $\color{green}{202.4}$ | $\color{green}{0.55}$ | 2387 kB | 2269 kB | $\color{green}{0.95}$ | $\color{green}{+0.8}$ |
-| 3200×2000@2 | 119 | 458.1 | $\color{green}{246.5}$ | $\color{green}{0.54}$ | 2913 kB | 2761 kB | $\color{green}{0.95}$ | $\color{green}{+0.8}$ |
-| 3456×2168@2 | 119 | 547.4 | $\color{green}{292.3}$ | $\color{green}{0.54}$ | 3452 kB | 3292 kB | $\color{green}{0.95}$ | $\color{green}{+0.8}$ |
-| 3840×2160@2 | 119 | 611.0 | $\color{green}{324.0}$ | $\color{green}{0.53}$ | 3835 kB | 3654 kB | $\color{green}{0.95}$ | $\color{green}{+0.8}$ |
+| 1280×800 | 119 | 132.9 | $\color{green}{49.8}$ | $\color{green}{0.40}$ | 734 kB | 655 kB | $\color{green}{0.89}$ | $\color{green}{+0.5}$ |
+| 1440×900 | 119 | 127.7 | $\color{green}{54.5}$ | $\color{green}{0.43}$ | 913 kB | 694 kB | $\color{green}{0.76}$ | $\color{green}{+0.5}$ |
+| 1600×1000 | 119 | 161.4 | $\color{green}{78.9}$ | $\color{green}{0.48}$ | 1157 kB | 976 kB | $\color{green}{0.84}$ | $\color{green}{+0.5}$ |
+| 1920×1080 | 119 | 209.6 | $\color{green}{105.5}$ | $\color{green}{0.51}$ | 1592 kB | 1451 kB | $\color{green}{0.91}$ | $\color{green}{+0.4}$ |
+| 2048×1536@2 | 119 | 206.4 | $\color{green}{117.9}$ | $\color{green}{0.57}$ | 1438 kB | 1316 kB | $\color{green}{0.92}$ | $\color{green}{+0.7}$ |
+| 2560×1600@2 | 119 | 271.3 | $\color{green}{150.6}$ | $\color{green}{0.56}$ | 1855 kB | 1728 kB | $\color{green}{0.93}$ | $\color{green}{+0.8}$ |
+| 2880×1800@2 | 119 | 351.7 | $\color{green}{196.9}$ | $\color{green}{0.56}$ | 2387 kB | 2275 kB | $\color{green}{0.95}$ | $\color{green}{+0.8}$ |
+| 3200×2000@2 | 119 | 435.1 | $\color{green}{237.8}$ | $\color{green}{0.56}$ | 2913 kB | 2770 kB | $\color{green}{0.95}$ | $\color{green}{+0.8}$ |
+| 3456×2168@2 | 119 | 517.6 | $\color{green}{283.5}$ | $\color{green}{0.55}$ | 3452 kB | 3301 kB | $\color{green}{0.96}$ | $\color{green}{+0.8}$ |
+| 3840×2160@2 | 119 | 583.7 | $\color{green}{313.9}$ | $\color{green}{0.54}$ | 3835 kB | 3664 kB | $\color{green}{0.95}$ | $\color{green}{+0.8}$ |
 
 ### `uncover`, a window moved off a page
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 47 | 7.47 | $\color{green}{4.97}$ | $\color{green}{0.68}$ | 3304 B | 2544 B | $\color{green}{0.77}$ | $\color{green}{+1.0}$ |
-| 1440×900 | 47 | 8.25 | $\color{green}{5.59}$ | $\color{green}{0.68}$ | 3480 B | 2566 B | $\color{green}{0.74}$ | $\color{green}{+0.9}$ |
-| 1600×1000 | 47 | 8.85 | $\color{green}{5.78}$ | $\color{green}{0.65}$ | 3654 B | 1144 B | $\color{green}{0.31}$ | $\color{green}{+0.9}$ |
-| 1920×1080 | 47 | 9.75 | $\color{green}{6.17}$ | $\color{green}{0.64}$ | 3993 B | 1152 B | $\color{green}{0.29}$ | $\color{green}{+0.8}$ |
-| 2048×1536@2 | 45 | 19.2 | $\color{green}{11.6}$ | $\color{green}{0.58}$ | 15 kB | 4788 B | $\color{green}{0.32}$ | $\color{green}{+1.1}$ |
-| 2560×1600@2 | 47 | 24.3 | $\color{green}{13.3}$ | $\color{green}{0.55}$ | 17 kB | 5094 B | $\color{green}{0.30}$ | $\color{green}{+1.1}$ |
-| 2880×1800@2 | 47 | 26.0 | $\color{green}{14.8}$ | $\color{green}{0.55}$ | 17 kB | 5171 B | $\color{green}{0.30}$ | $\color{green}{+1.0}$ |
-| 3200×2000@2 | 47 | 29.3 | $\color{green}{15.5}$ | $\color{green}{0.53}$ | 16 kB | 4776 B | $\color{green}{0.29}$ | $\color{green}{+0.9}$ |
-| 3456×2168@2 | 47 | 31.1 | $\color{green}{16.2}$ | $\color{green}{0.53}$ | 17 kB | 5401 B | $\color{green}{0.31}$ | $\color{green}{+0.8}$ |
-| 3840×2160@2 | 47 | 32.9 | $\color{green}{16.3}$ | $\color{green}{0.51}$ | 26 kB | 5121 B | $\color{green}{0.19}$ | $\color{green}{+0.8}$ |
+| 1280×800 | 47 | 7.24 | $\color{green}{5.18}$ | $\color{green}{0.71}$ | 3304 B | 2599 B | $\color{green}{0.79}$ | $\color{green}{+1.2}$ |
+| 1440×900 | 47 | 8.18 | $\color{green}{5.72}$ | $\color{green}{0.71}$ | 3480 B | 2616 B | $\color{green}{0.75}$ | $\color{green}{+1.1}$ |
+| 1600×1000 | 47 | 8.82 | $\color{green}{5.99}$ | $\color{green}{0.66}$ | 3654 B | 1265 B | $\color{green}{0.35}$ | $\color{green}{+1.1}$ |
+| 1920×1080 | 47 | 9.37 | $\color{green}{6.23}$ | $\color{green}{0.66}$ | 3993 B | 1391 B | $\color{green}{0.35}$ | $\color{green}{+0.9}$ |
+| 2048×1536@2 | 45 | 17.8 | $\color{green}{11.0}$ | $\color{green}{0.58}$ | 15 kB | 4899 B | $\color{green}{0.32}$ | $\color{green}{+1.2}$ |
+| 2560×1600@2 | 47 | 23.9 | $\color{green}{13.3}$ | $\color{green}{0.56}$ | 17 kB | 5172 B | $\color{green}{0.31}$ | $\color{green}{+1.2}$ |
+| 2880×1800@2 | 47 | 26.1 | $\color{green}{14.3}$ | $\color{green}{0.54}$ | 17 kB | 5244 B | $\color{green}{0.31}$ | $\color{green}{+1.1}$ |
+| 3200×2000@2 | 47 | 28.2 | $\color{green}{15.2}$ | $\color{green}{0.54}$ | 16 kB | 4855 B | $\color{green}{0.30}$ | $\color{green}{+1.0}$ |
+| 3456×2168@2 | 47 | 30.0 | $\color{green}{16.1}$ | $\color{green}{0.53}$ | 17 kB | 5485 B | $\color{green}{0.32}$ | $\color{green}{+0.9}$ |
+| 3840×2160@2 | 47 | 31.3 | $\color{green}{16.1}$ | $\color{green}{0.52}$ | 26 kB | 5184 B | $\color{green}{0.20}$ | $\color{green}{+0.9}$ |
 
 ### `video`, a frame of the video
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 118 | 18.8 | $\color{green}{17.1}$ | $\color{green}{0.86}$ | 36 kB | 38 kB | $\color{red}{1.05}$ | $\color{green}{+0.6}$ |
-| 1440×900 | 118 | 20.4 | 20.4 | $\color{green}{0.94}$ | 43 kB | 45 kB | $\color{red}{1.04}$ | $\color{green}{+0.6}$ |
-| 1600×1000 | 118 | 23.6 | $\color{red}{24.3}$ | $\color{green}{0.95}$ | 50 kB | 52 kB | $\color{red}{1.04}$ | $\color{green}{+0.6}$ |
-| 1920×1080 | 118 | 28.5 | $\color{green}{27.3}$ | $\color{green}{0.92}$ | 55 kB | 57 kB | $\color{red}{1.04}$ | $\color{green}{+0.6}$ |
-| 2048×1536@2 | 118 | 43.3 | $\color{red}{46.7}$ | $\color{red}{1.03}$ | 91 kB | 93 kB | $\color{red}{1.02}$ | $\color{green}{+0.8}$ |
-| 2560×1600@2 | 118 | 50.8 | $\color{red}{51.1}$ | $\color{green}{0.94}$ | 97 kB | 98 kB | $\color{red}{1.01}$ | $\color{green}{+0.8}$ |
-| 2880×1800@2 | 118 | 63.1 | $\color{green}{61.5}$ | $\color{green}{0.92}$ | 114 kB | 114 kB | 1.00 | $\color{green}{+0.8}$ |
-| 3200×2000@2 | 118 | 75.9 | $\color{green}{72.1}$ | $\color{green}{0.91}$ | 132 kB | 132 kB | 1.00 | $\color{green}{+0.8}$ |
-| 3456×2168@2 | 118 | 86.4 | $\color{green}{84.5}$ | $\color{green}{0.93}$ | 146 kB | 147 kB | 1.00 | $\color{green}{+0.8}$ |
-| 3840×2160@2 | 118 | 88.3 | $\color{green}{81.8}$ | $\color{green}{0.88}$ | 137 kB | 137 kB | 1.00 | $\color{green}{+0.9}$ |
+| 1280×800 | 118 | 18.4 | $\color{green}{16.6}$ | $\color{green}{0.86}$ | 36 kB | 38 kB | $\color{red}{1.05}$ | $\color{green}{+0.6}$ |
+| 1440×900 | 118 | 19.7 | $\color{green}{19.5}$ | $\color{green}{0.95}$ | 43 kB | 45 kB | $\color{red}{1.04}$ | $\color{green}{+0.6}$ |
+| 1600×1000 | 118 | 25.5 | $\color{red}{25.9}$ | $\color{green}{0.95}$ | 50 kB | 52 kB | $\color{red}{1.04}$ | $\color{green}{+0.6}$ |
+| 1920×1080 | 118 | 34.6 | $\color{green}{31.8}$ | $\color{green}{0.96}$ | 55 kB | 57 kB | $\color{red}{1.03}$ | $\color{green}{+0.6}$ |
+| 2048×1536@2 | 118 | 53.1 | $\color{red}{57.6}$ | 1.00 | 91 kB | 93 kB | $\color{red}{1.02}$ | $\color{green}{+0.8}$ |
+| 2560×1600@2 | 118 | 51.4 | $\color{red}{52.2}$ | $\color{green}{0.94}$ | 97 kB | 98 kB | $\color{red}{1.01}$ | $\color{green}{+0.8}$ |
+| 2880×1800@2 | 118 | 60.9 | $\color{green}{59.7}$ | $\color{green}{0.92}$ | 114 kB | 114 kB | 1.00 | $\color{green}{+0.8}$ |
+| 3200×2000@2 | 118 | 73.9 | $\color{green}{72.3}$ | $\color{green}{0.93}$ | 132 kB | 132 kB | 1.00 | $\color{green}{+0.8}$ |
+| 3456×2168@2 | 118 | 84.5 | $\color{green}{82.0}$ | $\color{green}{0.93}$ | 146 kB | 147 kB | 1.00 | $\color{green}{+0.8}$ |
+| 3840×2160@2 | 118 | 86.8 | $\color{green}{81.8}$ | $\color{green}{0.90}$ | 137 kB | 137 kB | 1.00 | $\color{green}{+0.9}$ |
 
 ### `walk`, a frame as the dial walks
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 200 | 15.6 | $\color{green}{12.4}$ | $\color{green}{0.79}$ | 15 kB | 16 kB | $\color{red}{1.09}$ | $\color{green}{+0.7}$ |
-| 1440×900 | 204 | 16.9 | $\color{green}{13.2}$ | $\color{green}{0.78}$ | 18 kB | 19 kB | $\color{red}{1.07}$ | $\color{green}{+0.7}$ |
-| 1600×1000 | 171 | 19.6 | $\color{green}{14.6}$ | $\color{green}{0.78}$ | 19 kB | 20 kB | $\color{red}{1.06}$ | $\color{green}{+0.6}$ |
-| 1920×1080 | 171 | 22.8 | $\color{green}{16.3}$ | $\color{green}{0.74}$ | 21 kB | 22 kB | $\color{red}{1.05}$ | $\color{green}{+0.5}$ |
-| 2048×1536@2 | 171 | 35.2 | $\color{green}{27.8}$ | $\color{green}{0.81}$ | 34 kB | 36 kB | $\color{red}{1.04}$ | $\color{green}{+0.6}$ |
-| 2560×1600@2 | 171 | 40.5 | $\color{green}{29.8}$ | $\color{green}{0.76}$ | 38 kB | 39 kB | $\color{red}{1.04}$ | $\color{green}{+0.6}$ |
-| 2880×1800@2 | 171 | 52.2 | $\color{green}{36.1}$ | $\color{green}{0.72}$ | 44 kB | 45 kB | $\color{red}{1.02}$ | $\color{green}{+0.5}$ |
-| 3200×2000@2 | 171 | 62.2 | $\color{green}{45.2}$ | $\color{green}{0.73}$ | 51 kB | 52 kB | $\color{red}{1.02}$ | $\color{green}{+0.5}$ |
-| 3456×2168@2 | 171 | 69.2 | $\color{green}{51.5}$ | $\color{green}{0.76}$ | 57 kB | 58 kB | $\color{red}{1.01}$ | $\color{green}{+0.5}$ |
-| 3840×2160@2 | 171 | 70.9 | $\color{green}{49.6}$ | $\color{green}{0.71}$ | 56 kB | 57 kB | $\color{red}{1.01}$ | $\color{green}{+0.4}$ |
+| 1280×800 | 200 | 14.5 | $\color{green}{11.9}$ | $\color{green}{0.79}$ | 15 kB | 16 kB | $\color{red}{1.09}$ | $\color{green}{+0.7}$ |
+| 1440×900 | 204 | 16.4 | $\color{green}{12.7}$ | $\color{green}{0.77}$ | 18 kB | 19 kB | $\color{red}{1.07}$ | $\color{green}{+0.7}$ |
+| 1600×1000 | 171 | 18.7 | $\color{green}{13.9}$ | $\color{green}{0.79}$ | 19 kB | 20 kB | $\color{red}{1.06}$ | $\color{green}{+0.6}$ |
+| 1920×1080 | 171 | 21.4 | $\color{green}{16.0}$ | $\color{green}{0.75}$ | 21 kB | 22 kB | $\color{red}{1.05}$ | $\color{green}{+0.5}$ |
+| 2048×1536@2 | 171 | 34.1 | $\color{green}{26.6}$ | $\color{green}{0.83}$ | 34 kB | 36 kB | $\color{red}{1.04}$ | $\color{green}{+0.6}$ |
+| 2560×1600@2 | 171 | 38.9 | $\color{green}{28.6}$ | $\color{green}{0.77}$ | 38 kB | 39 kB | $\color{red}{1.03}$ | $\color{green}{+0.5}$ |
+| 2880×1800@2 | 171 | 49.0 | $\color{green}{36.3}$ | $\color{green}{0.75}$ | 44 kB | 46 kB | $\color{red}{1.03}$ | $\color{green}{+0.6}$ |
+| 3200×2000@2 | 171 | 58.2 | $\color{green}{42.7}$ | $\color{green}{0.75}$ | 51 kB | 52 kB | $\color{red}{1.02}$ | $\color{green}{+0.5}$ |
+| 3456×2168@2 | 171 | 66.7 | $\color{green}{49.3}$ | $\color{green}{0.75}$ | 57 kB | 58 kB | $\color{red}{1.02}$ | $\color{green}{+0.5}$ |
+| 3840×2160@2 | 171 | 68.6 | $\color{green}{48.2}$ | $\color{green}{0.72}$ | 56 kB | 57 kB | $\color{red}{1.01}$ | $\color{green}{+0.5}$ |
 
 ### Keyframes inside `terminal`
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 2 | 10.1 | $\color{green}{2.97}$ | $\color{green}{0.42}$ | 3460 B | 3285 B | $\color{green}{0.95}$ | $\color{green}{+0.5}$ |
-| 1440×900 | 2 | 10.4 | $\color{green}{3.56}$ | $\color{green}{0.48}$ | 3490 B | 3150 B | $\color{green}{0.90}$ | $\color{green}{+0.3}$ |
-| 1600×1000 | 2 | 11.9 | $\color{green}{4.58}$ | $\color{green}{0.49}$ | 3281 B | 2801 B | $\color{green}{0.85}$ | $\color{green}{+0.6}$ |
-| 1920×1080 | 2 | 14.8 | $\color{green}{4.74}$ | $\color{green}{0.43}$ | 3716 B | 3061 B | $\color{green}{0.82}$ | $\color{green}{+0.1}$ |
-| 2048×1536@2 | 2 | 15.0 | $\color{green}{6.70}$ | $\color{green}{0.61}$ | 8042 B | 7125 B | $\color{green}{0.89}$ | $\color{green}{+0.5}$ |
-| 2560×1600@2 | 2 | 18.8 | $\color{green}{7.75}$ | $\color{green}{0.58}$ | 8494 B | 7403 B | $\color{green}{0.87}$ | $\color{green}{+0.5}$ |
-| 2880×1800@2 | 2 | 22.0 | $\color{green}{9.55}$ | $\color{green}{0.54}$ | 8808 B | 7450 B | $\color{green}{0.85}$ | $\color{green}{+0.4}$ |
-| 3200×2000@2 | 2 | 29.1 | $\color{green}{12.7}$ | $\color{green}{0.49}$ | 7907 B | 6207 B | $\color{green}{0.79}$ | $\color{green}{+0.5}$ |
-| 3456×2168@2 | 2 | 38.6 | $\color{green}{13.7}$ | $\color{green}{0.42}$ | 9751 B | 7637 B | $\color{green}{0.78}$ | $\color{green}{+0.6}$ |
-| 3840×2160@2 | 2 | 44.1 | $\color{green}{17.3}$ | $\color{green}{0.53}$ | 10 kB | 7798 B | $\color{green}{0.77}$ | $\color{green}{+0.5}$ |
+| 1280×800 | 2 | 10.2 | $\color{green}{3.49}$ | $\color{green}{0.49}$ | 3460 B | 3285 B | $\color{green}{0.95}$ | $\color{green}{+0.5}$ |
+| 1440×900 | 2 | 11.1 | $\color{green}{3.58}$ | $\color{green}{0.47}$ | 3490 B | 3150 B | $\color{green}{0.90}$ | $\color{green}{+0.3}$ |
+| 1600×1000 | 2 | 12.2 | $\color{green}{3.91}$ | $\color{green}{0.45}$ | 3281 B | 2801 B | $\color{green}{0.85}$ | $\color{green}{+0.6}$ |
+| 1920×1080 | 2 | 15.3 | $\color{green}{4.79}$ | $\color{green}{0.45}$ | 3716 B | 3061 B | $\color{green}{0.82}$ | $\color{green}{+0.1}$ |
+| 2048×1536@2 | 2 | 20.5 | $\color{green}{6.74}$ | $\color{green}{0.56}$ | 8042 B | 7121 B | $\color{green}{0.89}$ | $\color{green}{+0.5}$ |
+| 2560×1600@2 | 2 | 20.3 | $\color{green}{8.22}$ | $\color{green}{0.52}$ | 8494 B | 7403 B | $\color{green}{0.87}$ | $\color{green}{+0.5}$ |
+| 2880×1800@2 | 2 | 24.2 | $\color{green}{9.32}$ | $\color{green}{0.53}$ | 8808 B | 7450 B | $\color{green}{0.85}$ | $\color{green}{+0.4}$ |
+| 3200×2000@2 | 2 | 26.6 | $\color{green}{10.9}$ | $\color{green}{0.54}$ | 7907 B | 6207 B | $\color{green}{0.79}$ | $\color{green}{+0.5}$ |
+| 3456×2168@2 | 2 | 29.8 | $\color{green}{12.7}$ | $\color{green}{0.51}$ | 9751 B | 7634 B | $\color{green}{0.78}$ | $\color{green}{+0.6}$ |
+| 3840×2160@2 | 2 | 32.9 | $\color{green}{13.5}$ | $\color{green}{0.52}$ | 10 kB | 7798 B | $\color{green}{0.77}$ | $\color{green}{+0.5}$ |
 
 ### Keyframes inside `uncover`
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 1 | 30.4 | $\color{green}{13.2}$ | $\color{green}{0.43}$ | 105 kB | 105 kB | 1.00 | $\color{green}{+0.4}$ |
-| 1440×900 | 1 | 29.2 | $\color{green}{13.7}$ | $\color{green}{0.47}$ | 120 kB | 117 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
-| 1600×1000 | 1 | 47.2 | $\color{green}{21.8}$ | $\color{green}{0.46}$ | 160 kB | 158 kB | $\color{green}{0.99}$ | $\color{green}{+0.4}$ |
-| 1920×1080 | 1 | 43.6 | $\color{green}{24.5}$ | $\color{green}{0.56}$ | 204 kB | 202 kB | $\color{green}{0.99}$ | $\color{green}{+0.4}$ |
-| 2048×1536@2 | 1 | 53.6 | $\color{green}{30.7}$ | $\color{green}{0.57}$ | 246 kB | 246 kB | 1.00 | $\color{green}{+0.3}$ |
-| 2560×1600@2 | 1 | 46.7 | $\color{green}{29.7}$ | $\color{green}{0.64}$ | 261 kB | 260 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
-| 2880×1800@2 | 1 | 55.3 | $\color{green}{32.5}$ | $\color{green}{0.59}$ | 293 kB | 285 kB | $\color{green}{0.97}$ | $\color{green}{+0.3}$ |
-| 3200×2000@2 | 1 | 71.3 | $\color{green}{45.1}$ | $\color{green}{0.63}$ | 385 kB | 381 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
-| 3456×2168@2 | 1 | 80.3 | $\color{green}{52.8}$ | $\color{green}{0.66}$ | 456 kB | 451 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
-| 3840×2160@2 | 1 | 84.9 | $\color{green}{56.9}$ | $\color{green}{0.67}$ | 483 kB | 479 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
+| 1280×800 | 1 | 25.6 | $\color{green}{11.5}$ | $\color{green}{0.45}$ | 105 kB | 105 kB | 1.00 | $\color{green}{+0.4}$ |
+| 1440×900 | 1 | 28.5 | $\color{green}{12.6}$ | $\color{green}{0.44}$ | 120 kB | 117 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
+| 1600×1000 | 1 | 34.0 | $\color{green}{17.8}$ | $\color{green}{0.52}$ | 160 kB | 158 kB | $\color{green}{0.99}$ | $\color{green}{+0.4}$ |
+| 1920×1080 | 1 | 41.4 | $\color{green}{23.2}$ | $\color{green}{0.56}$ | 204 kB | 202 kB | $\color{green}{0.99}$ | $\color{green}{+0.4}$ |
+| 2048×1536@2 | 1 | 39.5 | $\color{green}{28.0}$ | $\color{green}{0.71}$ | 246 kB | 246 kB | 1.00 | $\color{green}{+0.3}$ |
+| 2560×1600@2 | 1 | 47.3 | $\color{green}{29.5}$ | $\color{green}{0.62}$ | 261 kB | 260 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
+| 2880×1800@2 | 1 | 54.7 | $\color{green}{33.2}$ | $\color{green}{0.61}$ | 293 kB | 285 kB | $\color{green}{0.97}$ | $\color{green}{+0.3}$ |
+| 3200×2000@2 | 1 | 68.6 | $\color{green}{44.3}$ | $\color{green}{0.65}$ | 385 kB | 381 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
+| 3456×2168@2 | 1 | 81.5 | $\color{green}{52.3}$ | $\color{green}{0.64}$ | 456 kB | 451 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
+| 3840×2160@2 | 1 | 83.5 | $\color{green}{55.4}$ | $\color{green}{0.66}$ | 483 kB | 478 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
 
 ### Keyframes inside `drag`
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 2 | 22.3 | $\color{green}{10.1}$ | $\color{green}{0.50}$ | 87 kB | 87 kB | 1.00 | $\color{green}{+0.4}$ |
-| 1440×900 | 2 | 26.1 | $\color{green}{12.5}$ | $\color{green}{0.53}$ | 87 kB | 87 kB | 1.00 | $\color{green}{+0.4}$ |
-| 1600×1000 | 2 | 27.1 | $\color{green}{13.5}$ | $\color{green}{0.50}$ | 87 kB | 87 kB | 1.00 | $\color{green}{+0.4}$ |
-| 1920×1080 | 2 | 26.7 | $\color{green}{12.1}$ | $\color{green}{0.51}$ | 87 kB | 87 kB | 1.00 | $\color{green}{+0.4}$ |
-| 2048×1536@2 | 2 | 36.0 | $\color{green}{25.3}$ | $\color{green}{0.74}$ | 207 kB | 207 kB | 1.00 | $\color{green}{+0.4}$ |
-| 2560×1600@2 | 2 | 43.3 | $\color{green}{24.2}$ | $\color{green}{0.65}$ | 208 kB | 208 kB | 1.00 | $\color{green}{+0.3}$ |
-| 2880×1800@2 | 2 | 45.4 | $\color{green}{28.4}$ | $\color{green}{0.66}$ | 208 kB | 208 kB | 1.00 | $\color{green}{+0.4}$ |
-| 3200×2000@2 | 2 | 64.2 | $\color{green}{28.7}$ | $\color{green}{0.48}$ | 209 kB | 208 kB | 1.00 | $\color{green}{+0.3}$ |
-| 3456×2168@2 | 2 | 118.3 | $\color{green}{29.2}$ | $\color{green}{0.38}$ | 209 kB | 208 kB | $\color{green}{0.99}$ | $\color{green}{+0.4}$ |
-| 3840×2160@2 | 2 | 124.4 | $\color{green}{29.9}$ | $\color{green}{0.43}$ | 209 kB | 208 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
+| 1280×800 | 2 | 22.1 | $\color{green}{10.6}$ | $\color{green}{0.53}$ | 87 kB | 87 kB | 1.00 | $\color{green}{+0.4}$ |
+| 1440×900 | 2 | 23.3 | $\color{green}{11.2}$ | $\color{green}{0.56}$ | 87 kB | 87 kB | 1.00 | $\color{green}{+0.4}$ |
+| 1600×1000 | 2 | 25.0 | $\color{green}{11.4}$ | $\color{green}{0.55}$ | 87 kB | 87 kB | 1.00 | $\color{green}{+0.4}$ |
+| 1920×1080 | 2 | 27.2 | $\color{green}{12.5}$ | $\color{green}{0.55}$ | 87 kB | 87 kB | 1.00 | $\color{green}{+0.4}$ |
+| 2048×1536@2 | 2 | 36.4 | $\color{green}{23.1}$ | $\color{green}{0.72}$ | 207 kB | 207 kB | 1.00 | $\color{green}{+0.4}$ |
+| 2560×1600@2 | 2 | 43.5 | $\color{green}{25.1}$ | $\color{green}{0.68}$ | 208 kB | 207 kB | 1.00 | $\color{green}{+0.3}$ |
+| 2880×1800@2 | 2 | 46.0 | $\color{green}{27.8}$ | $\color{green}{0.65}$ | 208 kB | 208 kB | 1.00 | $\color{green}{+0.4}$ |
+| 3200×2000@2 | 2 | 50.5 | $\color{green}{28.5}$ | $\color{green}{0.63}$ | 209 kB | 208 kB | 1.00 | $\color{green}{+0.3}$ |
+| 3456×2168@2 | 2 | 67.7 | $\color{green}{29.6}$ | $\color{green}{0.55}$ | 209 kB | 208 kB | $\color{green}{0.99}$ | $\color{green}{+0.4}$ |
+| 3840×2160@2 | 2 | 57.1 | $\color{green}{30.6}$ | $\color{green}{0.61}$ | 209 kB | 208 kB | $\color{green}{0.99}$ | $\color{green}{+0.3}$ |
 
 ### Keyframes inside `flood`
 
 | Size | Frames | libvpx, ms | This encoder, ms | Time ratio | libvpx, bytes | This encoder, bytes | Bytes ratio | PSNR difference, dB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1280×800 | 1 | 115.8 | $\color{green}{50.9}$ | $\color{green}{0.44}$ | 775 kB | 779 kB | $\color{red}{1.01}$ | $\color{green}{+0.5}$ |
-| 1440×900 | 1 | 89.1 | $\color{green}{62.4}$ | $\color{green}{0.70}$ | 1000 kB | 1007 kB | $\color{red}{1.01}$ | $\color{green}{+0.5}$ |
-| 1600×1000 | 1 | 105.8 | $\color{green}{78.3}$ | $\color{green}{0.74}$ | 1250 kB | 1255 kB | 1.00 | $\color{green}{+0.5}$ |
-| 1920×1080 | 1 | 136.9 | $\color{green}{108.8}$ | $\color{green}{0.80}$ | 1645 kB | 1656 kB | $\color{red}{1.01}$ | $\color{green}{+0.5}$ |
-| 2048×1536@2 | 1 | 106.8 | $\color{green}{104.0}$ | $\color{green}{0.97}$ | 1433 kB | 1403 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
-| 2560×1600@2 | 1 | 132.8 | $\color{green}{131.1}$ | $\color{green}{0.99}$ | 1786 kB | 1752 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
-| 2880×1800@2 | 1 | 185.4 | $\color{green}{172.4}$ | $\color{green}{0.93}$ | 2330 kB | 2279 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
-| 3200×2000@2 | 1 | 225.4 | $\color{green}{213.4}$ | $\color{green}{0.95}$ | 2854 kB | 2797 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
-| 3456×2168@2 | 1 | 257.9 | $\color{red}{261.1}$ | $\color{red}{1.01}$ | 3559 kB | 3459 kB | $\color{green}{0.97}$ | $\color{green}{+0.4}$ |
-| 3840×2160@2 | 1 | 302.9 | $\color{red}{307.7}$ | $\color{red}{1.02}$ | 3929 kB | 3853 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
+| 1280×800 | 1 | 104.4 | $\color{green}{53.2}$ | $\color{green}{0.51}$ | 775 kB | 779 kB | $\color{red}{1.01}$ | $\color{green}{+0.5}$ |
+| 1440×900 | 1 | 87.5 | $\color{green}{63.7}$ | $\color{green}{0.73}$ | 1000 kB | 1007 kB | $\color{red}{1.01}$ | $\color{green}{+0.5}$ |
+| 1600×1000 | 1 | 107.2 | $\color{green}{81.2}$ | $\color{green}{0.76}$ | 1250 kB | 1255 kB | 1.00 | $\color{green}{+0.5}$ |
+| 1920×1080 | 1 | 135.4 | $\color{green}{105.0}$ | $\color{green}{0.78}$ | 1645 kB | 1655 kB | $\color{red}{1.01}$ | $\color{green}{+0.5}$ |
+| 2048×1536@2 | 1 | 107.7 | $\color{green}{104.5}$ | $\color{green}{0.97}$ | 1433 kB | 1403 kB | $\color{green}{0.98}$ | $\color{green}{+0.3}$ |
+| 2560×1600@2 | 1 | 130.7 | 130.7 | 1.00 | 1786 kB | 1752 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
+| 2880×1800@2 | 1 | 169.5 | $\color{red}{172.9}$ | $\color{red}{1.02}$ | 2330 kB | 2278 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
+| 3200×2000@2 | 1 | 205.3 | $\color{green}{204.5}$ | 1.00 | 2854 kB | 2796 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
+| 3456×2168@2 | 1 | 248.7 | $\color{red}{256.2}$ | $\color{red}{1.03}$ | 3559 kB | 3458 kB | $\color{green}{0.97}$ | $\color{green}{+0.4}$ |
+| 3840×2160@2 | 1 | 288.3 | $\color{green}{285.3}$ | $\color{green}{0.99}$ | 3929 kB | 3852 kB | $\color{green}{0.98}$ | $\color{green}{+0.4}$ |
 
 ## Against libvpx, keyframes of each capture's first picture, a paused video's last
 
@@ -518,14 +519,14 @@ This encoder's least time over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.45}$ | $\color{green}{0.46}$ | $\color{green}{0.48}$ | $\color{green}{0.44}$ | $\color{green}{0.57}$ | $\color{green}{0.60}$ | $\color{green}{0.56}$ | $\color{green}{0.56}$ | $\color{green}{0.49}$ | $\color{green}{0.55}$ |
-| `still` | $\color{green}{0.56}$ | $\color{green}{0.68}$ | $\color{green}{0.76}$ | $\color{green}{0.69}$ | $\color{green}{0.78}$ | $\color{green}{0.76}$ | $\color{green}{0.74}$ | $\color{green}{0.73}$ | $\color{green}{0.74}$ | $\color{green}{0.78}$ |
-| `uncover` | $\color{green}{0.62}$ | $\color{green}{0.60}$ | $\color{green}{0.69}$ | $\color{green}{0.75}$ | $\color{green}{0.83}$ | $\color{green}{0.84}$ | $\color{green}{0.74}$ | $\color{green}{0.77}$ | $\color{green}{0.74}$ | $\color{green}{0.77}$ |
-| `flood` | $\color{green}{0.66}$ | $\color{green}{0.81}$ | $\color{green}{0.84}$ | $\color{green}{0.91}$ | $\color{red}{1.04}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | 1.00 | $\color{red}{1.03}$ | $\color{red}{1.04}$ |
-| `browser` | $\color{green}{0.55}$ | $\color{green}{0.69}$ | $\color{green}{0.72}$ | $\color{green}{0.71}$ | $\color{green}{0.81}$ | $\color{green}{0.78}$ | $\color{green}{0.76}$ | $\color{green}{0.74}$ | $\color{green}{0.79}$ | $\color{green}{0.79}$ |
-| `drag` | $\color{green}{0.58}$ | $\color{green}{0.64}$ | $\color{green}{0.61}$ | $\color{green}{0.58}$ | $\color{green}{0.87}$ | $\color{green}{0.73}$ | $\color{green}{0.78}$ | $\color{green}{0.73}$ | $\color{green}{0.69}$ | $\color{green}{0.70}$ |
-| `video` | $\color{green}{0.81}$ | $\color{green}{0.87}$ | $\color{green}{0.89}$ | $\color{green}{0.80}$ | $\color{green}{0.90}$ | $\color{green}{0.77}$ | $\color{green}{0.78}$ | $\color{green}{0.70}$ | $\color{green}{0.74}$ | $\color{green}{0.68}$ |
-| `walk` | $\color{green}{0.76}$ | $\color{green}{0.86}$ | $\color{green}{0.88}$ | $\color{green}{0.83}$ | $\color{green}{0.83}$ | $\color{green}{0.81}$ | $\color{green}{0.77}$ | $\color{green}{0.76}$ | $\color{green}{0.75}$ | $\color{green}{0.71}$ |
+| `terminal` | $\color{green}{0.43}$ | $\color{green}{0.46}$ | $\color{green}{0.48}$ | $\color{green}{0.45}$ | $\color{green}{0.58}$ | $\color{green}{0.58}$ | $\color{green}{0.56}$ | $\color{green}{0.54}$ | $\color{green}{0.55}$ | $\color{green}{0.55}$ |
+| `still` | $\color{green}{0.60}$ | $\color{green}{0.71}$ | $\color{green}{0.75}$ | $\color{green}{0.75}$ | $\color{green}{0.83}$ | $\color{green}{0.76}$ | $\color{green}{0.74}$ | $\color{green}{0.77}$ | $\color{green}{0.79}$ | $\color{green}{0.78}$ |
+| `uncover` | $\color{green}{0.64}$ | $\color{green}{0.62}$ | $\color{green}{0.67}$ | $\color{green}{0.76}$ | $\color{green}{0.85}$ | $\color{green}{0.82}$ | $\color{green}{0.76}$ | $\color{green}{0.77}$ | $\color{green}{0.78}$ | $\color{green}{0.80}$ |
+| `flood` | $\color{green}{0.69}$ | $\color{green}{0.83}$ | $\color{green}{0.85}$ | $\color{green}{0.91}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.06}$ | $\color{red}{1.02}$ | $\color{red}{1.04}$ | $\color{red}{1.07}$ |
+| `browser` | $\color{green}{0.57}$ | $\color{green}{0.69}$ | $\color{green}{0.72}$ | $\color{green}{0.72}$ | $\color{green}{0.82}$ | $\color{green}{0.78}$ | $\color{green}{0.73}$ | $\color{green}{0.74}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ |
+| `drag` | $\color{green}{0.62}$ | $\color{green}{0.67}$ | $\color{green}{0.63}$ | $\color{green}{0.60}$ | $\color{green}{0.87}$ | $\color{green}{0.80}$ | $\color{green}{0.76}$ | $\color{green}{0.75}$ | $\color{green}{0.73}$ | $\color{green}{0.72}$ |
+| `video` | $\color{green}{0.81}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.87}$ | $\color{green}{0.83}$ | $\color{green}{0.83}$ | $\color{green}{0.78}$ | $\color{green}{0.76}$ | $\color{green}{0.74}$ | $\color{green}{0.71}$ |
+| `walk` | $\color{green}{0.76}$ | $\color{green}{0.87}$ | $\color{green}{0.89}$ | $\color{green}{0.80}$ | $\color{green}{0.87}$ | $\color{green}{0.81}$ | $\color{green}{0.80}$ | $\color{green}{0.74}$ | $\color{green}{0.74}$ | $\color{green}{0.72}$ |
 
 ### A keyframe at dial 40: bytes
 
@@ -534,13 +535,13 @@ This encoder's bytes over libvpx's.
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | `terminal` | $\color{green}{0.88}$ | $\color{green}{0.85}$ | $\color{green}{0.78}$ | $\color{green}{0.73}$ | $\color{green}{0.81}$ | $\color{green}{0.79}$ | $\color{green}{0.76}$ | $\color{green}{0.69}$ | $\color{green}{0.65}$ | $\color{green}{0.67}$ |
-| `still` | $\color{green}{0.99}$ | $\color{green}{0.99}$ | 1.00 | 1.00 | $\color{red}{1.01}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | 1.00 | 1.00 |
+| `still` | $\color{green}{0.99}$ | $\color{green}{0.99}$ | 1.00 | 1.00 | $\color{red}{1.01}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
 | `uncover` | $\color{red}{1.02}$ | 1.00 | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | $\color{green}{0.98}$ | 1.00 | 1.00 | 1.00 |
 | `flood` | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.02}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
-| `browser` | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{red}{1.01}$ | 1.00 | $\color{red}{1.01}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | 1.00 | 1.00 |
-| `drag` | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | 1.00 |
-| `video` | $\color{red}{1.01}$ | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.88}$ | $\color{green}{0.88}$ |
-| `walk` | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.88}$ | $\color{green}{0.86}$ | $\color{green}{0.86}$ |
+| `browser` | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{red}{1.01}$ | 1.00 | $\color{red}{1.01}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
+| `drag` | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | 1.00 | 1.00 |
+| `video` | $\color{red}{1.01}$ | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.95}$ | $\color{green}{0.93}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.88}$ | $\color{green}{0.88}$ |
+| `walk` | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.94}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.89}$ | $\color{green}{0.87}$ | $\color{green}{0.86}$ | $\color{green}{0.86}$ |
 
 ### A keyframe at dial 40: luma PSNR
 
@@ -548,14 +549,14 @@ This encoder's less libvpx's, in dB.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+1.2}$ | $\color{green}{+2.9}$ | $\color{green}{+5.9}$ | $\color{green}{+1.3}$ | $\color{green}{+0.5}$ |
-| `still` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
-| `uncover` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
-| `flood` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
-| `browser` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
-| `drag` | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ |
-| `video` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ |
-| `walk` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ |
+| `terminal` | $\color{green}{+0.6}$ | $\color{green}{+0.8}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+1.2}$ | $\color{green}{+2.8}$ | $\color{green}{+5.9}$ | $\color{green}{+1.3}$ | $\color{green}{+0.5}$ |
+| `still` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ |
+| `uncover` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
+| `flood` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
+| `browser` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ |
+| `drag` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ |
+| `video` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ |
+| `walk` | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | 0.0 | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ |
 
 ### A keyframe at dial 65: time
 
@@ -563,14 +564,14 @@ This encoder's least time over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.39}$ | $\color{green}{0.47}$ | $\color{green}{0.45}$ | $\color{green}{0.45}$ | $\color{green}{0.60}$ | $\color{green}{0.59}$ | $\color{green}{0.54}$ | $\color{green}{0.53}$ | $\color{green}{0.55}$ | $\color{green}{0.55}$ |
-| `still` | $\color{green}{0.56}$ | $\color{green}{0.63}$ | $\color{green}{0.69}$ | $\color{green}{0.66}$ | $\color{green}{0.81}$ | $\color{green}{0.77}$ | $\color{green}{0.74}$ | $\color{green}{0.72}$ | $\color{green}{0.75}$ | $\color{green}{0.75}$ |
-| `uncover` | $\color{green}{0.53}$ | $\color{green}{0.55}$ | $\color{green}{0.61}$ | $\color{green}{0.66}$ | $\color{green}{0.77}$ | $\color{green}{0.76}$ | $\color{green}{0.72}$ | $\color{green}{0.72}$ | $\color{green}{0.71}$ | $\color{green}{0.76}$ |
-| `flood` | $\color{green}{0.56}$ | $\color{green}{0.77}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | 1.00 | $\color{green}{0.98}$ | $\color{red}{1.01}$ | $\color{red}{1.04}$ |
-| `browser` | $\color{green}{0.54}$ | $\color{green}{0.62}$ | $\color{green}{0.70}$ | $\color{green}{0.67}$ | $\color{green}{0.78}$ | $\color{green}{0.75}$ | $\color{green}{0.79}$ | $\color{green}{0.71}$ | $\color{green}{0.74}$ | $\color{green}{0.77}$ |
-| `drag` | $\color{green}{0.55}$ | $\color{green}{0.58}$ | $\color{green}{0.55}$ | $\color{green}{0.55}$ | $\color{green}{0.84}$ | $\color{green}{0.73}$ | $\color{green}{0.76}$ | $\color{green}{0.69}$ | $\color{green}{0.66}$ | $\color{green}{0.68}$ |
-| `video` | $\color{green}{0.80}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.99}$ | $\color{green}{0.97}$ | $\color{green}{0.92}$ | $\color{green}{0.87}$ | $\color{green}{0.89}$ | $\color{green}{0.84}$ |
-| `walk` | $\color{green}{0.83}$ | $\color{green}{0.85}$ | $\color{green}{0.94}$ | $\color{green}{0.83}$ | $\color{green}{0.93}$ | $\color{green}{0.89}$ | $\color{green}{0.87}$ | $\color{green}{0.86}$ | $\color{green}{0.84}$ | $\color{green}{0.78}$ |
+| `terminal` | $\color{green}{0.42}$ | $\color{green}{0.46}$ | $\color{green}{0.49}$ | $\color{green}{0.45}$ | $\color{green}{0.56}$ | $\color{green}{0.60}$ | $\color{green}{0.56}$ | $\color{green}{0.54}$ | $\color{green}{0.55}$ | $\color{green}{0.56}$ |
+| `still` | $\color{green}{0.54}$ | $\color{green}{0.67}$ | $\color{green}{0.72}$ | $\color{green}{0.69}$ | $\color{green}{0.78}$ | $\color{green}{0.76}$ | $\color{green}{0.75}$ | $\color{green}{0.73}$ | $\color{green}{0.76}$ | $\color{green}{0.78}$ |
+| `uncover` | $\color{green}{0.55}$ | $\color{green}{0.55}$ | $\color{green}{0.62}$ | $\color{green}{0.70}$ | $\color{green}{0.81}$ | $\color{green}{0.77}$ | $\color{green}{0.73}$ | $\color{green}{0.75}$ | $\color{green}{0.73}$ | $\color{green}{0.75}$ |
+| `flood` | $\color{green}{0.59}$ | $\color{green}{0.78}$ | $\color{green}{0.77}$ | $\color{green}{0.85}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{red}{1.05}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.05}$ |
+| `browser` | $\color{green}{0.55}$ | $\color{green}{0.67}$ | $\color{green}{0.72}$ | $\color{green}{0.69}$ | $\color{green}{0.78}$ | $\color{green}{0.75}$ | $\color{green}{0.75}$ | $\color{green}{0.72}$ | $\color{green}{0.79}$ | $\color{green}{0.76}$ |
+| `drag` | $\color{green}{0.57}$ | $\color{green}{0.60}$ | $\color{green}{0.59}$ | $\color{green}{0.56}$ | $\color{green}{0.89}$ | $\color{green}{0.80}$ | $\color{green}{0.74}$ | $\color{green}{0.73}$ | $\color{green}{0.72}$ | $\color{green}{0.69}$ |
+| `video` | $\color{green}{0.83}$ | $\color{green}{0.94}$ | $\color{green}{0.97}$ | $\color{green}{0.93}$ | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.93}$ | $\color{green}{0.90}$ | $\color{green}{0.91}$ | $\color{green}{0.84}$ |
+| `walk` | $\color{green}{0.81}$ | $\color{green}{0.94}$ | $\color{green}{0.96}$ | $\color{green}{0.90}$ | $\color{green}{0.95}$ | $\color{green}{0.93}$ | $\color{green}{0.89}$ | $\color{green}{0.83}$ | $\color{green}{0.82}$ | $\color{green}{0.84}$ |
 
 ### A keyframe at dial 65: bytes
 
@@ -584,8 +585,8 @@ This encoder's bytes over libvpx's.
 | `flood` | $\color{red}{1.02}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 | `browser` | $\color{green}{0.99}$ | $\color{green}{0.99}$ | 1.00 | 1.00 | $\color{red}{1.02}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | 1.00 | 1.00 | 1.00 |
 | `drag` | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | 1.00 | 1.00 | 1.00 |
-| `video` | $\color{red}{1.06}$ | $\color{red}{1.06}$ | $\color{red}{1.05}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | 1.00 | 1.00 |
-| `walk` | $\color{red}{1.03}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | 1.00 | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ |
+| `video` | $\color{red}{1.06}$ | $\color{red}{1.05}$ | $\color{red}{1.05}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | 1.00 | 1.00 |
+| `walk` | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | 1.00 | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ |
 
 ### A keyframe at dial 65: luma PSNR
 
@@ -593,13 +594,13 @@ This encoder's less libvpx's, in dB.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.4}$ | $\color{green}{+0.6}$ | $\color{green}{+0.4}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ |
+| `terminal` | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ |
 | `still` | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ |
-| `uncover` | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ |
-| `flood` | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ |
+| `uncover` | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ |
+| `flood` | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ |
 | `browser` | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ |
 | `drag` | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ |
-| `video` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
+| `video` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ |
 | `walk` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
 
 ### A keyframe at dial 90: time
@@ -608,14 +609,14 @@ This encoder's least time over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.38}$ | $\color{green}{0.43}$ | $\color{green}{0.48}$ | $\color{green}{0.43}$ | $\color{green}{0.55}$ | $\color{green}{0.56}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ | $\color{green}{0.53}$ | $\color{green}{0.56}$ |
-| `still` | $\color{green}{0.51}$ | $\color{green}{0.62}$ | $\color{green}{0.65}$ | $\color{green}{0.61}$ | $\color{green}{0.75}$ | $\color{green}{0.71}$ | $\color{green}{0.72}$ | $\color{green}{0.68}$ | $\color{green}{0.75}$ | $\color{green}{0.69}$ |
-| `uncover` | $\color{green}{0.51}$ | $\color{green}{0.55}$ | $\color{green}{0.59}$ | $\color{green}{0.65}$ | $\color{green}{0.74}$ | $\color{green}{0.69}$ | $\color{green}{0.67}$ | $\color{green}{0.70}$ | $\color{green}{0.69}$ | $\color{green}{0.72}$ |
-| `flood` | $\color{green}{0.53}$ | $\color{green}{0.70}$ | $\color{green}{0.75}$ | $\color{green}{0.77}$ | 1.00 | $\color{green}{0.98}$ | 1.00 | 1.00 | $\color{green}{0.98}$ | $\color{red}{1.02}$ |
-| `browser` | $\color{green}{0.50}$ | $\color{green}{0.61}$ | $\color{green}{0.56}$ | $\color{green}{0.63}$ | $\color{green}{0.76}$ | $\color{green}{0.74}$ | $\color{green}{0.68}$ | $\color{green}{0.71}$ | $\color{green}{0.72}$ | $\color{green}{0.76}$ |
-| `drag` | $\color{green}{0.51}$ | $\color{green}{0.57}$ | $\color{green}{0.54}$ | $\color{green}{0.52}$ | $\color{green}{0.71}$ | $\color{green}{0.66}$ | $\color{green}{0.68}$ | $\color{green}{0.57}$ | $\color{green}{0.64}$ | $\color{green}{0.58}$ |
-| `video` | $\color{green}{0.78}$ | $\color{green}{0.88}$ | $\color{green}{0.96}$ | $\color{green}{0.90}$ | $\color{green}{0.98}$ | $\color{red}{1.01}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.98}$ | $\color{green}{0.95}$ |
-| `walk` | $\color{green}{0.75}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.91}$ | $\color{red}{1.02}$ | $\color{green}{0.94}$ | $\color{green}{0.94}$ | $\color{green}{0.95}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ |
+| `terminal` | $\color{green}{0.42}$ | $\color{green}{0.46}$ | $\color{green}{0.48}$ | $\color{green}{0.45}$ | $\color{green}{0.56}$ | $\color{green}{0.58}$ | $\color{green}{0.55}$ | $\color{green}{0.54}$ | $\color{green}{0.56}$ | $\color{green}{0.55}$ |
+| `still` | $\color{green}{0.52}$ | $\color{green}{0.66}$ | $\color{green}{0.66}$ | $\color{green}{0.65}$ | $\color{green}{0.78}$ | $\color{green}{0.74}$ | $\color{green}{0.76}$ | $\color{green}{0.71}$ | $\color{green}{0.73}$ | $\color{green}{0.74}$ |
+| `uncover` | $\color{green}{0.51}$ | $\color{green}{0.53}$ | $\color{green}{0.58}$ | $\color{green}{0.64}$ | $\color{green}{0.73}$ | $\color{green}{0.71}$ | $\color{green}{0.67}$ | $\color{green}{0.72}$ | $\color{green}{0.69}$ | $\color{green}{0.71}$ |
+| `flood` | $\color{green}{0.55}$ | $\color{green}{0.79}$ | $\color{green}{0.76}$ | $\color{green}{0.79}$ | $\color{green}{0.98}$ | $\color{red}{1.01}$ | $\color{green}{0.97}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.02}$ |
+| `browser` | $\color{green}{0.52}$ | $\color{green}{0.66}$ | $\color{green}{0.65}$ | $\color{green}{0.59}$ | $\color{green}{0.77}$ | $\color{green}{0.75}$ | $\color{green}{0.72}$ | $\color{green}{0.70}$ | $\color{green}{0.74}$ | $\color{green}{0.76}$ |
+| `drag` | $\color{green}{0.52}$ | $\color{green}{0.57}$ | $\color{green}{0.55}$ | $\color{green}{0.55}$ | $\color{green}{0.75}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.64}$ | $\color{green}{0.62}$ | $\color{green}{0.61}$ |
+| `video` | $\color{green}{0.76}$ | $\color{green}{0.94}$ | $\color{green}{0.98}$ | $\color{green}{0.92}$ | $\color{red}{1.06}$ | $\color{red}{1.01}$ | $\color{red}{1.05}$ | $\color{red}{1.01}$ | $\color{green}{0.95}$ | $\color{green}{0.99}$ |
+| `walk` | $\color{green}{0.79}$ | $\color{green}{0.93}$ | $\color{red}{1.02}$ | $\color{green}{0.87}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.94}$ | $\color{green}{0.93}$ |
 
 ### A keyframe at dial 90: bytes
 
@@ -629,8 +630,8 @@ This encoder's bytes over libvpx's.
 | `flood` | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | $\color{red}{1.01}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.98}$ |
 | `browser` | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | 1.00 | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
 | `drag` | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
-| `video` | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.02}$ |
-| `walk` | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | 1.00 | 1.00 | 1.00 | $\color{green}{0.99}$ | 1.00 |
+| `video` | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.02}$ |
+| `walk` | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | 1.00 | 1.00 | 1.00 | 1.00 | $\color{green}{0.99}$ | $\color{green}{0.99}$ |
 
 ### A keyframe at dial 90: luma PSNR
 
@@ -639,13 +640,13 @@ This encoder's less libvpx's, in dB.
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | `terminal` | $\color{green}{+0.6}$ | $\color{green}{+0.3}$ | $\color{green}{+0.6}$ | $\color{green}{+0.1}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ |
-| `still` | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ |
+| `still` | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
 | `uncover` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
-| `flood` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
-| `browser` | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ |
-| `drag` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
+| `flood` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
+| `browser` | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
+| `drag` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
 | `video` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
-| `walk` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
+| `walk` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
 
 ## Against libvpx, settles of each capture's first picture, a paused video's last
 
@@ -655,14 +656,14 @@ This encoder's least time over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.34}$ | $\color{green}{0.34}$ | $\color{green}{0.32}$ | $\color{green}{0.30}$ | $\color{green}{0.41}$ | $\color{green}{0.43}$ | $\color{green}{0.39}$ | $\color{green}{0.43}$ | $\color{green}{0.40}$ | $\color{green}{0.33}$ |
-| `still` | $\color{green}{0.52}$ | $\color{green}{0.68}$ | $\color{green}{0.70}$ | $\color{green}{0.66}$ | $\color{green}{0.82}$ | $\color{green}{0.80}$ | $\color{green}{0.76}$ | $\color{green}{0.80}$ | $\color{green}{0.81}$ | $\color{green}{0.76}$ |
-| `uncover` | $\color{green}{0.52}$ | $\color{green}{0.55}$ | $\color{green}{0.60}$ | $\color{green}{0.67}$ | $\color{green}{0.76}$ | $\color{green}{0.73}$ | $\color{green}{0.65}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.72}$ |
-| `flood` | $\color{green}{0.48}$ | $\color{green}{0.69}$ | $\color{green}{0.68}$ | $\color{green}{0.75}$ | 1.00 | 1.00 | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ |
-| `browser` | $\color{green}{0.53}$ | $\color{green}{0.67}$ | $\color{green}{0.75}$ | $\color{green}{0.66}$ | $\color{green}{0.80}$ | $\color{green}{0.78}$ | $\color{green}{0.74}$ | $\color{green}{0.79}$ | $\color{green}{0.80}$ | $\color{green}{0.74}$ |
-| `drag` | $\color{green}{0.53}$ | $\color{green}{0.53}$ | $\color{green}{0.51}$ | $\color{green}{0.49}$ | $\color{green}{0.75}$ | $\color{green}{0.69}$ | $\color{green}{0.65}$ | $\color{green}{0.65}$ | $\color{green}{0.59}$ | $\color{green}{0.57}$ |
-| `video` | $\color{green}{0.75}$ | $\color{green}{0.95}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{red}{1.18}$ | $\color{red}{1.13}$ | $\color{red}{1.14}$ | $\color{red}{1.10}$ | $\color{red}{1.14}$ | $\color{red}{1.11}$ |
-| `walk` | $\color{green}{0.75}$ | $\color{green}{0.92}$ | $\color{red}{1.02}$ | $\color{green}{0.96}$ | $\color{red}{1.17}$ | $\color{red}{1.08}$ | $\color{red}{1.09}$ | $\color{red}{1.08}$ | $\color{red}{1.11}$ | $\color{red}{1.04}$ |
+| `terminal` | $\color{green}{0.32}$ | $\color{green}{0.32}$ | $\color{green}{0.33}$ | $\color{green}{0.32}$ | $\color{green}{0.43}$ | $\color{green}{0.42}$ | $\color{green}{0.39}$ | $\color{green}{0.41}$ | $\color{green}{0.40}$ | $\color{green}{0.34}$ |
+| `still` | $\color{green}{0.52}$ | $\color{green}{0.66}$ | $\color{green}{0.68}$ | $\color{green}{0.64}$ | $\color{green}{0.79}$ | $\color{green}{0.78}$ | $\color{green}{0.76}$ | $\color{green}{0.79}$ | $\color{green}{0.81}$ | $\color{green}{0.76}$ |
+| `uncover` | $\color{green}{0.52}$ | $\color{green}{0.55}$ | $\color{green}{0.60}$ | $\color{green}{0.66}$ | $\color{green}{0.76}$ | $\color{green}{0.71}$ | $\color{green}{0.67}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.73}$ |
+| `flood` | $\color{green}{0.47}$ | $\color{green}{0.70}$ | $\color{green}{0.68}$ | $\color{green}{0.73}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.98}$ |
+| `browser` | $\color{green}{0.53}$ | $\color{green}{0.66}$ | $\color{green}{0.72}$ | $\color{green}{0.65}$ | $\color{green}{0.81}$ | $\color{green}{0.80}$ | $\color{green}{0.77}$ | $\color{green}{0.78}$ | $\color{green}{0.81}$ | $\color{green}{0.76}$ |
+| `drag` | $\color{green}{0.52}$ | $\color{green}{0.53}$ | $\color{green}{0.49}$ | $\color{green}{0.48}$ | $\color{green}{0.78}$ | $\color{green}{0.70}$ | $\color{green}{0.67}$ | $\color{green}{0.62}$ | $\color{green}{0.61}$ | $\color{green}{0.57}$ |
+| `video` | $\color{green}{0.72}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{red}{1.17}$ | $\color{red}{1.10}$ | $\color{red}{1.12}$ | $\color{red}{1.09}$ | $\color{red}{1.12}$ | $\color{red}{1.09}$ |
+| `walk` | $\color{green}{0.71}$ | $\color{green}{0.97}$ | 1.00 | $\color{green}{0.96}$ | $\color{red}{1.15}$ | $\color{red}{1.10}$ | $\color{red}{1.07}$ | $\color{red}{1.07}$ | $\color{red}{1.07}$ | $\color{red}{1.03}$ |
 
 ### A settle from dial 20 to 90: bytes
 
@@ -670,13 +671,13 @@ This encoder's bytes over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{red}{1.04}$ | $\color{green}{0.96}$ | $\color{green}{0.93}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.92}$ | $\color{green}{0.95}$ | $\color{green}{0.92}$ |
-| `still` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.95}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ |
-| `uncover` | $\color{green}{0.95}$ | $\color{green}{0.93}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.94}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ |
+| `terminal` | $\color{red}{1.04}$ | $\color{green}{0.96}$ | $\color{green}{0.92}$ | $\color{green}{0.97}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.94}$ | $\color{green}{0.92}$ | $\color{green}{0.95}$ | $\color{green}{0.93}$ |
+| `still` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ |
+| `uncover` | $\color{green}{0.96}$ | $\color{green}{0.93}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ |
 | `flood` | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ |
-| `browser` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.95}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ |
-| `drag` | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ |
-| `video` | $\color{green}{0.93}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.83}$ | $\color{green}{0.82}$ | $\color{green}{0.80}$ | $\color{green}{0.78}$ | $\color{green}{0.77}$ | $\color{green}{0.77}$ |
+| `browser` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ |
+| `drag` | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.99}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.98}$ | $\color{green}{0.99}$ | $\color{green}{0.98}$ |
+| `video` | $\color{green}{0.93}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.83}$ | $\color{green}{0.82}$ | $\color{green}{0.80}$ | $\color{green}{0.79}$ | $\color{green}{0.77}$ | $\color{green}{0.77}$ |
 | `walk` | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.90}$ | $\color{green}{0.81}$ | $\color{green}{0.81}$ | $\color{green}{0.79}$ | $\color{green}{0.78}$ | $\color{green}{0.77}$ | $\color{green}{0.77}$ |
 
 ### A settle from dial 20 to 90: luma PSNR
@@ -685,14 +686,14 @@ This encoder's less libvpx's, in dB.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{+0.2}$ | $\color{green}{+0.4}$ | $\color{green}{+1.0}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.4}$ |
+| `terminal` | $\color{green}{+0.1}$ | $\color{green}{+0.3}$ | $\color{green}{+1.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.4}$ |
 | `still` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ |
 | `uncover` | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ |
 | `flood` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ |
 | `browser` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ |
 | `drag` | 0.0 | 0.0 | 0.0 | 0.0 | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ |
-| `video` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ |
-| `walk` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ |
+| `video` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ |
+| `walk` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ | $\color{green}{+0.6}$ | $\color{green}{+0.7}$ |
 
 ### A settle from dial 65 to 90: time
 
@@ -700,14 +701,14 @@ This encoder's least time over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.49}$ | $\color{green}{0.49}$ | $\color{green}{0.41}$ | $\color{green}{0.45}$ | $\color{green}{0.68}$ | $\color{green}{0.65}$ | $\color{green}{0.61}$ | $\color{green}{0.60}$ | $\color{green}{0.60}$ | $\color{green}{0.59}$ |
-| `still` | $\color{red}{1.05}$ | $\color{red}{1.19}$ | $\color{red}{1.22}$ | $\color{red}{1.14}$ | $\color{red}{1.46}$ | $\color{red}{1.30}$ | $\color{red}{1.22}$ | $\color{red}{1.33}$ | $\color{red}{1.36}$ | $\color{red}{1.32}$ |
-| `uncover` | $\color{green}{0.98}$ | $\color{red}{1.03}$ | $\color{red}{1.08}$ | $\color{red}{1.20}$ | $\color{red}{1.33}$ | $\color{red}{1.27}$ | $\color{red}{1.22}$ | $\color{red}{1.27}$ | $\color{red}{1.32}$ | $\color{red}{1.42}$ |
-| `flood` | $\color{green}{0.77}$ | $\color{red}{1.04}$ | $\color{red}{1.08}$ | $\color{red}{1.14}$ | $\color{red}{1.54}$ | $\color{red}{1.64}$ | $\color{red}{1.68}$ | $\color{red}{1.72}$ | $\color{red}{1.59}$ | $\color{red}{1.70}$ |
-| `browser` | $\color{red}{1.01}$ | $\color{red}{1.19}$ | $\color{red}{1.35}$ | $\color{red}{1.20}$ | $\color{red}{1.44}$ | $\color{red}{1.32}$ | $\color{red}{1.23}$ | $\color{red}{1.30}$ | $\color{red}{1.40}$ | $\color{red}{1.28}$ |
-| `drag` | $\color{green}{0.94}$ | $\color{green}{0.88}$ | $\color{green}{0.87}$ | $\color{green}{0.83}$ | $\color{red}{1.26}$ | $\color{red}{1.12}$ | $\color{red}{1.06}$ | $\color{green}{0.99}$ | $\color{green}{0.87}$ | $\color{green}{0.88}$ |
-| `video` | $\color{red}{1.10}$ | $\color{red}{1.32}$ | $\color{red}{1.38}$ | $\color{red}{1.36}$ | $\color{red}{1.61}$ | $\color{red}{1.47}$ | $\color{red}{1.36}$ | $\color{red}{1.38}$ | $\color{red}{1.48}$ | $\color{red}{1.34}$ |
-| `walk` | $\color{red}{1.04}$ | $\color{red}{1.27}$ | $\color{red}{1.33}$ | $\color{red}{1.27}$ | $\color{red}{1.57}$ | $\color{red}{1.47}$ | $\color{red}{1.41}$ | $\color{red}{1.33}$ | $\color{red}{1.36}$ | $\color{red}{1.35}$ |
+| `terminal` | $\color{green}{0.43}$ | $\color{green}{0.43}$ | $\color{green}{0.49}$ | $\color{green}{0.46}$ | $\color{green}{0.61}$ | $\color{green}{0.64}$ | $\color{green}{0.58}$ | $\color{green}{0.57}$ | $\color{green}{0.62}$ | $\color{green}{0.56}$ |
+| `still` | $\color{red}{1.02}$ | $\color{red}{1.13}$ | $\color{red}{1.18}$ | $\color{red}{1.14}$ | $\color{red}{1.35}$ | $\color{red}{1.31}$ | $\color{red}{1.21}$ | $\color{red}{1.30}$ | $\color{red}{1.30}$ | $\color{red}{1.28}$ |
+| `uncover` | $\color{green}{0.95}$ | $\color{red}{1.05}$ | $\color{red}{1.11}$ | $\color{red}{1.19}$ | $\color{red}{1.32}$ | $\color{red}{1.25}$ | $\color{red}{1.19}$ | $\color{red}{1.21}$ | $\color{red}{1.32}$ | $\color{red}{1.40}$ |
+| `flood` | $\color{green}{0.75}$ | $\color{red}{1.06}$ | $\color{red}{1.04}$ | $\color{red}{1.14}$ | $\color{red}{1.56}$ | $\color{red}{1.60}$ | $\color{red}{1.60}$ | $\color{red}{1.66}$ | $\color{red}{1.56}$ | $\color{red}{1.61}$ |
+| `browser` | $\color{red}{1.01}$ | $\color{red}{1.16}$ | $\color{red}{1.28}$ | $\color{red}{1.11}$ | $\color{red}{1.35}$ | $\color{red}{1.31}$ | $\color{red}{1.17}$ | $\color{red}{1.26}$ | $\color{red}{1.31}$ | $\color{red}{1.30}$ |
+| `drag` | $\color{green}{0.93}$ | $\color{green}{0.86}$ | $\color{green}{0.80}$ | $\color{green}{0.82}$ | $\color{red}{1.22}$ | $\color{red}{1.13}$ | $\color{red}{1.04}$ | $\color{green}{0.99}$ | $\color{green}{0.89}$ | $\color{green}{0.88}$ |
+| `video` | $\color{red}{1.08}$ | $\color{red}{1.29}$ | $\color{red}{1.35}$ | $\color{red}{1.33}$ | $\color{red}{1.58}$ | $\color{red}{1.44}$ | $\color{red}{1.38}$ | $\color{red}{1.36}$ | $\color{red}{1.42}$ | $\color{red}{1.31}$ |
+| `walk` | $\color{red}{1.05}$ | $\color{red}{1.29}$ | $\color{red}{1.32}$ | $\color{red}{1.24}$ | $\color{red}{1.54}$ | $\color{red}{1.42}$ | $\color{red}{1.36}$ | $\color{red}{1.32}$ | $\color{red}{1.37}$ | $\color{red}{1.29}$ |
 
 ### A settle from dial 65 to 90: bytes
 
@@ -715,14 +716,14 @@ This encoder's bytes over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.97}$ | $\color{green}{0.95}$ | $\color{green}{0.93}$ | $\color{red}{1.01}$ | $\color{green}{0.93}$ | 1.00 | $\color{green}{0.96}$ | $\color{green}{0.99}$ | $\color{green}{0.97}$ | $\color{green}{0.95}$ |
+| `terminal` | $\color{green}{0.97}$ | $\color{green}{0.95}$ | $\color{green}{0.93}$ | $\color{red}{1.01}$ | $\color{green}{0.93}$ | 1.00 | $\color{green}{0.96}$ | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.95}$ |
 | `still` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ |
-| `uncover` | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.91}$ | $\color{green}{0.92}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ |
-| `flood` | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{red}{1.01}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ |
+| `uncover` | $\color{green}{0.91}$ | $\color{green}{0.90}$ | $\color{green}{0.91}$ | $\color{green}{0.92}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ |
+| `flood` | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{red}{1.01}$ | $\color{red}{1.02}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.02}$ |
 | `browser` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.95}$ | $\color{green}{0.96}$ |
 | `drag` | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.92}$ | $\color{green}{0.92}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ | $\color{green}{0.91}$ |
-| `video` | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.94}$ | $\color{green}{0.93}$ |
-| `walk` | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.96}$ | $\color{green}{0.94}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ |
+| `video` | $\color{green}{0.98}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{green}{0.94}$ | $\color{green}{0.94}$ |
+| `walk` | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.97}$ | $\color{green}{0.98}$ | $\color{green}{0.96}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{green}{0.95}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ |
 
 ### A settle from dial 65 to 90: luma PSNR
 
@@ -730,13 +731,13 @@ This encoder's less libvpx's, in dB.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{+1.6}$ | $\color{green}{+1.8}$ | $\color{green}{+0.7}$ | $\color{green}{+2.1}$ | $\color{green}{+0.7}$ | $\color{green}{+1.6}$ | $\color{green}{+0.9}$ | $\color{green}{+1.6}$ | $\color{green}{+1.5}$ | $\color{green}{+0.9}$ |
+| `terminal` | $\color{green}{+1.6}$ | $\color{green}{+1.8}$ | $\color{green}{+0.7}$ | $\color{green}{+2.1}$ | $\color{green}{+0.6}$ | $\color{green}{+1.6}$ | $\color{green}{+0.9}$ | $\color{green}{+1.6}$ | $\color{green}{+1.6}$ | $\color{green}{+0.9}$ |
 | `still` | $\color{green}{+1.1}$ | $\color{green}{+1.1}$ | $\color{green}{+1.1}$ | $\color{green}{+1.0}$ | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ |
-| `uncover` | $\color{green}{+1.4}$ | $\color{green}{+1.5}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.2}$ | $\color{green}{+1.2}$ | $\color{green}{+1.2}$ | $\color{green}{+1.3}$ | $\color{green}{+1.4}$ | $\color{green}{+1.3}$ |
+| `uncover` | $\color{green}{+1.4}$ | $\color{green}{+1.5}$ | $\color{green}{+1.5}$ | $\color{green}{+1.4}$ | $\color{green}{+1.2}$ | $\color{green}{+1.2}$ | $\color{green}{+1.2}$ | $\color{green}{+1.3}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ |
 | `flood` | $\color{green}{+0.9}$ | $\color{green}{+0.9}$ | $\color{green}{+0.8}$ | $\color{green}{+0.9}$ | $\color{green}{+1.4}$ | $\color{green}{+1.5}$ | $\color{green}{+1.5}$ | $\color{green}{+1.5}$ | $\color{green}{+1.4}$ | $\color{green}{+1.5}$ |
 | `browser` | $\color{green}{+1.1}$ | $\color{green}{+1.1}$ | $\color{green}{+1.2}$ | $\color{green}{+1.0}$ | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+1.3}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ |
 | `drag` | $\color{green}{+1.1}$ | $\color{green}{+1.2}$ | $\color{green}{+1.2}$ | $\color{green}{+1.2}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ | $\color{green}{+1.4}$ |
-| `video` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ |
+| `video` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ |
 | `walk` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ |
 
 ### A settle from dial 80 to 90: time
@@ -745,14 +746,14 @@ This encoder's least time over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.39}$ | $\color{green}{0.41}$ | $\color{green}{0.40}$ | $\color{green}{0.43}$ | $\color{green}{0.57}$ | $\color{green}{0.58}$ | $\color{green}{0.55}$ | $\color{green}{0.54}$ | $\color{green}{0.55}$ | $\color{green}{0.55}$ |
-| `still` | $\color{green}{0.81}$ | $\color{green}{0.92}$ | 1.00 | $\color{green}{0.96}$ | $\color{red}{1.10}$ | $\color{red}{1.08}$ | $\color{red}{1.04}$ | $\color{red}{1.04}$ | $\color{red}{1.08}$ | $\color{red}{1.05}$ |
-| `uncover` | $\color{green}{0.90}$ | $\color{green}{0.87}$ | $\color{green}{0.93}$ | 1.00 | $\color{red}{1.12}$ | $\color{red}{1.02}$ | $\color{red}{1.01}$ | $\color{red}{1.03}$ | $\color{red}{1.05}$ | $\color{red}{1.09}$ |
-| `flood` | $\color{green}{0.99}$ | $\color{red}{1.29}$ | $\color{red}{1.38}$ | $\color{red}{1.41}$ | $\color{red}{1.91}$ | $\color{red}{1.91}$ | $\color{red}{1.96}$ | $\color{red}{1.87}$ | $\color{red}{1.83}$ | $\color{red}{1.89}$ |
-| `browser` | $\color{green}{0.85}$ | $\color{green}{0.93}$ | $\color{red}{1.04}$ | $\color{green}{0.98}$ | $\color{red}{1.12}$ | $\color{red}{1.06}$ | $\color{red}{1.03}$ | $\color{red}{1.02}$ | $\color{red}{1.09}$ | $\color{red}{1.04}$ |
-| `drag` | $\color{green}{0.75}$ | $\color{green}{0.73}$ | $\color{green}{0.70}$ | $\color{green}{0.71}$ | $\color{green}{0.99}$ | $\color{green}{0.86}$ | $\color{green}{0.88}$ | $\color{green}{0.81}$ | $\color{green}{0.79}$ | $\color{green}{0.75}$ |
-| `video` | $\color{red}{1.05}$ | $\color{red}{1.21}$ | $\color{red}{1.24}$ | $\color{red}{1.15}$ | $\color{red}{1.52}$ | $\color{red}{1.35}$ | $\color{red}{1.35}$ | $\color{red}{1.30}$ | $\color{red}{1.44}$ | $\color{red}{1.32}$ |
-| `walk` | $\color{green}{0.93}$ | $\color{red}{1.20}$ | $\color{red}{1.21}$ | $\color{red}{1.14}$ | $\color{red}{1.46}$ | $\color{red}{1.43}$ | $\color{red}{1.33}$ | $\color{red}{1.33}$ | $\color{red}{1.45}$ | $\color{red}{1.31}$ |
+| `terminal` | $\color{green}{0.41}$ | $\color{green}{0.40}$ | $\color{green}{0.40}$ | $\color{green}{0.41}$ | $\color{green}{0.57}$ | $\color{green}{0.57}$ | $\color{green}{0.53}$ | $\color{green}{0.52}$ | $\color{green}{0.55}$ | $\color{green}{0.53}$ |
+| `still` | $\color{green}{0.83}$ | $\color{green}{0.93}$ | $\color{green}{0.95}$ | $\color{green}{0.94}$ | $\color{red}{1.07}$ | $\color{red}{1.05}$ | $\color{green}{0.99}$ | $\color{red}{1.02}$ | $\color{red}{1.06}$ | $\color{red}{1.03}$ |
+| `uncover` | $\color{green}{0.83}$ | $\color{green}{0.83}$ | $\color{green}{0.85}$ | $\color{green}{0.97}$ | $\color{red}{1.06}$ | $\color{green}{0.99}$ | $\color{green}{0.97}$ | $\color{green}{0.96}$ | $\color{red}{1.01}$ | $\color{red}{1.03}$ |
+| `flood` | $\color{green}{0.98}$ | $\color{red}{1.31}$ | $\color{red}{1.36}$ | $\color{red}{1.37}$ | $\color{red}{1.80}$ | $\color{red}{1.82}$ | $\color{red}{1.78}$ | $\color{red}{1.79}$ | $\color{red}{1.79}$ | $\color{red}{1.85}$ |
+| `browser` | $\color{green}{0.83}$ | $\color{green}{0.94}$ | $\color{green}{0.99}$ | $\color{green}{0.94}$ | $\color{red}{1.05}$ | $\color{red}{1.04}$ | $\color{green}{0.99}$ | 1.00 | $\color{red}{1.05}$ | $\color{green}{0.98}$ |
+| `drag` | $\color{green}{0.77}$ | $\color{green}{0.72}$ | $\color{green}{0.71}$ | $\color{green}{0.64}$ | $\color{green}{0.97}$ | $\color{green}{0.86}$ | $\color{green}{0.82}$ | $\color{green}{0.78}$ | $\color{green}{0.77}$ | $\color{green}{0.73}$ |
+| `video` | $\color{red}{1.01}$ | $\color{red}{1.16}$ | $\color{red}{1.20}$ | $\color{red}{1.12}$ | $\color{red}{1.43}$ | $\color{red}{1.29}$ | $\color{red}{1.29}$ | $\color{red}{1.30}$ | $\color{red}{1.41}$ | $\color{red}{1.31}$ |
+| `walk` | $\color{green}{0.94}$ | $\color{red}{1.22}$ | $\color{red}{1.17}$ | $\color{red}{1.13}$ | $\color{red}{1.44}$ | $\color{red}{1.31}$ | $\color{red}{1.29}$ | $\color{red}{1.27}$ | $\color{red}{1.37}$ | $\color{red}{1.25}$ |
 
 ### A settle from dial 80 to 90: bytes
 
@@ -760,14 +761,14 @@ This encoder's bytes over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.83}$ | $\color{green}{0.87}$ | $\color{green}{0.72}$ | $\color{red}{1.13}$ | $\color{green}{0.56}$ | $\color{green}{0.83}$ | $\color{green}{0.75}$ | $\color{green}{0.94}$ | $\color{green}{0.91}$ | $\color{green}{0.75}$ |
-| `still` | $\color{green}{0.70}$ | $\color{green}{0.70}$ | $\color{green}{0.64}$ | $\color{green}{0.67}$ | $\color{green}{0.70}$ | $\color{green}{0.76}$ | $\color{green}{0.79}$ | $\color{green}{0.72}$ | $\color{green}{0.73}$ | $\color{green}{0.71}$ |
-| `uncover` | $\color{green}{0.70}$ | $\color{green}{0.69}$ | $\color{green}{0.65}$ | $\color{green}{0.69}$ | $\color{green}{0.73}$ | $\color{green}{0.74}$ | $\color{green}{0.75}$ | $\color{green}{0.73}$ | $\color{green}{0.70}$ | $\color{green}{0.71}$ |
+| `terminal` | $\color{green}{0.83}$ | $\color{green}{0.87}$ | $\color{green}{0.72}$ | $\color{red}{1.13}$ | $\color{green}{0.56}$ | $\color{green}{0.83}$ | $\color{green}{0.75}$ | $\color{green}{0.93}$ | $\color{green}{0.93}$ | $\color{green}{0.77}$ |
+| `still` | $\color{green}{0.70}$ | $\color{green}{0.70}$ | $\color{green}{0.65}$ | $\color{green}{0.68}$ | $\color{green}{0.71}$ | $\color{green}{0.76}$ | $\color{green}{0.79}$ | $\color{green}{0.72}$ | $\color{green}{0.74}$ | $\color{green}{0.71}$ |
+| `uncover` | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.65}$ | $\color{green}{0.69}$ | $\color{green}{0.74}$ | $\color{green}{0.75}$ | $\color{green}{0.75}$ | $\color{green}{0.74}$ | $\color{green}{0.71}$ | $\color{green}{0.72}$ |
 | `flood` | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.01}$ | $\color{red}{1.08}$ | $\color{red}{1.10}$ | $\color{red}{1.08}$ | $\color{red}{1.07}$ | $\color{red}{1.08}$ | $\color{red}{1.09}$ |
-| `browser` | $\color{green}{0.70}$ | $\color{green}{0.70}$ | $\color{green}{0.64}$ | $\color{green}{0.67}$ | $\color{green}{0.70}$ | $\color{green}{0.76}$ | $\color{green}{0.79}$ | $\color{green}{0.72}$ | $\color{green}{0.73}$ | $\color{green}{0.71}$ |
-| `drag` | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.70}$ |
-| `video` | $\color{green}{0.83}$ | $\color{green}{0.82}$ | $\color{green}{0.81}$ | $\color{green}{0.79}$ | $\color{green}{0.79}$ | $\color{green}{0.79}$ | $\color{green}{0.80}$ | $\color{green}{0.81}$ | $\color{green}{0.85}$ | $\color{green}{0.82}$ |
-| `walk` | $\color{green}{0.85}$ | $\color{green}{0.84}$ | $\color{green}{0.84}$ | $\color{green}{0.82}$ | $\color{green}{0.82}$ | $\color{green}{0.81}$ | $\color{green}{0.84}$ | $\color{green}{0.85}$ | $\color{green}{0.87}$ | $\color{green}{0.85}$ |
+| `browser` | $\color{green}{0.70}$ | $\color{green}{0.70}$ | $\color{green}{0.65}$ | $\color{green}{0.68}$ | $\color{green}{0.71}$ | $\color{green}{0.76}$ | $\color{green}{0.79}$ | $\color{green}{0.72}$ | $\color{green}{0.74}$ | $\color{green}{0.71}$ |
+| `drag` | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.70}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.69}$ | $\color{green}{0.70}$ | $\color{green}{0.70}$ |
+| `video` | $\color{green}{0.83}$ | $\color{green}{0.82}$ | $\color{green}{0.81}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.79}$ | $\color{green}{0.80}$ | $\color{green}{0.82}$ | $\color{green}{0.85}$ | $\color{green}{0.83}$ |
+| `walk` | $\color{green}{0.85}$ | $\color{green}{0.85}$ | $\color{green}{0.85}$ | $\color{green}{0.83}$ | $\color{green}{0.82}$ | $\color{green}{0.82}$ | $\color{green}{0.85}$ | $\color{green}{0.86}$ | $\color{green}{0.88}$ | $\color{green}{0.85}$ |
 
 ### A settle from dial 80 to 90: luma PSNR
 
@@ -775,12 +776,12 @@ This encoder's less libvpx's, in dB.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | 0.0 | $\color{green}{+0.6}$ | $\color{red}{-0.4}$ | $\color{green}{+0.2}$ | 0.0 | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{red}{-0.1}$ |
-| `still` | 0.0 | 0.0 | 0.0 | 0.0 | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ |
-| `uncover` | $\color{red}{-0.2}$ | $\color{red}{-0.1}$ | $\color{red}{-0.1}$ | $\color{red}{-0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ |
+| `terminal` | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | 0.0 | $\color{green}{+0.6}$ | $\color{red}{-0.4}$ | $\color{green}{+0.2}$ | 0.0 | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | 0.0 |
+| `still` | 0.0 | 0.0 | $\color{green}{+0.1}$ | 0.0 | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ |
+| `uncover` | $\color{red}{-0.2}$ | $\color{red}{-0.1}$ | $\color{red}{-0.1}$ | 0.0 | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ |
 | `flood` | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.7}$ | $\color{green}{+0.8}$ | $\color{green}{+0.7}$ |
-| `browser` | 0.0 | 0.0 | 0.0 | 0.0 | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ |
-| `drag` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | 0.0 | 0.0 | $\color{green}{+0.1}$ |
+| `browser` | 0.0 | 0.0 | 0.0 | 0.0 | $\color{green}{+0.1}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ |
+| `drag` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ | $\color{green}{+0.1}$ |
 | `video` | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ |
 | `walk` | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
 
@@ -790,14 +791,14 @@ This encoder's least time over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.38}$ | $\color{green}{0.36}$ | $\color{green}{0.36}$ | $\color{green}{0.36}$ | $\color{green}{0.53}$ | $\color{green}{0.52}$ | $\color{green}{0.52}$ | $\color{green}{0.51}$ | $\color{green}{0.55}$ | $\color{green}{0.54}$ |
-| `still` | $\color{green}{0.72}$ | $\color{green}{0.82}$ | $\color{green}{0.84}$ | $\color{green}{0.82}$ | $\color{green}{0.88}$ | $\color{green}{0.92}$ | $\color{green}{0.83}$ | $\color{green}{0.90}$ | $\color{green}{0.91}$ | $\color{green}{0.89}$ |
-| `uncover` | $\color{green}{0.85}$ | $\color{green}{0.79}$ | $\color{green}{0.85}$ | $\color{green}{0.85}$ | $\color{green}{0.89}$ | $\color{green}{0.91}$ | $\color{green}{0.87}$ | $\color{green}{0.90}$ | $\color{green}{0.90}$ | $\color{green}{0.90}$ |
-| `flood` | $\color{red}{1.07}$ | $\color{red}{1.37}$ | $\color{red}{1.39}$ | $\color{red}{1.38}$ | $\color{red}{1.68}$ | $\color{red}{1.71}$ | $\color{red}{1.66}$ | $\color{red}{1.68}$ | $\color{red}{1.75}$ | $\color{red}{1.77}$ |
-| `browser` | $\color{green}{0.75}$ | $\color{green}{0.79}$ | $\color{green}{0.91}$ | $\color{green}{0.84}$ | $\color{green}{0.89}$ | $\color{green}{0.92}$ | $\color{green}{0.87}$ | $\color{green}{0.85}$ | $\color{green}{0.90}$ | $\color{green}{0.85}$ |
-| `drag` | $\color{green}{0.69}$ | $\color{green}{0.67}$ | $\color{green}{0.64}$ | $\color{green}{0.62}$ | $\color{green}{0.82}$ | $\color{green}{0.76}$ | $\color{green}{0.75}$ | $\color{green}{0.70}$ | $\color{green}{0.70}$ | $\color{green}{0.68}$ |
-| `video` | $\color{green}{0.88}$ | $\color{red}{1.07}$ | $\color{red}{1.10}$ | $\color{red}{1.06}$ | $\color{red}{1.44}$ | $\color{red}{1.33}$ | $\color{red}{1.29}$ | $\color{red}{1.31}$ | $\color{red}{1.40}$ | $\color{red}{1.29}$ |
-| `walk` | $\color{green}{0.87}$ | $\color{red}{1.09}$ | $\color{red}{1.07}$ | $\color{red}{1.08}$ | $\color{red}{1.39}$ | $\color{red}{1.31}$ | $\color{red}{1.30}$ | $\color{red}{1.31}$ | $\color{red}{1.28}$ | $\color{red}{1.34}$ |
+| `terminal` | $\color{green}{0.38}$ | $\color{green}{0.34}$ | $\color{green}{0.40}$ | $\color{green}{0.36}$ | $\color{green}{0.52}$ | $\color{green}{0.54}$ | $\color{green}{0.51}$ | $\color{green}{0.49}$ | $\color{green}{0.53}$ | $\color{green}{0.52}$ |
+| `still` | $\color{green}{0.71}$ | $\color{green}{0.79}$ | $\color{green}{0.84}$ | $\color{green}{0.84}$ | $\color{green}{0.90}$ | $\color{green}{0.93}$ | $\color{green}{0.84}$ | $\color{green}{0.85}$ | $\color{green}{0.91}$ | $\color{green}{0.86}$ |
+| `uncover` | $\color{green}{0.85}$ | $\color{green}{0.80}$ | $\color{green}{0.78}$ | $\color{green}{0.83}$ | $\color{green}{0.90}$ | $\color{green}{0.85}$ | $\color{green}{0.83}$ | $\color{green}{0.84}$ | $\color{green}{0.86}$ | $\color{green}{0.89}$ |
+| `flood` | $\color{red}{1.07}$ | $\color{red}{1.36}$ | $\color{red}{1.35}$ | $\color{red}{1.38}$ | $\color{red}{1.64}$ | $\color{red}{1.62}$ | $\color{red}{1.63}$ | $\color{red}{1.64}$ | $\color{red}{1.77}$ | $\color{red}{1.73}$ |
+| `browser` | $\color{green}{0.73}$ | $\color{green}{0.82}$ | $\color{green}{0.85}$ | $\color{green}{0.81}$ | $\color{green}{0.90}$ | $\color{green}{0.89}$ | $\color{green}{0.83}$ | $\color{green}{0.84}$ | $\color{green}{0.90}$ | $\color{green}{0.86}$ |
+| `drag` | $\color{green}{0.69}$ | $\color{green}{0.65}$ | $\color{green}{0.61}$ | $\color{green}{0.63}$ | $\color{green}{0.84}$ | $\color{green}{0.77}$ | $\color{green}{0.71}$ | $\color{green}{0.69}$ | $\color{green}{0.68}$ | $\color{green}{0.64}$ |
+| `video` | $\color{green}{0.88}$ | $\color{red}{1.06}$ | $\color{red}{1.05}$ | $\color{red}{1.01}$ | $\color{red}{1.42}$ | $\color{red}{1.32}$ | $\color{red}{1.25}$ | $\color{red}{1.24}$ | $\color{red}{1.37}$ | $\color{red}{1.26}$ |
+| `walk` | $\color{green}{0.90}$ | $\color{red}{1.02}$ | $\color{red}{1.05}$ | $\color{red}{1.06}$ | $\color{red}{1.36}$ | $\color{red}{1.30}$ | $\color{red}{1.24}$ | $\color{red}{1.24}$ | $\color{red}{1.36}$ | $\color{red}{1.26}$ |
 
 ### A settle from dial 89 to 90: bytes
 
@@ -805,14 +806,14 @@ This encoder's bytes over libvpx's.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{0.98}$ | $\color{red}{1.44}$ | $\color{red}{1.16}$ | $\color{red}{1.55}$ | $\color{green}{0.62}$ | $\color{green}{0.80}$ | $\color{green}{0.80}$ | $\color{green}{0.66}$ | $\color{green}{0.94}$ | $\color{green}{0.66}$ |
-| `still` | $\color{green}{0.70}$ | $\color{green}{0.65}$ | $\color{green}{0.76}$ | $\color{green}{0.74}$ | $\color{green}{0.58}$ | $\color{green}{0.79}$ | $\color{green}{0.75}$ | $\color{green}{0.66}$ | $\color{green}{0.70}$ | $\color{green}{0.71}$ |
-| `uncover` | $\color{red}{1.05}$ | $\color{green}{0.98}$ | $\color{green}{0.77}$ | $\color{green}{0.75}$ | $\color{green}{0.39}$ | $\color{green}{0.43}$ | $\color{green}{0.44}$ | $\color{green}{0.49}$ | $\color{green}{0.48}$ | $\color{green}{0.54}$ |
-| `flood` | $\color{green}{0.79}$ | $\color{green}{0.82}$ | $\color{green}{0.78}$ | $\color{green}{0.82}$ | $\color{green}{0.81}$ | $\color{green}{0.82}$ | $\color{green}{0.78}$ | $\color{green}{0.79}$ | $\color{green}{0.81}$ | $\color{green}{0.83}$ |
-| `browser` | $\color{green}{0.70}$ | $\color{green}{0.65}$ | $\color{green}{0.67}$ | $\color{green}{0.74}$ | $\color{green}{0.58}$ | $\color{green}{0.79}$ | $\color{green}{0.75}$ | $\color{green}{0.66}$ | $\color{green}{0.70}$ | $\color{green}{0.71}$ |
-| `drag` | $\color{green}{0.53}$ | $\color{green}{0.54}$ | $\color{green}{0.53}$ | $\color{green}{0.53}$ | $\color{green}{0.41}$ | $\color{green}{0.40}$ | $\color{green}{0.42}$ | $\color{green}{0.40}$ | $\color{green}{0.41}$ | $\color{green}{0.39}$ |
-| `video` | $\color{green}{0.75}$ | $\color{green}{0.76}$ | $\color{green}{0.86}$ | $\color{green}{0.88}$ | $\color{red}{1.03}$ | $\color{red}{1.08}$ | $\color{red}{1.19}$ | $\color{red}{1.24}$ | $\color{red}{1.19}$ | $\color{red}{1.32}$ |
-| `walk` | $\color{green}{0.75}$ | $\color{green}{0.81}$ | $\color{green}{0.84}$ | $\color{green}{0.84}$ | $\color{red}{1.05}$ | $\color{red}{1.09}$ | $\color{red}{1.18}$ | $\color{red}{1.27}$ | $\color{red}{1.15}$ | $\color{red}{1.24}$ |
+| `terminal` | $\color{green}{0.98}$ | $\color{red}{1.44}$ | $\color{red}{1.16}$ | $\color{red}{1.55}$ | $\color{green}{0.62}$ | $\color{green}{0.80}$ | $\color{green}{0.87}$ | $\color{green}{0.66}$ | $\color{green}{0.94}$ | $\color{green}{0.70}$ |
+| `still` | $\color{green}{0.71}$ | $\color{green}{0.66}$ | $\color{green}{0.76}$ | $\color{green}{0.75}$ | $\color{green}{0.59}$ | $\color{green}{0.83}$ | $\color{green}{0.78}$ | $\color{green}{0.67}$ | $\color{green}{0.72}$ | $\color{green}{0.72}$ |
+| `uncover` | $\color{green}{0.91}$ | $\color{green}{0.89}$ | $\color{green}{0.70}$ | $\color{green}{0.70}$ | $\color{green}{0.39}$ | $\color{green}{0.44}$ | $\color{green}{0.44}$ | $\color{green}{0.50}$ | $\color{green}{0.49}$ | $\color{green}{0.55}$ |
+| `flood` | $\color{green}{0.79}$ | $\color{green}{0.82}$ | $\color{green}{0.78}$ | $\color{green}{0.83}$ | $\color{green}{0.81}$ | $\color{green}{0.83}$ | $\color{green}{0.78}$ | $\color{green}{0.80}$ | $\color{green}{0.81}$ | $\color{green}{0.83}$ |
+| `browser` | $\color{green}{0.71}$ | $\color{green}{0.66}$ | $\color{green}{0.67}$ | $\color{green}{0.75}$ | $\color{green}{0.59}$ | $\color{green}{0.83}$ | $\color{green}{0.78}$ | $\color{green}{0.67}$ | $\color{green}{0.72}$ | $\color{green}{0.72}$ |
+| `drag` | $\color{green}{0.53}$ | $\color{green}{0.54}$ | $\color{green}{0.53}$ | $\color{green}{0.53}$ | $\color{green}{0.42}$ | $\color{green}{0.41}$ | $\color{green}{0.43}$ | $\color{green}{0.42}$ | $\color{green}{0.42}$ | $\color{green}{0.40}$ |
+| `video` | $\color{green}{0.74}$ | $\color{green}{0.78}$ | $\color{green}{0.84}$ | $\color{green}{0.88}$ | $\color{red}{1.02}$ | $\color{red}{1.10}$ | $\color{red}{1.20}$ | $\color{red}{1.26}$ | $\color{red}{1.19}$ | $\color{red}{1.32}$ |
+| `walk` | $\color{green}{0.76}$ | $\color{green}{0.82}$ | $\color{green}{0.85}$ | $\color{green}{0.88}$ | $\color{red}{1.06}$ | $\color{red}{1.08}$ | $\color{red}{1.20}$ | $\color{red}{1.27}$ | $\color{red}{1.15}$ | $\color{red}{1.25}$ |
 
 ### A settle from dial 89 to 90: luma PSNR
 
@@ -820,10 +821,10 @@ This encoder's less libvpx's, in dB.
 
 | Capture | 1280×800 | 1440×900 | 1600×1000 | 1920×1080 | 2048×1536@2 | 2560×1600@2 | 2880×1800@2 | 3200×2000@2 | 3456×2168@2 | 3840×2160@2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `terminal` | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.2}$ |
+| `terminal` | $\color{green}{+0.5}$ | $\color{green}{+0.7}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.3}$ |
 | `still` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
 | `uncover` | $\color{green}{+0.5}$ | $\color{green}{+0.6}$ | $\color{green}{+0.6}$ | $\color{green}{+0.5}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ | $\color{green}{+0.3}$ |
-| `flood` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ |
+| `flood` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.4}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ |
 | `browser` | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ | $\color{green}{+0.4}$ |
 | `drag` | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.2}$ | $\color{green}{+0.3}$ | $\color{green}{+0.2}$ |
 | `video` | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ | $\color{green}{+0.5}$ |
