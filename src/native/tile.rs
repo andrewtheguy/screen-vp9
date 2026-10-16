@@ -75,6 +75,18 @@ const INTRA_BITS: i64 = 24;
 /// fewer but `uncover`'s at 1.01×.
 const RATE_WEIGHT: i64 = 35;
 
+/// What a bit is worth, as `RATE_WEIGHT`, in the transform blocks of an
+/// inter block at a vector the superblock's anchors gave: content that
+/// arrived whole from the frame before, a window dragged or a page
+/// scrolled, whose error the frames after it carry along with it where a
+/// video's changes under its vector. On `drag` from 2048 wide its frames
+/// after the keyframe took 0.975 of their bytes for 0.64 to 0.68 dB more
+/// at 17 than at 35, and a video's blocks are not at such vectors: the whole
+/// frame at 17 cost `video` 4% of its bytes for 0.1 dB. Whether a square is
+/// coded intra or inter is still weighed at `RATE_WEIGHT`: at this weight
+/// there it took `terminal`'s text inter for 0.10 dB.
+const CARRIED_WEIGHT: i64 = 17;
+
 /// How many times the cost of a whole vector's prediction the whole
 /// vectors around it each cost more for nothing to be looked for between
 /// pixels (`refine`). The search found nothing on seven tenths of `drag`'s
@@ -253,7 +265,7 @@ pub(super) struct Previous<'a> {
     /// neighbour of it may be coded. One it does not touch is left as it
     /// is, in the reference, and not written to the reconstruction.
     pub(super) touched: &'a [bool],
-    pub(super) vectors: &'a [[Mv; motion::VECTORS]],
+    pub(super) vectors: &'a [motion::Offered],
 }
 
 /// How a block is coded.
@@ -600,18 +612,18 @@ struct Measure {
 /// their bits and cleared where coding nothing of the block costs less:
 /// the levels' bits at the frame's starting probabilities, and the end of
 /// block of the levels kept, and the error they leave, a bit weighed at
-/// `RATE_WEIGHT`. libvpx's realtime encoder skips a block whose residual
+/// `rate`, `RATE_WEIGHT` or `CARRIED_WEIGHT`. libvpx's realtime encoder skips a block whose residual
 /// costs more than it saves (`vp9_pick_inter_mode`); a settle's residual,
 /// the previous frame's quantization error, leaves a lone level deep in
 /// the scan of many a block, a hundred zero tokens for one coefficient.
 #[allow(clippy::too_many_arguments)]
-fn worth_coding(costs: &tokens::Costs, map: &mut [u8; 1024], quantizer: &Quantizer, side: usize, kind: tokens::Kind, coeffs: &[i16], levels: &mut [i16], eob: usize, error: i64) -> (usize, u32, i64) {
+fn worth_coding(costs: &tokens::Costs, map: &mut [u8; 1024], quantizer: &Quantizer, rate: i64, side: usize, kind: tokens::Kind, coeffs: &[i16], levels: &mut [i16], eob: usize, error: i64) -> (usize, u32, i64) {
     let bits = tokens::estimate(costs, kind, 0, levels, eob, map);
     if eob == 0 {
         return (0, bits, error);
     }
     let ac = i64::from(quantizer.ac_step());
-    let weight = RATE_WEIGHT * ac * ac;
+    let weight = rate * ac * ac;
     let nothing = tokens::estimate(costs, kind, 0, &[], 0, map);
     let left = Quantizer::energy(side, coeffs);
     if left * 256_000 + weight * i64::from(nothing) <= error * 256_000 + weight * i64::from(bits) {
@@ -709,6 +721,9 @@ struct Tile<'a> {
     /// The variance an inter square is split above, `INTER_SPLIT` eighths
     /// of the step.
     inter_split_variance: i64,
+    /// What a bit is worth in the inter block being coded, at the vector
+    /// it is coded at (`Tile::rate`).
+    rate: i64,
     /// The superblock being coded, per 8×8 in raster order.
     measures: [Measure; 64],
     /// Per 8×8 of the superblock and per plane, the sums of its source's
@@ -775,6 +790,7 @@ impl<'a> Tile<'a> {
             failed,
             split_variance: i64::from(frame.quantizer.ac_step()) * SPLIT_NUM / SPLIT_VARIANCE,
             inter_split_variance: i64::from(frame.quantizer.ac_step()) * INTER_SPLIT / 8,
+            rate: RATE_WEIGHT,
             measures: [Measure::default(); 64],
             line_sums: [[([0; 8], [0; 8]); 3]; 64],
             summed: 0,
@@ -1240,7 +1256,7 @@ impl<'a> Tile<'a> {
                 // clearly better than the others to be taken. Each is ranked
                 // by the squares of its residual, its mean with them: what a
                 // vector leaves as an offset is coded too.
-                let searched = previous.vectors[(mi_row >> SB_LOG2) * self.geometry.sb_cols + (mi_col >> SB_LOG2)];
+                let searched = previous.vectors[(mi_row >> SB_LOG2) * self.geometry.sb_cols + (mi_col >> SB_LOG2)].vectors;
                 let predicted = self.candidates(mi_row, mi_col, n);
                 let mut best = (Mv::ZERO, total.residual.squares, total.residual);
                 let mut tried = [Mv::ZERO; 1 + 2 + motion::VECTORS];
@@ -1491,6 +1507,17 @@ impl<'a> Tile<'a> {
         }
     }
 
+    /// What a bit is worth in an inter block at `(mi_row, mi_col)` coded at
+    /// `mv`: `CARRIED_WEIGHT` at a whole vector other than zero that the
+    /// superblock's anchors gave, else `RATE_WEIGHT`.
+    fn rate_at(&self, mi_row: usize, mi_col: usize, mv: Mv) -> i64 {
+        let carried = mv != Mv::ZERO
+            && mv.row % 8 == 0
+            && mv.col % 8 == 0
+            && self.previous.as_ref().is_some_and(|p| p.vectors[(mi_row >> SB_LOG2) * self.geometry.sb_cols + (mi_col >> SB_LOG2)].anchored(mv));
+        if carried { CARRIED_WEIGHT } else { RATE_WEIGHT }
+    }
+
     /// libvpx's `partition_plane_context`.
     fn partition_context(&self, mi_row: usize, mi_col: usize, n: u32) -> usize {
         let above = (self.above_partition[mi_col - self.mi_col_start] >> n) & 1;
@@ -1588,7 +1615,7 @@ impl<'a> Tile<'a> {
     /// above's, which ends the trial as it would have at the end.
     fn trial(&mut self, mi_row: usize, mi_col: usize, n: u32) -> (usize, i64) {
         let ac = i64::from(self.quantizer.ac_step());
-        let weight = RATE_WEIGHT * ac * ac;
+        let weight = self.rate * ac * ac;
         let mut best = (i64::MAX, 0);
         for tx in (0..=(n as usize + 1).min(3)).rev() {
             let side = 4 << tx;
@@ -1600,7 +1627,7 @@ impl<'a> Tile<'a> {
                 self.transform(0, mi_col * 8 + x, mi_row * 8 + y, side, TxType::DctDct);
                 let levels = &mut self.levels[0][i * area..][..area];
                 let (eob, error) = self.quantizer.quantize_with_error(side, false, tokens::scan(tx, TxType::DctDct).inverse, &self.coeffs[..area], levels);
-                let (eob, bits, error) = worth_coding(self.costs, &mut self.map, self.quantizer, side, kind, &self.coeffs[..area], levels, eob, error);
+                let (eob, bits, error) = worth_coding(self.costs, &mut self.map, self.quantizer, self.rate, side, kind, &self.coeffs[..area], levels, eob, error);
                 // In 256000ths of the squared error on the coefficients'
                 // scale, which is 64 times that in pixels.
                 cost += error * 256_000 + weight * i64::from(bits);
@@ -1665,7 +1692,9 @@ impl<'a> Tile<'a> {
         let found = if self.still(mi_row, mi_col, n) { None } else { self.refine(mi_row, mi_col, n, mv) };
         let ac = i64::from(self.quantizer.ac_step());
         let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
-        let with = |cost: i64, v: Mv| cost + RATE_WEIGHT * ac * ac * i64::from(prices.of(v).0);
+        let with = |cost: i64, v: Mv, rate: i64| cost + rate * ac * ac * i64::from(prices.of(v).0);
+        let rate = self.rate_at(mi_row, mi_col, mv);
+        self.rate = rate;
         // The luma coded at `mv`: `trial` reads the luma alone, so the
         // chroma is predicted once, at the vector taken. With `known` the
         // levels are in `levels` but the prediction is not in `recon`.
@@ -1678,20 +1707,23 @@ impl<'a> Tile<'a> {
         };
         let Some(other) = found else {
             self.predict_inter(mi_row, mi_col, n, mv, if known.is_some() { 0..3 } else { 1..3 });
-            return (Mode::Inter(mv), tx, with(cost, mv));
+            return (Mode::Inter(mv), tx, with(cost, mv, rate));
         };
         std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
         std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
         self.take_refined(mi_row, mi_col, n);
+        let other_rate = self.rate_at(mi_row, mi_col, other);
+        self.rate = other_rate;
         let (other_tx, other_cost) = self.trial(mi_row, mi_col, n);
-        if with(other_cost, other) < with(cost, mv) {
+        if with(other_cost, other, other_rate) < with(cost, mv, rate) {
             self.predict_inter(mi_row, mi_col, n, other, 1..3);
-            return (Mode::Inter(other), other_tx, with(other_cost, other));
+            return (Mode::Inter(other), other_tx, with(other_cost, other, other_rate));
         }
+        self.rate = rate;
         std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
         std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
         self.predict_inter(mi_row, mi_col, n, mv, 0..3);
-        (Mode::Inter(mv), tx, with(cost, mv))
+        (Mode::Inter(mv), tx, with(cost, mv, rate))
     }
 
     /// What the square block of `1 << n` 8×8s at `(mi_row, mi_col)` chosen
@@ -1733,8 +1765,10 @@ impl<'a> Tile<'a> {
                 let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
                 // `trial` reads the luma alone.
                 self.predict_inter(mi_row, mi_col, n, mv, 0..1);
+                // Weighed against intra at the weight intra is.
+                self.rate = RATE_WEIGHT;
                 let (inter_tx, trial_cost) = self.trial(mi_row, mi_col, n);
-                let inter_cost = trial_cost + RATE_WEIGHT * ac * ac * i64::from(prices.of(mv).0);
+                let inter_cost = trial_cost + self.rate * ac * ac * i64::from(prices.of(mv).0);
                 if self.eobs[0].iter().all(|&eob| eob == 0) {
                     self.predict_inter(mi_row, mi_col, n, mv, 1..3);
                     (Mode::Inter(mv), inter_tx, false)
@@ -1791,6 +1825,10 @@ impl<'a> Tile<'a> {
                 Mode::Intra4 { sub, chroma: self.chroma_trial(mi_row, mi_col, n, tx, sub[3]) }
             }
             mode => mode,
+        };
+        self.rate = match mode {
+            Mode::Inter(mv) => self.rate_at(mi_row, mi_col, mv),
+            _ => RATE_WEIGHT,
         };
         self.reconstruct(mi_row, mi_col, n, mode, tx);
         let skip = self.eobs.iter().flatten().all(|&eob| eob == 0);
@@ -1953,7 +1991,7 @@ impl<'a> Tile<'a> {
                 let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: false, inter: false };
                 // The levels `reconstruct` will keep, which are what the
                 // block costs and what the blocks after it predict from.
-                let (eob, bits_0, e) = worth_coding(self.costs, &mut self.map, self.quantizer, side, kind, &self.coeffs[..area], levels, eob, e);
+                let (eob, bits_0, e) = worth_coding(self.costs, &mut self.map, self.quantizer, RATE_WEIGHT, side, kind, &self.coeffs[..area], levels, eob, e);
                 error += e;
                 let (col4, row4) = (x / 4, y / 4);
                 let ctx = usize::from(above_nz[col4..col4 + n4].iter().any(|&a| a != 0)) + usize::from(left_nz[row4..row4 + n4].iter().any(|&l| l != 0));
@@ -2033,7 +2071,7 @@ impl<'a> Tile<'a> {
                 let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
                 // As `reconstruct` keeps them: a 4×4 whose levels are not
                 // worth their bits is weighed as the nothing it will code.
-                let (eob, bits_0, error) = worth_coding(self.costs, &mut self.map, self.quantizer, 4, kind, &self.coeffs[..16], levels, eob, error);
+                let (eob, bits_0, error) = worth_coding(self.costs, &mut self.map, self.quantizer, RATE_WEIGHT, 4, kind, &self.coeffs[..16], levels, eob, error);
                 let bits = bits + i64::from(tokens::recontext(self.costs, kind, ctx, levels, eob, bits_0));
                 let cost = error * 256_000 + RATE_WEIGHT * ac * ac * bits;
                 if cost < best.0 {
@@ -2060,7 +2098,7 @@ impl<'a> Tile<'a> {
             let levels = &mut self.levels[0][b * 16..][..16];
             let (eob, error) = self.quantizer.quantize_with_error(4, true, scan.inverse, &self.coeffs[..16], levels);
             let kind = tokens::Kind { tx: 0, tx_type, chroma: false, inter: false };
-            let (eob, _, _) = worth_coding(self.costs, &mut self.map, self.quantizer, 4, kind, &self.coeffs[..16], levels, eob, error);
+            let (eob, _, _) = worth_coding(self.costs, &mut self.map, self.quantizer, RATE_WEIGHT, 4, kind, &self.coeffs[..16], levels, eob, error);
             if eob > 0 {
                 self.quantizer.dequantize(4, levels, scan.order, eob, &mut self.dequantized[..16]);
                 transform::inverse_add(4, tx_type, &self.dequantized[..16], eob, &mut self.contexts.planes[0][ly * stride + lx..], stride);
@@ -2481,7 +2519,7 @@ impl<'a> Tile<'a> {
                     let levels = &mut self.levels[plane][i * area..][..area];
                     let kind = tokens::Kind { tx: tx_log2, tx_type, chroma: plane > 0, inter: !matches!(mode, Mode::Intra { .. } | Mode::Intra4 { .. }) };
                     let (eob, error) = self.quantizer.quantize_with_error(tx, !kind.inter, scan.inverse, &self.coeffs[..area], levels);
-                    let (eob, _, _) = worth_coding(self.costs, &mut self.map, self.quantizer, tx, kind, &self.coeffs[..area], levels, eob, error);
+                    let (eob, _, _) = worth_coding(self.costs, &mut self.map, self.quantizer, if kind.inter { self.rate } else { RATE_WEIGHT }, tx, kind, &self.coeffs[..area], levels, eob, error);
                     self.eobs[plane].push(eob);
                     eob
                 } else {

@@ -172,13 +172,19 @@ whose four quarters' means differ is four 4×4s, each with a mode of its own
 An inter block's transform size is tried from the largest down until a size
 costs more than the one above it (`trial`), error and bits weighed at
 `RATE_WEIGHT`. A transform block whose levels are not worth their bits codes
-nothing (`worth_coding`). An intra block's size is by rule: the largest that
+nothing (`worth_coding`). At a whole vector other than zero that the
+superblock's anchors gave, content that arrived whole from the frame
+before, a bit is worth half as much (`CARRIED_WEIGHT`): a window dragged
+carries the error it is coded with into every frame it is dragged
+through, where a video's content changes under its vector. Whether such a
+square is intra or inter is still weighed at `RATE_WEIGHT`. An intra block's size is by rule: the largest that
 fits, up to 32×32, but a busy 8×8 in 4×4s.
 
 The motion search (`motion.rs`) is for what moves on a screen. Luma is hashed
 over 8×8 windows; a window whose hash falls in one sixty-fourth of its range
 is an anchor, so content that moves takes its anchors with it, and an anchor
-found in both frames gives a vector. Hashes are retaken only where the source
+found in both frames gives a vector, which the superblock marks as the
+anchors' (`Offered`). Hashes are retaken only where the source
 changed. What moves but does not arrive exactly a superblock finds by its
 projections: its rows' and columns' sums matched against the frame before's,
 64 pixels each way.

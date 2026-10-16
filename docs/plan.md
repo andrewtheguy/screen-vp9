@@ -25,7 +25,8 @@ open items were taken up on 2026-10-15, [in a section of their
 own](#taken-up-on-2026-10-15). The other open-source encoders were read the
 same day for what they decide differently, [in a section of its
 own](#read-in-the-other-encoders-on-2026-10-15): six open items came of
-it, 20 to 25.
+it, 20 to 25. They were taken up overnight on 2026-10-16, [in a section of
+their own](#taken-up-on-2026-10-16).
 
 ## What it is for
 
@@ -779,6 +780,41 @@ configuration nor this encoder adapts probabilities backward (libvpx 1.16
 defaults `frame_parallel_decoding_mode` on), so neither has the bitstream
 the other has not.
 
+## Taken up on 2026-10-16
+
+The open items of 2026-10-15 in their order, overnight, each change played
+turn about against the build before over the cut captures, four threads,
+the machine idle.
+
+### Taken
+
+| Change | What it bought |
+|---|---|
+| An inter block at a whole vector other than zero that its superblock's anchors gave, content arrived whole from the frame before, weighs its transform blocks' bits at `CARRIED_WEIGHT`, 17, half `RATE_WEIGHT`, in the transform size's trial and in which levels are kept; intra against inter is weighed at `RATE_WEIGHT` still (items 3 and 24) | `drag` 0.975 to 0.983 of its bytes for +0.59 to +0.68 dB from 2048 wide, which was 0.13 to 0.43 dB under libvpx's picture and is 0.2 to 0.5 over, and 1.02 to 1.03 for +0.97 to +1.06 dB under it; `browser` 1.02 to 1.03 of its bytes for +0.20 to +0.40 dB, but 1.22 at 1600×1000 for +0.20, still a quarter of libvpx's; `uncover` 1.004 to 1.044 for +0.07 to +0.23; `terminal` and `flood` within 1.1% and 0.06 dB; `video`, `still` and every keyframe and settle the same to the byte, `walk` within 0.4% and 0.11 dB; the time of the three that code more 1.02 to 1.03 of the build before's |
+
+### Measured and not taken
+
+- **The still 8×8s of a frame of rectangles coded again at the dial**
+  until each was coded two, three or four times since its source last
+  changed (item 24 as it was written, on the rectangles `drag`'s frames
+  after its keyframe carry, there being no whole frame among them): every
+  stream within 0.5% of its bytes and 0.05 dB. At the quantizer a block
+  was coded at, its error quantizes to nothing, and `drag`'s rectangles
+  hold the moved window and what it uncovered, few 8×8s still.
+- **`RATE_WEIGHT` at 25, 17 and 12 over the whole frame**, against libvpx
+  on every scenario at 1920×1080 and 2048×1536: `drag` from 2048 wide
+  took fewer bytes for 0.8 dB more at 17, the one capture off the curve;
+  everywhere else bytes for decibels along it, `video` 1.04 of its bytes
+  for 0.1 dB, `walk` 1.06 for 0.35. Held to the inter blocks, 17 cost
+  `video` 1.024 for 0.05 dB and the intra blocks alone moved `drag` 0.17
+  dB; held to inter blocks at anchored vectors, `video` is untouched.
+- **`CARRIED_WEIGHT` in intra against inter too** (`decide`), and **in
+  `worth_coding` alone**: the first took `terminal`'s text inter, 0.6% more
+  bytes for 0.10 dB less at 1920×1080; the second kept nothing of
+  `drag`'s gain, which is in the transform size the trial takes. 12 and 8
+  for 17 bought `drag` 0.05 to 0.1 dB more and `browser` 2 to 4% more of
+  its bytes.
+
 ## What is open
 
 In the order it is taken up, set again on 2026-10-14 for the captures
@@ -837,17 +873,14 @@ take for less time:
    32×32 intra transform](#taken-up-on-2026-10-15). A ground of one grey
    coded a level off from the first block stayed off, a 16×16's DC moving
    its mean two levels at that dial; it is over libvpx's picture now.
-3. **`drag` from 2048 wide**: measured on 2026-10-15, and it is `drag`'s
-   and not the cut's: whole, 0.12 to 0.34 dB under libvpx's picture at a
-   quarter to a tenth of its bytes. libvpx spends the frames after the
-   keyframe raising the still desktop's picture by a decibel and a half,
-   this encoder does not ([measured](#measured-for-what-comes-next)).
-   What is open is whether a still part of the picture should be coded
-   finer in the frames after a keyframe, as a settle codes it, and what
-   that costs a session that moves. Why libvpx does is read, on
-   2026-10-15: not cyclic refresh but the whole frames the session knew no
-   damage for, which libvpx codes block by block and this encoder leaves
-   ([read](#read-in-the-other-encoders-on-2026-10-15)); item 24.
+3. **`drag` from 2048 wide**: taken on 2026-10-16, [the dragged window's
+   bits weighed lighter](#taken-up-on-2026-10-16). Its frames after the
+   keyframe are frames of rectangles and not whole frames, and what they
+   hold is the window moved and what it uncovered, few 8×8s still: the
+   picture libvpx gains there is the moved window's error coded again at
+   its vector, frame after frame, which this encoder's `RATE_WEIGHT`
+   weighed as not worth its bits. It is over libvpx's picture at every
+   size now.
 4. **A frame of the video for the keyframes and the settles**: taken on
    2026-10-14. The two measurements took each capture's first picture,
    which for `video` and `walk` is the clip paused on black; they take
@@ -1012,14 +1045,13 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
     place, since the trials are the settle's 1.0 to 1.4 dB from 65. The
     first is taken ([measured](#taken-up-on-2026-10-15), a few hundredths
     of a busy settle); the second is open, with item 17's untried line.
-24. **A still desktop coded finer on the whole frames after a keyframe.**
-    On a frame its session knew no damage for, the 8×8s still and at this
-    dial are coded as settling for the first frames after a keyframe,
-    where libvpx codes them block by block, gated so that a flat 8×8
-    costs nothing: the moments' squares less the mean's share over the DC
-    threshold, libvpx's `dc_thr`. Weighed on `drag` from 2048 wide, which
-    is under libvpx's picture by this, against what the frames after a
-    keyframe cost a session that moves.
+24. **A still desktop coded finer on the whole frames after a keyframe**:
+    its premise was not `drag`'s ([measured and
+    taken another way](#taken-up-on-2026-10-16)). `drag`'s frames after the
+    keyframe carry rectangles, and the still 8×8s in them coded again at
+    the dial until coded two to four times bought nothing: at the same
+    quantizer their residual quantizes to nothing. Item 3 is taken by the
+    weight of a bit at an anchored vector instead.
 25. **A superblock's predictions kept.** One luma prediction a vector a
     superblock, with a mask of the 8×8s it holds, shared by the
     partition levels and the search between pixels (zvidlib's
