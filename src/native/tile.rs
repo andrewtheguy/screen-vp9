@@ -1692,7 +1692,9 @@ impl<'a> Tile<'a> {
         let found = if self.still(mi_row, mi_col, n) { None } else { self.refine(mi_row, mi_col, n, mv) };
         let ac = i64::from(self.quantizer.ac_step());
         let prices = Prices::new(self.candidates(mi_row, mi_col, n), &INTER_MODE_PROBS[self.mode_context(mi_row, mi_col, n)]);
-        let with = |cost: i64, v: Mv, rate: i64| cost + rate * ac * ac * i64::from(prices.of(v).0);
+        // The mode's and the vector's bits at `RATE_WEIGHT`: `CARRIED_WEIGHT`
+        // weighs the transform blocks alone.
+        let with = |cost: i64, v: Mv| cost + RATE_WEIGHT * ac * ac * i64::from(prices.of(v).0);
         let rate = self.rate_at(mi_row, mi_col, mv);
         self.rate = rate;
         // The luma coded at `mv`: `trial` reads the luma alone, so the
@@ -1707,7 +1709,7 @@ impl<'a> Tile<'a> {
         };
         let Some(other) = found else {
             self.predict_inter(mi_row, mi_col, n, mv, if known.is_some() { 0..3 } else { 1..3 });
-            return (Mode::Inter(mv), tx, with(cost, mv, rate));
+            return (Mode::Inter(mv), tx, with(cost, mv));
         };
         std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
         std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
@@ -1715,15 +1717,15 @@ impl<'a> Tile<'a> {
         let other_rate = self.rate_at(mi_row, mi_col, other);
         self.rate = other_rate;
         let (other_tx, other_cost) = self.trial(mi_row, mi_col, n);
-        if with(other_cost, other, other_rate) < with(cost, mv, rate) {
+        if with(other_cost, other) < with(cost, mv) {
             self.predict_inter(mi_row, mi_col, n, other, 1..3);
-            return (Mode::Inter(other), other_tx, with(other_cost, other, other_rate));
+            return (Mode::Inter(other), other_tx, with(other_cost, other));
         }
         self.rate = rate;
         std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
         std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
         self.predict_inter(mi_row, mi_col, n, mv, 0..3);
-        (Mode::Inter(mv), tx, with(cost, mv, rate))
+        (Mode::Inter(mv), tx, with(cost, mv))
     }
 
     /// What the square block of `1 << n` 8×8s at `(mi_row, mi_col)` chosen
@@ -1769,7 +1771,16 @@ impl<'a> Tile<'a> {
                 self.rate = RATE_WEIGHT;
                 let (inter_tx, trial_cost) = self.trial(mi_row, mi_col, n);
                 let inter_cost = trial_cost + self.rate * ac * ac * i64::from(prices.of(mv).0);
+                // Taken inter, its luma is coded at the weight its vector
+                // is: at `CARRIED_WEIGHT` it is tried again.
+                let rate = self.rate_at(mi_row, mi_col, mv);
                 if self.eobs[0].iter().all(|&eob| eob == 0) {
+                    let inter_tx = if rate == RATE_WEIGHT {
+                        inter_tx
+                    } else {
+                        self.rate = rate;
+                        self.trial(mi_row, mi_col, n).0
+                    };
                     self.predict_inter(mi_row, mi_col, n, mv, 1..3);
                     (Mode::Inter(mv), inter_tx, false)
                 } else {
@@ -1788,11 +1799,13 @@ impl<'a> Tile<'a> {
                         }
                     };
                     if inter_cost <= cost {
-                        // Coded at the vector already: its levels back, and
-                        // only the search between pixels to do.
+                        // Coded at the vector already at `RATE_WEIGHT`: its
+                        // levels back, and only the search between pixels to
+                        // do, or the luma again at `CARRIED_WEIGHT`.
                         std::mem::swap(&mut self.levels[0], &mut self.kept_levels);
                         std::mem::swap(&mut self.eobs[0], &mut self.kept_eobs);
-                        let (inter, inter_tx, _) = self.inter(mi_row, mi_col, n, mv, Some((inter_tx, trial_cost)));
+                        let known = (rate == RATE_WEIGHT).then_some((inter_tx, trial_cost));
+                        let (inter, inter_tx, _) = self.inter(mi_row, mi_col, n, mv, known);
                         (inter, inter_tx, false)
                     } else {
                         (intra, tx, true)
