@@ -808,6 +808,13 @@ the machine idle.
   for 0.1 dB, `walk` 1.06 for 0.35. Held to the inter blocks, 17 cost
   `video` 1.024 for 0.05 dB and the intra blocks alone moved `drag` 0.17
   dB; held to inter blocks at anchored vectors, `video` is untouched.
+- **`INTRA_MODE_GAIN` at 4, 8, 32 and 64** for 16 (item 9), alone over
+  the keyframes at 40, 65 and 90 and the captures of `browser`,
+  `terminal`, `drag`, `uncover`, `video` and `walk` at 1920×1080 and two
+  at 2048×1536@2: every keyframe within 0.3% and 0.02 dB, every capture
+  within 1% and 0.03 dB but `terminal` at 4, −0.13 dB. An 8×8's mode is
+  chosen by coding it each way; the gain only ranks a larger square's
+  modes by their moments. Left at 16.
 - **A switchable filter per block** (item 1's last line): built as an
   experiment, the regular filter in a scalar pass, each inter block's
   filter coded as VP9 codes it when a frame's is switchable, an inactive
@@ -1047,9 +1054,12 @@ bool coder's chain 10%.
 
 Then, as before:
 
-9. **Never measured, from the first plan's list**: `INTRA_MODE_GAIN`, vectors ranked
-   by their residual's squares on `browser` and `drag`, and `terminal` and
-   `flood` captured at quality 100.
+9. **Never measured, from the first plan's list**: `INTRA_MODE_GAIN`,
+   [measured on 2026-10-16](#measured-and-not-taken-1) and left at 16;
+   vectors ranked by their residual's squares, which is how `choose`
+   ranks them; and `terminal` and `flood` captured at quality 100, which
+   wants captures made at that dial, the harness playing each at its
+   own: not made.
 10. **The conversion was not the same on arm64 and amd64**: measured and
    made one, [above](#arm64-on-2026-10-11). Left: the decoder's conversion
    back to `B, G, R, X` differs by path as well, and `yuv` has no mode for
@@ -1064,8 +1074,11 @@ Then, as before:
    is untried.
 13. **arm64's floor**: measured, and NEON stays the floor,
    [above](#arm64-on-2026-10-11).
-14. **The first keyframe of a stream runs on cold buffers** (130 ms against
-    40 for the next at 1920×1080).
+14. **The first keyframe of a stream runs on cold buffers**: measured on
+    2026-10-16 at 1920×1080, the first 1.1 to 1.2 times the second on
+    `browser`, `still`, `drag` and `terminal` (25.6 ms to 21.8 on
+    `browser`), where it was 130 ms to 40: a few milliseconds once a
+    stream, and left.
 15. **A gate that fails a build.** The comparison is in the tests again, so
     it can be one; its lines are not decided, and a time on this machine
     moves by a tenth from run to run.
