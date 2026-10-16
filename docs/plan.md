@@ -815,6 +815,18 @@ the machine idle.
   for 17 bought `drag` 0.05 to 0.1 dB more and `browser` 2 to 4% more of
   its bytes.
 
+### Measured, for what comes next
+
+- **Where `video`'s bytes are over at 1920×1080**, read with
+  `tools/vpxinspect/` on the build of item 24 (`VPXI_FRAMES` per frame):
+  the intra blocks of its inter frames, its two keyframes being of black.
+  Their coefficients are 694 kB to libvpx's 254 and their chroma's 222 to
+  103, their modes 86 to 17, on 4.6% of the area to libvpx's 3.8%: 2.25
+  times libvpx's bytes a pixel of intra, the intra 4×4s 1.1% of the area
+  and 64×64s 1.7%, where libvpx's are 16×16s and 32×32s. The inter
+  coefficients are 0.89 of libvpx's. Rectangles are on no measurable share
+  of libvpx's area (item 21).
+
 ## What is open
 
 In the order it is taken up, set again on 2026-10-14 for the captures
@@ -1009,16 +1021,14 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
     since by the luma alone the screens' squares with intra quarters lose
     up to 4% of their bytes; and `rusty_vp9`'s gate on the whole's cost
     per pixel, untried.
-21. **Rectangles.** libvpx's variance partition takes a square whole
-    where its residual's variance is under a threshold, else the two
-    halves across or down where each is under it, else the quarters
-    (`set_vt_partitioning`), from the moments this encoder measures per
-    8×8 already; the cost is in `tile.rs`, which codes no rectangle, and
-    in the mode info and partition contexts a rectangle leaves. The video
-    at 1920×1080 has libvpx's 16×16s on a quarter of the area and this
-    encoder's on a fourteenth. Every Rust encoder read keeps rectangles at
-    its slowest speed alone, so they are weighed in time on `video` and
-    `walk` and in bytes on nothing else.
+21. **Rectangles**: not taken up, [measured on
+    2026-10-16](#measured-for-what-comes-next-1): libvpx codes none on
+    `video` and `walk` at 1920×1080, its inter area 8×8s 5%, 16×16s 26%,
+    32×32s 5% and 64×64s 60%, a rectangle on no measurable share of it.
+    What a video's bytes are short of in the partition is squares: this
+    encoder's 8×8s on a fifth of the area where libvpx's 16×16s are, and
+    the partitions, inter modes and vectors that cost, 65, 168 and 400 kB
+    to libvpx's 33, 93 and 289.
 22. **A square coded inter and intra both, the cheaper taken**, as `trial`
     takes a vector, with the two escapes read: no intra trial where the
     inter block kept no coefficient (SVT's `full_loop_escape`), and none
