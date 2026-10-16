@@ -1,6 +1,6 @@
 [package]
 name = "screen-vp9"
-version = "0.0.22"
+version = "0.0.23"
 edition = "2024"
 license = "MIT AND BSD-3-Clause"
 repository = "https://github.com/andrewtheguy/screen-vp9"
@@ -34,3 +34,9 @@ yuv = { version = "0.8", features = ["professional_mode"] }
 # and the build is refused under them: a build without it is libvpx alone, for
 # any machine libvpx runs on.
 native = []
+
+# The measurements of the Rust coder against libvpx, a program run by hand;
+# it needs the Rust coder.
+[[example]]
+name = "against_libvpx"
+required-features = ["native"]

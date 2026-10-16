@@ -39,6 +39,23 @@ use super::{Geometry, Reconstruction, on_threads, on_workers};
 /// projections', then the frame's best two.
 pub(super) const VECTORS: usize = 5;
 
+/// What a superblock offers its inter blocks: `VECTORS` vectors, the zero
+/// vector where it has fewer, and which of them anchors gave, bit `i` for
+/// `vectors[i]`: content that arrived whole from the frame before, where a
+/// projection's is only near what moved.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(super) struct Offered {
+    pub(super) vectors: [Mv; VECTORS],
+    pub(super) anchored: u8,
+}
+
+impl Offered {
+    /// Whether anchors gave `mv`.
+    pub(super) fn anchored(&self, mv: Mv) -> bool {
+        self.vectors.iter().enumerate().any(|(i, &v)| v == mv && self.anchored >> i & 1 != 0)
+    }
+}
+
 /// How far each way, in whole pixels, a superblock's projections are
 /// matched. libvpx matches half a superblock, which misses a terminal
 /// scrolling two of its rows, 38 pixels; on the plan's captures twice this
@@ -250,10 +267,9 @@ impl Search {
     /// Take the anchors of `luma`, the source being coded at the picture's
     /// width, where it differs from the source coded last, whose anchors
     /// are kept: in every 8×8 not marked in `unchanged`. Give back per
-    /// superblock in raster order the vectors it offers for a frame coded
-    /// against `reference`, the zero vector where it has fewer than
-    /// `VECTORS`.
-    pub(super) fn update(&mut self, pool: &Pool, threads: usize, luma: &[u8], unchanged: &[bool], reference: &Reconstruction) -> Vec<[Mv; VECTORS]> {
+    /// superblock in raster order what it offers for a frame coded
+    /// against `reference`.
+    pub(super) fn update(&mut self, pool: &Pool, threads: usize, luma: &[u8], unchanged: &[bool], reference: &Reconstruction) -> Vec<Offered> {
         let shape = &self.shape;
         let mi_cols = shape.mi_cols;
         // An 8×8's anchors are taken again when a window starting in it
@@ -263,7 +279,7 @@ impl Search {
         // A frame that changes nothing searches nothing, and leaves the
         // tables and the anchors as they are, taken or not.
         if !row_changed.contains(&true) {
-            return vec![[Mv::ZERO; VECTORS]; shape.sb_rows * shape.sb_cols];
+            return vec![Offered::default(); shape.sb_rows * shape.sb_cols];
         }
         let mut stale = vec![false; shape.mi_rows * mi_cols];
         for (r, stale) in stale.chunks_exact_mut(mi_cols).enumerate() {
@@ -344,21 +360,28 @@ impl Search {
         let mut found: Vec<(usize, Mv)> = found.into_iter().flat_map(|f| f.0).collect();
         let frame = most(found.iter().map(|&(_, mv)| mv).collect(), FRAME_VOTES.max(looked_up / FRAME_SHARE), 2);
         found.sort_unstable();
-        let mut vectors = vec![[Mv::ZERO; VECTORS]; shape.sb_rows * shape.sb_cols];
+        let mut offered = vec![Offered::default(); shape.sb_rows * shape.sb_cols];
         for votes in found.chunk_by(|a, b| a.0 == b.0) {
             let own = most(votes.iter().map(|&(_, mv)| mv).collect(), OWN_VOTES, 2);
-            vectors[votes[0].0][..own.len()].copy_from_slice(&own);
+            let o = &mut offered[votes[0].0];
+            o.vectors[..own.len()].copy_from_slice(&own);
+            o.anchored = (1 << own.len()) - 1;
         }
-        for (v, projected) in vectors.iter_mut().zip(projected.into_iter().flatten()) {
-            let mut at = v.iter().position(|&mv| mv == Mv::ZERO).unwrap_or(VECTORS);
-            for &mv in std::iter::once(&projected).chain(&frame) {
-                if at < VECTORS && !v.contains(&mv) {
-                    v[at] = mv;
-                    at += 1;
+        for (o, projected) in offered.iter_mut().zip(projected.into_iter().flatten()) {
+            let mut at = o.vectors.iter().position(|&mv| mv == Mv::ZERO).unwrap_or(VECTORS);
+            for (anchored, &mv) in std::iter::once((false, &projected)).chain(frame.iter().map(|mv| (true, mv))) {
+                match o.vectors[..at].iter().position(|&v| v == mv) {
+                    Some(i) => o.anchored |= u8::from(anchored) << i,
+                    None if at < VECTORS => {
+                        o.vectors[at] = mv;
+                        o.anchored |= u8::from(anchored) << at;
+                        at += 1;
+                    }
+                    None => {}
                 }
             }
         }
-        vectors
+        offered
     }
 
     /// Bring the tables to the anchors kept, which are the source coded
@@ -685,10 +708,10 @@ mod tests {
         let mut direct = Search::new(&geometry, 3);
         direct.catch_up(&pool, &luma);
         let expected = direct.update(&pool, 3, &scrolled, &vec![false; count], &recon);
-        assert!(expected.iter().any(|v| v[0] != Mv::ZERO), "the scroll is found");
+        assert!(expected.iter().any(|o| o.vectors[0] != Mv::ZERO && o.anchored(o.vectors[0])), "the scroll is found, by its anchors");
         let mut search = Search::new(&geometry, 3);
         let none = search.update(&pool, 3, &luma, &vec![true; count], &recon);
-        assert!(none.iter().all(|v| v.iter().all(|&mv| mv == Mv::ZERO)));
+        assert!(none.iter().all(|o| *o == Offered::default()));
         assert!(search.waiting());
         search.catch_up(&pool, &luma);
         assert!(search.update(&pool, 3, &scrolled, &vec![false; count], &recon) == expected);
