@@ -135,6 +135,12 @@ In an inter frame a square is, in this order:
    to beat the predicted ones by a quarter (`NEW_VECTOR_GAIN`), since it
    costs its bits. An intra mode is taken where its residual beats the best
    vector's by more than its modes cost (`INTRA_BITS` at `RATE_WEIGHT`).
+   Where the vector's residual is within `INTRA_OVER` of that, the square
+   is coded both ways (`decide`): inter at the whole vector, taken outright
+   where it codes no coefficient, else against its luma coded intra, the
+   cheaper in error and bits with each mode's bits; a square that takes
+   the vector is searched between pixels then. This is decided before the
+   square's partition is written, since an 8×8 of four 4×4s is a split.
 
 A vector between pixels is measured in this choice at its nearest whole
 pixels. Once a square is coded inter, other than where it settles, its

@@ -22,7 +22,10 @@ measured the same day, [in a section of its own](#where-a-videos-bytes-go-on-202
 sub-pixel motion, which the scope had out on the strength of the set
 before's video, a test pattern, and which is in it again. The first four
 open items were taken up on 2026-10-15, [in a section of their
-own](#taken-up-on-2026-10-15).
+own](#taken-up-on-2026-10-15). The other open-source encoders were read the
+same day for what they decide differently, [in a section of its
+own](#read-in-the-other-encoders-on-2026-10-15): six open items came of
+it, 20 to 25.
 
 ## What it is for
 
@@ -112,32 +115,34 @@ desktop as drawn:
 
 [benchmarks.md](benchmarks.md), one run of 2026-10-15 over every size of
 the cut captures, `walk` whole, on the build after release 0.0.19 that
-updates an inter frame's mode, partition and vector probabilities and
-takes the 32×32 intra transform, `walk`'s rows of it captured again and
-measured again the same day, its clip paused for the settle:
+updates an inter frame's mode, partition and vector probabilities, takes
+the 32×32 intra transform, codes an intra square of an inter frame inter
+at its vector too and cuts a smaller transform size's trial short, `walk`
+captured again the same day, its clip paused for the settle:
 
 - **A video is inside the gate, over libvpx's picture.** `video` takes
-  1.01 to 1.05 of libvpx's bytes at +0.6 to +0.8 dB and `walk`, whole,
-  1.01 to 1.09 at +0.4 to +0.7, where the gate the plan began with allows
+  1.00 to 1.05 of libvpx's bytes at +0.6 to +0.9 dB, 1.00 from 2880
+  wide, and `walk`, whole, 1.01 to 1.08 at +0.4 to +0.7, where the gate
+  the plan began with allows
   15% more bytes at most; without the vectors between pixels they were
   1.22 to 1.27 and 1.16 to 1.25 at up to 0.6 dB under. Everything else
   over a whole capture is at fewer bytes than libvpx's and at its picture
   or better, but `drag` from 2048 to 3456 wide, 0.2 to 0.4 dB under at
   0.40 to 0.49 of the bytes: 75 cells of 80.
-- Every capture at every size takes less time than libvpx: 0.15 to 0.97
-  of it frame for frame, a line of text 0.15 to 0.21, `walk` 0.70 to
-  0.80, `video` 0.83 to 0.97, at 2048×1536 on the line. The frame `walk`'s
-  session settles, the video paused, is 0.79 to 1.06 of libvpx's time up
-  to 1920 wide and 1.17 to 1.33 from 2048, at 0.84 to 0.93 of its bytes
-  and +0.3 to +0.9 dB.
+- Every capture at every size takes less time than libvpx but `video`
+  at 2048×1536, on the line at 1.01: 0.14 to 1.01 of it frame for frame,
+  a line of text 0.14 to 0.22, `walk` 0.71 to 0.81, `video` 0.85 to
+  1.01. The frame `walk`'s session settles, the video paused, is 0.86 to
+  1.21 of libvpx's time up to 1920 wide and 1.16 to 1.57 from 2048, one
+  frame's time, at 0.84 to 0.92 of its bytes and +0.3 to +0.9 dB.
 - A first picture coded alone as a keyframe is over libvpx's at every
   dial and size, 0.1 to 0.8 dB at 0.86 to 1.06 of its bytes, `terminal`'s
   at dial 40 0.5 to 5.9 dB at 0.65 to 0.88 of them where it was 2.4 to
-  7.7 dB under; in 0.41 to 0.97 of libvpx's time up to 1920 wide and 0.52
-  to 1.05 from 2048 wide.
-- A settle of a busy picture takes more time than libvpx's: 0.96 to 1.44
+  7.7 dB under; in 0.38 to 0.98 of libvpx's time up to 1920 wide and 0.49
+  to 1.04 from 2048 wide.
+- A settle of a busy picture takes more time than libvpx's: 0.98 to 1.46
   of it from 65 for 1.0 to 1.5 dB more picture at 0.90 to 0.97 of the
-  bytes, a picture of the video 1.04 to 1.60, and `flood`'s 0.96 to 1.84
+  bytes, a picture of the video 1.04 to 1.61, and `flood`'s 0.99 to 1.96
   from 80 and 89; a settle of the video from 89 takes 1.03 to 1.32 of
   libvpx's bytes from 2048 wide.
 
@@ -550,6 +555,8 @@ threads, the machine idle.
 | An inter frame's compressed header updates its inter modes', intra or inter's, the reference's, the luma intra modes' and the partitions' probabilities where its own bools save more than the update costs, as it did the transform sizes' and skips' | every capture that moves 0.94 to 0.99 of its bytes, `browser`, `drag` and `terminal` the most; no decision moves, so the picture and the time are the same |
 | And the vectors', each set to what the frame's bools measure where that saves more than its seven bits (libvpx's `update_mv`) | another 0.987 to 0.998 of the bytes |
 | An intra square of 32×32 and up takes the 32×32 transform, not 16×16 as libvpx's keyframe | `terminal`'s keyframe at dial 40 4.1 to 8.3 dB of luma better for 0.1 to 0.8% more bytes, now over libvpx's; every other keyframe up to 0.5 dB better at its bytes but `browser`'s at 1280×800 at 90, −0.07; the settles −0.02 to +0.36 dB; the captures within 0.4% of their bytes in the same time |
+| An intra square of an inter frame chosen over a vector, where the vector's residual is within `INTRA_OVER`, 2, of intra's variance with its bits, is coded inter at the whole vector too, taken where it codes no coefficient, else its luma coded intra and the cheaper taken in error and bits with each mode's bits, the square that takes the vector searched between pixels then; decided before the partition is written, since four 4×4s are a split (item 22) | over the target captures turn about with the build before: `video` 0.990 to 0.997 of its bytes and `walk` 0.989 to 0.998 at the same picture in 0.98 to 1.04 of the time; `browser`, `drag`, `terminal` and `uncover` within 0.3% of their bytes and 0.03 dB; `flood`, for reference, 0.997 to 0.998 in 1.07 to 1.14. Against libvpx the same day, `video` 1.00 to 1.05 of its bytes at +0.6 to +0.9 dB in 0.86 to 0.95 of its time and `walk` 1.01 to 1.08 at +0.4 to +0.7 in 0.71 to 0.80, but `video` at 2048×1536@2, the cell on the line: 1.01 to 1.02 of libvpx's time in three runs, where the build before it read 0.99 to 1.00 in three. Predicting the luma alone for the trial and not coding a square that takes the vector at it twice changed no stream and no time |
+| A smaller transform size's trial stops at the transform block that takes its cost past the size above's (item 23), and the luma `refine` predicted at the vector it found is kept for `trial` in place of predicting it again (item 25) | every stream the same to the byte; the captures a median of 0.99 of the build before's time, `browser` 0.96 to 0.98 at every size, `video` and `walk` 0.97 to 1.07; the settles a median of 0.98 to 0.99 a pair of dials, from 65 `still`, `video` and `browser` 0.96 to 0.99, `uncover` 0.93 to 0.99: inside the tenth this machine moves by, in one direction over the 80 captures, and nothing to keep them out |
 
 Each update is chosen from the frame's own bools after its blocks are
 decided, as the coefficients' were, so a frame's probabilities are what
@@ -596,6 +603,71 @@ the level back, and the ground is 47 from there on.
 - **The vectors priced at the inter mode probabilities the frame starts
   from**, now that they move from frame to frame, not at VP9's defaults:
   within 0.3% of the bytes and 0.04 dB, the time the same.
+- **Item 22 with the search between pixels in its trial**, the inter
+  candidate refined and coded at both vectors as an inter block is: twice
+  the bytes, `video` 0.981 to 0.993 and `walk` 0.987 to 0.992, for 1.03
+  to 1.10 of a video's time ungated and 0.99 to 1.07 gated at
+  `INTRA_OVER` 2 or 4, since on a video the squares the moments give intra
+  are near inter anyway and the trial runs on most of them; `flood` 1.08
+  to 1.24 ungated and 1.07 to 1.14 gated. At the @2 sizes a video's time
+  is on libvpx's line, so the whole vector alone is taken, which is inside
+  the run's noise on every target.
+- **A refined vector taken without the trial at both** where its luma
+  residual's deviation is under a fraction of the whole vector's, the
+  second line of item 18, three fractions each turn about with the build
+  before over `browser`, `uncover`, `video` and `walk`: at 3/4 `video`
+  0.987 to 0.999 of its bytes for 0.05 to 0.07 dB less in 0.93 to 0.99 of
+  its time and `walk` 0.991 to 1.002 at −0.10 to +0.10 dB, but `browser`
+  1.003 to 1.011 and `uncover` 1.002 to 1.011 of their bytes at −0.05 to
+  +0.14 dB for none of their time; at 7/8 the same the more, `video` −0.08
+  to −0.11 dB in 0.91 to 0.97; at 1/2 `video` 0.994 to 0.997 at −0.02 dB
+  and `walk` 0.993 to 0.999 at −0.09 to +0.03 in the same time. Where the
+  residual says the refined vector is clearly better, the coefficients say
+  otherwise often enough that the trial earns its tenth: skipping it
+  trades the picture for bytes along the line on a video and costs the
+  users' frames both.
+- **The quarter-pixel level at fewer points**, where the half-pixel level
+  went where the whole pixels around said: the one quarter pixel the
+  parabola's least rounds to, or a quarter pixel from the best towards
+  it on each axis and their corner, in place of the four around the best
+  and a corner (libvpx's `FIRST_LEVEL_CHECKS`). Each turn about with the
+  build before: `video` 1.002 to 1.006 of its bytes at −0.02 to −0.03 dB
+  in 0.95 to 1.03 of its time, `walk` 1.000 to 1.005 at −0.11 to +0.09 in
+  0.93 to 1.00; `browser` and `uncover` within 0.3% and 0.04 dB in 0.93 to
+  1.02, the one point 1.19 once on `uncover` at 2048×1536. The quarter
+  level's four points are not where a video's time is, and the parabola
+  through whole pixels misses the quarter pixel often enough to cost
+  bytes and picture both.
+- **A square coded whole and in quarters, and the cheaper taken** (item
+  20), in four forms, each turn about with the build before. The whole
+  first, at its vector searched between pixels, then the quarters cut
+  short once they cost more, their decisions kept for the partition,
+  over the 80 captures: `video` 0.933 to 0.982 of its bytes at −0.02 to
+  −0.06 dB and `walk` 0.938 to 0.964 at −0.17 to +0.04, in 1.30 to 1.62
+  and 1.12 to 1.33 of their time; `browser` 1.004 to 1.038 at ±0.05 dB in
+  1.03 to 1.07, `terminal` and `uncover` within 0.6% in 1.02 to 1.15;
+  `flood` 0.995 in 1.26 to 1.41. The quarters first, as they are decided
+  without it, then the whole at its whole vector cut short past their
+  cost and searched between pixels only where it wins, by the luma alone:
+  `video` 0.966 to 0.996 and `walk` 0.967 to 0.987 at the same picture in
+  1.08 to 1.24, but `browser` 1.000 to 1.041, and −0.27 dB once. The
+  chroma's residual weighed on both sides as the moments measure it:
+  `browser` 0.996 to 1.008, but `video` 0.986 to 0.998 and `walk` 0.990
+  to 0.996 in 1.13 to 1.24, the deviation not being the error coded, and
+  too heavy on a video. The whole tried only where every quarter came out
+  inter at its whole pixels, four blocks at one vector: `video` 0.998 to
+  1.000, nothing, so the 8×8s on a fifth of a video's area are not four
+  blocks at one vector. Tried where every quarter is inter at any vector,
+  at its largest transform size alone: `video` 0.991 to 0.998 and `walk`
+  0.988 to 0.996 at the same picture in 1.00 to 1.12 of their time, the
+  users' frames within 0.3% in 0.98 to 1.09. A hundredth of the bytes for
+  five to eight of the time where the video is on libvpx's line, which is
+  what item 22's search in the trial was refused on: not taken. The
+  browser's bytes under the luma alone are from squares with intra or
+  unchanged quarters, since inter quarters cost it nothing; and deciding
+  the quarters before the whole costs 2 to 3% of every capture's time by
+  itself, in the predictions made again and the decisions kept and
+  brought back.
 
 ### Measured, for what comes next
 
@@ -603,6 +675,17 @@ the level back, and the ground is 47 from there on.
   pixels `video` and `walk` take 0.70 of the time for 1.2 of the bytes;
   taking the refined vector without coding both, 0.90 to 0.95, the second
   trial being a tenth of a video's time and the search the rest.
+- **Where `video`'s time goes at 2048×1536@2**, profiled by symbol on the
+  build of item 22 with the trial and search as they are, of the coder's
+  own samples: the filter between pixels 13% (across 6, down 5, the
+  prediction of a chosen vector 2), the forward transform 7, `partition`
+  6, the residual's moments 6, the token estimate 5 and the tokens
+  written 2, the tape 4, the quantizer 4, `choose` 3, `trial` 3,
+  `intra_mode` 3, `refine`'s costing of a vector 3, the subtraction 2,
+  and the whole-pixel search 4 in all (the hashing 2, its index 1, the
+  projections 1). Nothing is a tenth: the time is the trial's body, and
+  the search between pixels is where the plan's levers were, both
+  measured above to trade the picture.
 - **`drag` from 2048 wide is under libvpx's picture whole as well as cut**:
   over its 402 frames 0.09 to 0.26 of libvpx's bytes at 0.12 to 0.34 dB
   under from 2048 to 3456 wide and +0.67 at 3840, where the cut, its
@@ -619,6 +702,81 @@ the level back, and the ground is 47 from there on.
   this encoder coding no rectangle. Its inter coefficients are 4.76 MB to
   5.52, at 0.6 dB more picture.
 
+## Read in the other encoders, on 2026-10-15
+
+What the other open-source VP9 encoders do that this one does not, read
+and not measured, each weighed against how this encoder decides the same
+thing rather than taken as better for being theirs. Read: SVT-VP9 (Intel's,
+dormant since 2020: 4:2:0, no tiles, no segmentation, a fixed transform
+size a block size, one bool coder a picture), the VP9 encoders written in
+Rust (`rusty_vp9`, Apache-2.0, 4:2:0, a third more bytes than libvpx by
+its own count; `rivet-vp9`, source-available with no patent grant, read
+and nothing taken; `zvidlib-vp9-encoder`, MIT, profile 0, with a
+lookahead; `rvp9`, BSD-3, libvpx's realtime path line for line, so
+nothing libvpx has not), rav1e for the shape of its decisions, libvpx's
+own realtime path at the speed the tables run it and libaom's after it,
+and OpenH264's screen mode. None is a realtime encoder but libvpx's path
+and SVT's, and none codes a desktop in fewer bytes than this one at its
+picture.
+
+What they have in common and this encoder has not: **a square is coded
+whole before it is split**, and split only where coding it whole came out
+dear per pixel, the split's trials cut short once their running cost
+passes the whole's (rav1e's `encode_partition_bottomup`, zvidlib's
+`search_partition`, `rusty_vp9`'s `rd_pick_partition`, SVT's
+`inter_depth_decision`). This encoder splits by rules on the moments
+(`SPLIT_VARIANCE`, `INTER_SPLIT`) and never weighs the whole against the
+split in bits; it is the one thing read that bears on the video's inter
+8×8s where libvpx codes 16×16s ([item 1](#what-is-open)). Rectangles,
+which libvpx's variance partition takes from the same moments this
+encoder measures, every Rust encoder keeps at its slowest speed alone.
+
+What libvpx's realtime path does cheaper, not better: it ranks modes and
+vectors by the sum of the absolute Hadamard coefficients of the quantized
+residual and costs no tokens until the block is coded (`block_yrd`); its
+transform size is a rule on the residual's variance against the AC step
+(`calculate_tx_size`), never above 16×16; it tries intra in an inter
+frame only where the inter cost passes a penalty scaled by the quantizer
+(`vp9_get_intra_cost_penalty`); its search between pixels measures a
+candidate with a 2-tap filter, and from the whole-pixel costs around the
+winner can take one predicted point a level (`_pruned_more`); and libaom
+after it picks a block's sub-pixel precision from its residual at the
+whole vector (`subpel_select`). SVT codes the few best candidates inter and
+intra both at the full cost and takes the cheaper, and skips the intra
+trial where the best inter candidate kept no coefficient
+(`full_loop_escape`); it interpolates a superblock's search area once and
+shares it among the superblock's blocks. zvidlib keeps one luma prediction
+a vector a superblock, shared by every partition level and the search
+between pixels. `rusty_vp9` cuts a smaller transform size's trial short
+once its running cost passes the size above (`rd_cost_y`).
+
+**Why libvpx sharpens a still desktop after a keyframe** ([item
+3](#what-is-open)) is not cyclic refresh, which `aq_mode` 0 leaves off: the
+harness hands a frame its session knew no damage for to both encoders
+whole, and libvpx codes every block of it at the zero vector and keeps
+the residual its thresholds pass, the keyframe's quantization error
+coded again, where this encoder marks the 8×8s still and at this dial
+and leaves them in the inactive segment. On a frame of rectangles libvpx
+does as this encoder does. So it is this encoder's to choose, on the
+whole frames after a keyframe. That those frames of `drag` carry no
+rectangles is to be confirmed on the capture.
+
+Read and not taken: the Laplacian and variance models of a block's rate
+(libvpx's, `rusty_vp9`'s and `rvp9`'s), which this encoder measured wrong
+both ways on 2026-10-14; rav1e's token rate from a table by the
+distortion, which rav1e ships off at every speed; a gate on the search
+between pixels by a SAD threshold (zvidlib, `rusty_vp9`), the gate that
+missed a fractional scroll here; SVT's fixed transform size and its
+decisions blind to chroma, which in 4:4:4 is two thirds of the pixels;
+libaom's hash search, exhaustive and per frame and used for intra block
+copy alone, where this encoder's anchors are sparse and kept; rav1e's
+assembly and its dispatch at run time, against the floor; and nothing
+read splits the bool coder across threads as the tapes and tile rows do,
+or costs tokens cheaper than the tables. Neither libvpx at this
+configuration nor this encoder adapts probabilities backward (libvpx 1.16
+defaults `frame_parallel_decoding_mode` on), so neither has the bitstream
+the other has not.
+
 ## What is open
 
 In the order it is taken up, set again on 2026-10-14 for the captures
@@ -626,7 +784,7 @@ made again. What they found the picture short in comes first, since a
 stream coded worse than libvpx's at more bytes is not one a user would
 take for less time:
 
-1. **The rest of the video's bytes**, 1.01 to 1.05 of libvpx's (`walk` 1.01 to 1.09)
+1. **The rest of the video's bytes**, 1.00 to 1.05 of libvpx's (`walk` 1.01 to 1.08)
    with the vectors between pixels back and an inter frame's
    probabilities updated ([taken](#taken-up-on-2026-10-15)). Read again
    with `tools/vpxinspect/`, what is over is this encoder's own: intra
@@ -684,7 +842,10 @@ take for less time:
    this encoder does not ([measured](#measured-for-what-comes-next)).
    What is open is whether a still part of the picture should be coded
    finer in the frames after a keyframe, as a settle codes it, and what
-   that costs a session that moves.
+   that costs a session that moves. Why libvpx does is read, on
+   2026-10-15: not cyclic refresh but the whole frames the session knew no
+   damage for, which libvpx codes block by block and this encoder leaves
+   ([read](#read-in-the-other-encoders-on-2026-10-15)); item 24.
 4. **A frame of the video for the keyframes and the settles**: taken on
    2026-10-14. The two measurements took each capture's first picture,
    which for `video` and `walk` is the clip paused on black; they take
@@ -792,17 +953,97 @@ Then, as before:
     moves by a tenth from run to run.
 16. **`Speed::Fastest` was not measured in this replan.**
 
+Read in the other encoders on 2026-10-15
+([above](#read-in-the-other-encoders-on-2026-10-15)), each measured turn
+about against the build before over the cut captures and weighed on the
+frame of rectangles first, as every change is; 20 to 22 bear on item 1,
+23 on item 17, 24 on item 3 and 25 on item 18:
+
+20. **A square coded whole before it is split**, [measured in four forms
+    and not taken](#measured-and-not-taken): the whole first and the
+    quarters cut short past it (rav1e, zvidlib) takes `video` to 0.93 to
+    0.98 of its bytes in 1.3 to 1.6 of its time; the quarters first and
+    the whole after them, cut short past their cost, a hundredth of the
+    bytes in 1.00 to 1.12. What it is for is the video's inter 8×8s on a
+    fifth of the area where libvpx's are a twentieth, and they are not
+    four blocks at one vector: a whole that wins is coded over quarters
+    whose vectors differ, at more residual for fewer vector bits. What
+    is left of it: the whole's prediction kept for its quarters at the
+    same vector (item 25), which the whole-first form needs to be cheap;
+    the chroma in the comparison as it is coded and not as its deviation,
+    since by the luma alone the screens' squares with intra quarters lose
+    up to 4% of their bytes; and `rusty_vp9`'s gate on the whole's cost
+    per pixel, untried.
+21. **Rectangles.** libvpx's variance partition takes a square whole
+    where its residual's variance is under a threshold, else the two
+    halves across or down where each is under it, else the quarters
+    (`set_vt_partitioning`), from the moments this encoder measures per
+    8×8 already; the cost is in `tile.rs`, which codes no rectangle, and
+    in the mode info and partition contexts a rectangle leaves. The video
+    at 1920×1080 has libvpx's 16×16s on a quarter of the area and this
+    encoder's on a fourteenth. Every Rust encoder read keeps rectangles at
+    its slowest speed alone, so they are weighed in time on `video` and
+    `walk` and in bytes on nothing else.
+22. **A square coded inter and intra both, the cheaper taken**, as `trial`
+    takes a vector, with the two escapes read: no intra trial where the
+    inter block kept no coefficient (SVT's `full_loop_escape`), and none
+    where the inter cost is under a penalty scaled by the quantizer
+    (libvpx's `vp9_get_intra_cost_penalty`), which is why libvpx's intra
+    is rarer in a frame of the video, its intra 4×4s and 8×8s a quarter
+    of this encoder's area. `INTRA_BITS` is the penalty's cousin on the
+    moments; the trial is on the coded block. Taken
+    ([measured](#taken-up-on-2026-10-15)) at the whole vector, with the
+    penalty the other way about (`INTRA_OVER`): a third to a half of a
+    percent of a video's bytes for a fiftieth of its time, which puts
+    `video` at 2048×1536@2 a hundredth or two over libvpx's time, the
+    cell that was on the line (item 18 is where that is bought back).
+    With the search between pixels in the trial it is a percent, for a
+    twentieth of a video's time ([not taken](#measured-and-not-taken));
+    what is left of the intra excess is to be read again with
+    `tools/vpxinspect/`.
+23. **The settle's smaller transform sizes cut short.** A smaller size's
+    trial stops as soon as its running cost, transform block by transform
+    block, passes the size above's (`rusty_vp9`'s `rd_cost_y`), which
+    changes no stream; and the sizes under the largest are tried only
+    where the largest leaves a residual past a threshold on the moments,
+    libvpx's `calculate_tx_size` as a gate on the trial and not in its
+    place, since the trials are the settle's 1.0 to 1.4 dB from 65. The
+    first is taken ([measured](#taken-up-on-2026-10-15), a few hundredths
+    of a busy settle); the second is open, with item 17's untried line.
+24. **A still desktop coded finer on the whole frames after a keyframe.**
+    On a frame its session knew no damage for, the 8×8s still and at this
+    dial are coded as settling for the first frames after a keyframe,
+    where libvpx codes them block by block, gated so that a flat 8×8
+    costs nothing: the moments' squares less the mean's share over the DC
+    threshold, libvpx's `dc_thr`. Weighed on `drag` from 2048 wide, which
+    is under libvpx's picture by this, against what the frames after a
+    keyframe cost a session that moves.
+25. **A superblock's predictions kept.** One luma prediction a vector a
+    superblock, with a mask of the 8×8s it holds, shared by the
+    partition levels and the search between pixels (zvidlib's
+    `InterBuffers`), so that `trial` reads the prediction `refine` made
+    and does not predict the refined vector again, item 18's first line,
+    which is taken ([measured](#taken-up-on-2026-10-15): the pass down
+    alone from the patch the search filtered across, inside the tenth);
+    and the search between pixels at a precision the block's residual at
+    the whole vector picks (libaom's `subpel_select`: whole or half where
+    it is already under the AC threshold), which reads the block and not
+    the frames before, where the gate of 2026-10-14 read the frames before
+    and was a frame late. SVT's one interpolation of a superblock's search
+    area shared by its blocks is the same idea a step up, and weighed
+    only if the first does not show.
+
 Of a very busy picture alone, and last:
 
-17. **A settle of a busy picture takes up to 1.8 of libvpx's time**, more
+17. **A settle of a busy picture takes up to twice libvpx's time**, more
    from 2048 wide than under it ([benchmarks.md](benchmarks.md), the run
-   of 2026-10-15): from 65 `still`, `uncover` and `browser` 0.96 to 1.44,
-   `flood` 0.75 to 1.60 and a picture of the video 1.04 to 1.60, 1.33 to
-   1.60 from 2048 wide; from 80 and 89 `flood` 0.96 to 1.84 and the video
-   0.82 to 1.47. The settle `walk`'s own session asks for, its clip paused
-   partway up the dial at 41 to 75, is 0.79 to 1.06 of libvpx's time up to
-   1920 wide and 1.17 to 1.33 from 2048, at 0.84 to 0.93 of its bytes and
-   +0.3 to +0.9 dB. libvpx's settle
+   of 2026-10-15): from 65 `still`, `uncover` and `browser` 0.98 to 1.46,
+   `flood` 0.77 to 1.72 and a picture of the video 1.04 to 1.61, 1.33 to
+   1.61 from 2048 wide; from 80 and 89 `flood` 0.99 to 1.96 and the video
+   0.87 to 1.52. The settle `walk`'s own session asks for, its clip paused
+   partway up the dial at 41 to 75, is 0.86 to 1.21 of libvpx's time up to
+   1920 wide and 1.16 to 1.57 from 2048, one frame's time, at 0.84 to 0.92
+   of its bytes and +0.3 to +0.9 dB. libvpx's settle
    time read at two levels because the measurement made a fresh encoder a
    pass and its second frame paid page faults, or did not; on encoders
    kept warm it is 0.5 to 0.65 of what it read, and this is what is left.
@@ -811,17 +1052,22 @@ Of a very busy picture alone, and last:
    0.2 dB. Untried: the smaller sizes only where the largest leaves more
    than some error, and what a settle from 80 or 89 needs of them at all.
    The forward half of that time is taken above, with the picture kept.
-18. **The frames of `video` and `walk`**, 0.83 to 0.97 and 0.70 to 0.80 of libvpx's time
-    frame for frame, `video`'s most at 2048×1536 on the line, the nearest the line of the whole captures. Of a
+18. **The frames of `video` and `walk`**, 0.85 to 1.01 and 0.71 to 0.81 of libvpx's time
+    frame for frame, `video`'s most at 2048×1536 on the line at 1.01, the nearest the line of the whole captures. Of a
     video's time at 2048×1536 the search between pixels is a fifth and
     coding a refined block at both vectors a tenth
-    ([measured](#measured-for-what-comes-next)). Untried: the refined
-    vector's luma prediction kept for the trial, which predicts it again;
-    the trial at both vectors only where they differ by enough to choose
-    between; and in the search before it, profiled on the test pattern
-    before, the row hashes of an 8×8 row taken once and not twice, the
-    projections' sums in sixteen bits, a table of its own in place of the
-    standard one, a hundredth of a frame each.
+    ([measured](#measured-for-what-comes-next)). The refined vector's
+    luma prediction is kept for the trial (item 25, taken, inside the
+    tenth), and the trial at both vectors only where the residual says
+    they are near is [measured and not taken](#measured-and-not-taken):
+    at any fraction it trades the picture, and so does the quarter-pixel
+    level at the one point or the axes the half-pixel costs point to, in
+    place of the four around the best and a corner. The whole-pixel search
+    is 4% of the video's coder ([profiled](#measured-for-what-comes-next)):
+    the row hashes of an 8×8 row taken once and not twice, the
+    projections' sums in sixteen bits and a table of its own are under a
+    hundredth each, and left. What is left is the trial's body, which
+    items 20 and 21 reshape.
 19. **The tile phase of a busy keyframe** runs four threads at 75 to 80% of
     four (27 ms of wall time for 86 of processor time at 1920×1080). No
     thread was found waiting; what is left is memory, and not looked into.
