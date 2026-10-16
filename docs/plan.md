@@ -808,6 +808,16 @@ the machine idle.
   for 0.1 dB, `walk` 1.06 for 0.35. Held to the inter blocks, 17 cost
   `video` 1.024 for 0.05 dB and the intra blocks alone moved `drag` 0.17
   dB; held to inter blocks at anchored vectors, `video` is untouched.
+- **The search between pixels to a precision the block picks** (item 25's
+  second line, libaom's `subpel_select`), alone over `video`, `walk`,
+  `browser`, `uncover` and `drag` at 1920×1080 and 2048×1536@2. None where
+  the residual at the whole vector already varies by under 4/16, 8/16 or
+  16/16 of a step squared a pixel: `video` 1.04 to 1.11 of its bytes at
+  −0.3 to −0.9 dB and `walk` 1.04 to 1.08 at −0.4 to −1.2, for a fifth
+  of their time, the screens within 0.2%; a block the whole pixels
+  predict well enough to code little still predicts better between them.
+  A half pixel alone where the motion is 4 or 8 pixels or more: within 1%
+  and 0.05 dB, and no time, the quarter level being four points.
 - **`CARRIED_WEIGHT` in intra against inter too** (`decide`), and **in
   `worth_coding` alone**: the first took `terminal`'s text inter, 0.6% more
   bytes for 0.10 dB less at 1920×1080; the second kept nothing of
@@ -1070,12 +1080,11 @@ frame of rectangles first, as every change is; 20 to 22 bear on item 1,
     which is taken ([measured](#taken-up-on-2026-10-15): the pass down
     alone from the patch the search filtered across, inside the tenth);
     and the search between pixels at a precision the block's residual at
-    the whole vector picks (libaom's `subpel_select`: whole or half where
-    it is already under the AC threshold), which reads the block and not
-    the frames before, where the gate of 2026-10-14 read the frames before
-    and was a frame late. SVT's one interpolation of a superblock's search
-    area shared by its blocks is the same idea a step up, and weighed
-    only if the first does not show.
+    the whole vector picks (libaom's `subpel_select`), [measured and not
+    taken](#measured-and-not-taken-1) on 2026-10-16: whole pixels where the
+    residual is small cost a video 4 to 11% of its bytes and up to a
+    decibel. SVT's one interpolation of a superblock's search area shared
+    by its blocks is untried.
 
 Of a very busy picture alone, and last:
 
