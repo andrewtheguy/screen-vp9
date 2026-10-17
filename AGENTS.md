@@ -2,7 +2,7 @@
 
 - Strict no backward-compatibility or legacy paths no matter what.
 - One crate, `screen-vp9`: how the wlshare daemon and the remotex gateway code
-  a desktop as VP9, 8-bit 4:4:4 and nothing else, which each pins by a release
+  a desktop as VP9, 8-bit 4:4:4 or 4:2:0 (`Chroma`), which each pins by a release
   tag of this repository. `main` is libvpx alone (`src/libvpx.rs`, the one
   place libvpx is spoken to, its decoder with it), behind one `Stream` and one
   `Encoder`, which their maker names the coder of (`Coder`). There is one

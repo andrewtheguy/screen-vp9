@@ -13,21 +13,26 @@ branch: **EXPERIMENTAL**, built for x86-64-v3 on amd64 and NEON on arm64, and
 not released. `main` and its tags are libvpx alone and ask nothing of a machine
 that libvpx does not.
 
-- `Encoder`: 8-bit 4:4:4, VP9 profile 1, and nothing else. A quantizer pinned
-  to a 1–100 quality dial rather than a bitrate, no lag, no dropped frames, no
-  keyframe that was not asked for, and the colour matrix and range declared in
-  the bitstream. There is no 4:2:0: a browser with no software VP9 refuses the
-  stream by name at `VideoDecoder.configure`.
+- `Encoder`: eight bits at the chroma its maker names, `Chroma::Yuv444` (VP9
+  profile 1) or `Chroma::Yuv420` (profile 0). A quantizer pinned to a 1–100
+  quality dial rather than a bitrate, no lag, no dropped frames, no keyframe
+  that was not asked for, and the colour matrix and range declared in the
+  bitstream.
 - The stream's shape follows the picture's width and the threads, for the
   decoder's sake: one tile column under 1440 wide, two from 1440, four from
   2048 and eight from 5760, never more than the threads. A stream in four
   columns or more, 2048 wide on four threads, is coded without the loop
   filter, which a software decoder's threads otherwise wait on; that costs 2%
   to 4% more bytes and 0.5 to 0.9 dB of luma.
-- 4:4:4 only, VP9 profile 1 (`PROFILE`): on a desktop the visible loss is a
-  coloured glyph stem's colour, which 4:2:0 averages away at any quantizer.
-- `Picture`: the BT.601 studio-swing planes an encoder reads, converted from
-  packed RGB or `B, G, R, X`, the whole picture or the rectangle that changed,
+- 4:4:4 is the picture worth having on a desktop, whose visible loss at 4:2:0
+  is a coloured glyph stem's colour, averaged away at any quantizer. 4:2:0 is
+  for whoever decodes it: no browser's hardware VP9 decoder takes profile 1,
+  and a browser with no software one, Safari on iOS and iPadOS, refuses it.
+  It is also half the samples, which a 1080p frame of a moving window coded
+  in about 70% of 4:4:4's time.
+- `Picture`: the BT.601 studio-swing planes an encoder reads, at its chroma,
+  converted from packed RGB or `B, G, R, X`, the whole picture or the
+  rectangle that changed, at 4:2:0 widened to the 2×2 blocks it touches,
   on up to four of the encoder's threads: a 4K picture in 2.9 ms for 5.5, and
   a window dragged across one in the quarter of it that moved.
 - A frame told where its picture changed codes the blocks those rectangles
@@ -41,11 +46,11 @@ that libvpx does not.
   coarsest block a decoder holds is, which is what a settle is owed for: the
   whole picture as one inter frame at the ceiling, read from nowhere since
   the planes hold it, the dial left where the link had it.
-- `Decoder`: libvpx's, the planes back, for every test here and in a user; a
-  frame that is not 8-bit 4:4:4 is refused.
+- `Decoder`: libvpx's, the planes back at their chroma, for every test here
+  and in a user; a frame that is not 8-bit 4:4:4 or 4:2:0 is refused.
 - `frame_header`: the profile and keyframe bit a frame says about itself;
   `codec_string`: the WebCodecs string a browser's `VideoDecoder` is configured
-  with for a stream's size and frame rate.
+  with for a stream's size, frame rate and chroma.
 - `walk::QualityWalk`: the quality and frame rate a link will bear, walked on
   the dial, so a stream wlshare codes and one remotex codes answer a slow link
   the same way. It is told what each frame left the client holding and says

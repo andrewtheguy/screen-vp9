@@ -1,14 +1,14 @@
 //! VP9 for a desktop picture, as wlshare and the remotex gateway both code it.
 //!
-//! One [`Encoder`], written for a desktop and nothing else: 8-bit 4:4:4, VP9
-//! profile 1 ([`PROFILE`]), a quantizer pinned to a 1–100 quality dial rather
-//! than a bitrate, no lag, no dropped frames, no keyframe that was not asked
+//! One [`Encoder`], written for a desktop and nothing else: eight bits, at the
+//! chroma its maker names ([`Chroma`]) — 4:4:4, VP9 profile 1, or 4:2:0,
+//! profile 0 — a quantizer pinned to a 1–100 quality dial rather than a bitrate, no lag, no dropped frames, no keyframe that was not asked
 //! for, and the colour matrix and range declared in the bitstream so a decoder
 //! does not guess. It is coded by the coder its maker names ([`Coder`]), which
 //! is libvpx set up that way: the name is there so that another coder can take
 //! libvpx's place, or stand beside it, without a user's calls changing but for
 //! the name it gives. In front of it a [`Picture`] holds the planes it
-//! reads — BT.601 at studio swing, a sample per pixel in each — converted from
+//! reads — BT.601 at studio swing, its colour at the stream's chroma — converted from
 //! the packed RGB the gateway's mirror holds or the `B, G, R, X` a framebuffer
 //! does. Behind it a [`Decoder`], libvpx's, gives the planes back, for every
 //! test here and in a user.
@@ -57,9 +57,58 @@ pub const QUALITY_MIN: u8 = 1;
 /// The finest end of the quality dial.
 pub const QUALITY_MAX: u8 = 100;
 
-/// The VP9 profile of every stream here: eight-bit 4:4:4, a colour sample per
-/// pixel, which is what [`FrameHeader::profile`] says of one of its frames.
-pub const PROFILE: u8 = 1;
+/// How a stream samples colour, which is its VP9 profile: a sample per pixel,
+/// or one per 2×2 block of them. A user names it for every stream, by who
+/// decodes it.
+///
+/// 4:4:4 is the picture worth having on a desktop: a one-pixel coloured glyph
+/// stem shares its one 4:2:0 colour sample with three background pixels and
+/// comes back at a quarter of its saturation, which no quantizer recovers. But
+/// no browser's hardware VP9 decoder takes profile 1, and a browser with no
+/// software VP9 decoder, Safari on iOS and iPadOS, refuses it. 4:2:0 is what
+/// every decoder takes, and half the samples to convert and code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chroma {
+    /// 4:4:4, VP9 profile 1: a colour sample per pixel.
+    Yuv444,
+    /// 4:2:0, VP9 profile 0: a colour sample per 2×2 pixels, the last row and
+    /// column of an odd-sized picture each a sample per two pixels or one.
+    Yuv420,
+}
+
+impl Chroma {
+    /// The VP9 profile of a stream at this chroma, eight bits, which is what
+    /// [`FrameHeader::profile`] says of one of its frames.
+    pub fn profile(self) -> u8 {
+        match self {
+            Self::Yuv444 => 1,
+            Self::Yuv420 => 0,
+        }
+    }
+
+    /// The chroma at a VP9 `profile`, of the two here.
+    pub fn of_profile(profile: u8) -> Option<Self> {
+        [Self::Yuv444, Self::Yuv420].into_iter().find(|chroma| chroma.profile() == profile)
+    }
+
+    /// The side of the square of pixels one colour sample covers.
+    fn block(self) -> usize {
+        match self {
+            Self::Yuv444 => 1,
+            Self::Yuv420 => 2,
+        }
+    }
+
+    /// The codec string's chroma field: 3 is 4:4:4, and 1 is 4:2:0 with its
+    /// samples sited at the luma's, WebM's default, which is what a decoder
+    /// assumes of a VP9 4:2:0 picture anyway: the bitstream does not say.
+    fn codec_field(self) -> &'static str {
+        match self {
+            Self::Yuv444 => "03",
+            Self::Yuv420 => "01",
+        }
+    }
+}
 
 /// The finest quantizer the dial reaches. VP9's range is 0–63, coarsest last;
 /// below about 8 a VP9 desktop is visually lossless and costs several times the
@@ -184,11 +233,13 @@ pub enum Error {
     Buffer { width: usize, height: usize, stride: usize, bytes: usize },
     #[error("a {0}x{1} encoder was handed a {2}x{3} picture")]
     Mismatch(u16, u16, u16, u16),
+    #[error("a {0:?} encoder was handed a {1:?} picture")]
+    Sampling(Chroma, Chroma),
     #[error("a stream was asked for a frame before any picture was read into it")]
     Unread,
     #[error("the frame decoded to no picture")]
     NoPicture,
-    #[error("the frame is not 8-bit 4:4:4 (format {0}, {1} bits)")]
+    #[error("the frame is not 8-bit 4:4:4 or 4:2:0 (format {0}, {1} bits)")]
     Format(u32, u32),
 }
 
@@ -214,10 +265,12 @@ pub struct Rect {
 }
 
 /// One picture as the planes the encoder reads: 8-bit Y, U and V, BT.601 at
-/// studio swing, a sample per pixel in each. Reused across frames, so a 1080p
-/// conversion is not a 6 MB allocation apiece.
+/// studio swing, a luma sample per pixel and the colour at the picture's
+/// [`Chroma`]. Reused across frames, so a 1080p conversion is not a 6 MB
+/// allocation apiece.
 pub struct Picture {
     size: (u16, u16),
+    chroma: Chroma,
     /// Each plane with a row of nothing after its last: the conversion writes a
     /// row as a whole stride from where it starts, and a rectangle's rows start
     /// at its left edge, so its last row's stride ends up to a row past the
@@ -243,15 +296,16 @@ const THREAD_PIXELS: usize = 1 << 19;
 const CONVERT_THREADS: usize = 4;
 
 impl Picture {
-    /// A buffer for a `width`×`height` picture, converted on up to `threads`
-    /// threads, which are the encoder's: it is idle while its picture is
-    /// read.
-    pub fn new(width: u16, height: u16, threads: usize) -> Result<Self, Error> {
+    /// A buffer for a `width`×`height` picture at `chroma`, converted on up
+    /// to `threads` threads, which are the encoder's: it is idle while its
+    /// picture is read.
+    pub fn new(width: u16, height: u16, chroma: Chroma, threads: usize) -> Result<Self, Error> {
         if width == 0 || height == 0 {
             return Err(Error::Empty(width, height));
         }
         let (w, h) = (usize::from(width), usize::from(height));
-        Ok(Self { size: (width, height), y: vec![0; w * (h + 1)], u: vec![0; w * (h + 1)], v: vec![0; w * (h + 1)], tight: Vec::new(), threads })
+        let (cw, ch) = (w.div_ceil(chroma.block()), h.div_ceil(chroma.block()));
+        Ok(Self { size: (width, height), chroma, y: vec![0; w * (h + 1)], u: vec![0; cw * (ch + 1)], v: vec![0; cw * (ch + 1)], tight: Vec::new(), threads })
     }
 
     /// The picture's size.
@@ -259,15 +313,28 @@ impl Picture {
         self.size
     }
 
-    /// Y, U and V, each tight at the picture's width.
+    /// How the picture's colour is sampled.
+    pub fn chroma(&self) -> Chroma {
+        self.chroma
+    }
+
+    /// The size of a chroma plane.
+    fn chroma_size(&self) -> (usize, usize) {
+        let block = self.chroma.block();
+        (usize::from(self.size.0).div_ceil(block), usize::from(self.size.1).div_ceil(block))
+    }
+
+    /// Y, U and V, each tight at its plane's width.
     pub fn planes(&self) -> [&[u8]; 3] {
         let len = usize::from(self.size.0) * usize::from(self.size.1);
-        [&self.y[..len], &self.u[..len], &self.v[..len]]
+        let (cw, ch) = self.chroma_size();
+        [&self.y[..len], &self.u[..cw * ch], &self.v[..cw * ch]]
     }
 
     /// The width of a row of each plane.
     pub fn strides(&self) -> [usize; 3] {
-        [usize::from(self.size.0); 3]
+        let cw = self.chroma_size().0;
+        [usize::from(self.size.0), cw, cw]
     }
 
     /// The whole picture as a rectangle.
@@ -330,28 +397,37 @@ impl Picture {
 
     /// Convert `rect` of `pixels`, a whole picture in `packed` order that its
     /// caller has checked fits, rows `stride` bytes apart.
+    ///
+    /// At 4:2:0 the rectangle is widened to the whole 2×2 blocks it touches,
+    /// whose one colour sample each is taken from all four of their pixels.
     fn convert(&mut self, pixels: &[u8], stride: usize, rect: Rect, packed: Packed) {
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
-        let (left, right) = (usize::from(rect.x), (usize::from(rect.x) + usize::from(rect.width)).min(w));
-        let (top, bottom) = (usize::from(rect.y), (usize::from(rect.y) + usize::from(rect.height)).min(h));
+        let block = self.chroma.block();
+        let (x, y) = (usize::from(rect.x), usize::from(rect.y));
+        let (left, right) = (x - x % block, (x + usize::from(rect.width)).next_multiple_of(block).min(w));
+        let (top, bottom) = (y - y % block, (y + usize::from(rect.height)).next_multiple_of(block).min(h));
         if left >= right || top >= bottom {
             return;
         }
         // The crate reads a row as a whole stride from its first pixel, which
-        // here is the rectangle's left edge. The picture's last row has only
-        // what is left of its own after that, and in a buffer that ends with
-        // the picture not always that much, so the row that ends the
-        // rectangle is copied tight first where the buffer does not go on a
-        // stride past it. The rows above have those under them to read into.
+        // here is the rectangle's left edge, and at 4:2:0 two rows at a time.
+        // The picture's last row has only what is left of its own after that,
+        // and in a buffer that ends with the picture not always that much, so
+        // the rows that end the rectangle, a block's, are copied tight first
+        // where the buffer does not go on a stride past them. The rows above
+        // have those under them to read into.
         let bytes = packed.bytes();
         let at = |row: usize| row * stride + left * bytes;
-        let borrowed = if at(bottom) <= pixels.len() { bottom } else { bottom - 1 };
+        let tail = (bottom - 1) % block + 1;
+        let borrowed = if at(bottom) <= pixels.len() { bottom } else { bottom - tail };
         self.convert_rows(&pixels[at(top)..at(borrowed)], stride, left..right, top..borrowed, packed);
         if borrowed < bottom {
             let row = (right - left) * bytes;
             let mut tight = std::mem::take(&mut self.tight);
             tight.clear();
-            tight.extend_from_slice(&pixels[at(borrowed)..][..row]);
+            for line in borrowed..bottom {
+                tight.extend_from_slice(&pixels[at(line)..][..row]);
+            }
             self.convert_rows(&tight, row, left..right, borrowed..bottom, packed);
             self.tight = tight;
         }
@@ -359,17 +435,24 @@ impl Picture {
 
     /// Convert `cols` of `rows` from `pixels`, which begin at the first of
     /// them and give every row a whole `stride`, on as many threads as the
-    /// pixels are worth.
+    /// pixels are worth. At 4:2:0 both start on a block's first pixel, and
+    /// end on a block's last or the picture's.
     fn convert_rows(&mut self, pixels: &[u8], stride: usize, cols: std::ops::Range<usize>, rows: std::ops::Range<usize>, packed: Packed) {
         if rows.is_empty() {
             return;
         }
-        let w = usize::from(self.size.0);
+        let (w, chroma, block) = (usize::from(self.size.0), self.chroma, self.chroma.block());
+        let cw = self.chroma_size().0;
         let width = cols.len();
         let threads = self.threads.min(CONVERT_THREADS).min(width * rows.len() / THREAD_PIXELS).max(1);
-        let band = rows.len().div_ceil(threads);
+        // A band is whole blocks, so that no colour sample is two threads'.
+        let band = rows.len().div_ceil(threads).next_multiple_of(block);
         let span = rows.start * w + cols.start..rows.end * w + cols.start;
-        let (mut y, mut u, mut v) = (&mut self.y[span.clone()], &mut self.u[span.clone()], &mut self.v[span]);
+        // The chroma planes' rows of these: exactly as many as the rows have
+        // samples, since the crate takes the last of them for an odd row.
+        let start = rows.start / block * cw + cols.start / block;
+        let chroma_span = start..start + rows.len().div_ceil(block) * cw;
+        let (mut y, mut u, mut v) = (&mut self.y[span], &mut self.u[chroma_span.clone()], &mut self.v[chroma_span]);
         let mut pixels = pixels;
         std::thread::scope(|scope| {
             let mut left = rows.len();
@@ -378,15 +461,15 @@ impl Picture {
                 left -= height;
                 let (band_y, band_u, band_v, band_pixels);
                 (band_y, y) = y.split_at_mut(height * w);
-                (band_u, u) = u.split_at_mut(height * w);
-                (band_v, v) = v.split_at_mut(height * w);
+                (band_u, u) = u.split_at_mut(height.div_ceil(block) * cw);
+                (band_v, v) = v.split_at_mut(height.div_ceil(block) * cw);
                 (band_pixels, pixels) = pixels.split_at(height * stride);
                 let planes = [band_y, band_u, band_v];
                 // The last band is this thread's own.
                 if left > 0 {
-                    scope.spawn(move || convert_band(band_pixels, stride, packed, planes, w, (width, height)));
+                    scope.spawn(move || convert_band(band_pixels, stride, packed, chroma, planes, [w, cw], (width, height)));
                 } else {
-                    convert_band(band_pixels, stride, packed, planes, w, (width, height));
+                    convert_band(band_pixels, stride, packed, chroma, planes, [w, cw], (width, height));
                 }
             }
         });
@@ -394,18 +477,21 @@ impl Picture {
 }
 
 /// Convert `size` pixels from `pixels`, rows `stride` bytes apart, into the
-/// `planes` Y, U and V, whose rows are `plane_stride` apart. Every row of the
-/// pixels and of the planes is a whole stride.
-fn convert_band(pixels: &[u8], stride: usize, packed: Packed, planes: [&mut [u8]; 3], plane_stride: usize, size: (usize, usize)) {
+/// `planes` Y, U and V at `chroma`, whose rows are `plane_strides` apart, the
+/// luma's and the chroma's. Every row of the pixels and of the planes is a
+/// whole stride.
+#[allow(clippy::too_many_arguments)]
+fn convert_band(pixels: &[u8], stride: usize, packed: Packed, chroma: Chroma, planes: [&mut [u8]; 3], plane_strides: [usize; 2], size: (usize, usize)) {
     use yuv::{YuvConversionMode, YuvRange, YuvStandardMatrix};
     let [y, u, v] = planes;
+    let [luma_stride, chroma_stride] = plane_strides;
     let mut image = yuv::YuvPlanarImageMut {
         y_plane: yuv::BufferStoreMut::Borrowed(y),
-        y_stride: plane_stride as u32,
+        y_stride: luma_stride as u32,
         u_plane: yuv::BufferStoreMut::Borrowed(u),
-        u_stride: plane_stride as u32,
+        u_stride: chroma_stride as u32,
         v_plane: yuv::BufferStoreMut::Borrowed(v),
-        v_stride: plane_stride as u32,
+        v_stride: chroma_stride as u32,
         width: size.0 as u32,
         height: size.1 as u32,
     };
@@ -419,9 +505,11 @@ fn convert_band(pixels: &[u8], stride: usize, packed: Packed, planes: [&mut [u8]
     // 0.23 against 0.18 and 0.97 a 3840×2160 against 0.96, which waits on
     // memory.
     let (range, matrix, mode) = (YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Professional);
-    match packed {
-        Packed::Rgb => yuv::rgb_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
-        Packed::Bgrx => yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
+    match (packed, chroma) {
+        (Packed::Rgb, Chroma::Yuv444) => yuv::rgb_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
+        (Packed::Bgrx, Chroma::Yuv444) => yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, range, matrix, mode),
+        (Packed::Rgb, Chroma::Yuv420) => yuv::rgb_to_yuv420(&mut image, pixels, stride as u32, range, matrix, mode),
+        (Packed::Bgrx, Chroma::Yuv420) => yuv::bgra_to_yuv420(&mut image, pixels, stride as u32, range, matrix, mode),
     }
     .expect("the picture fits its buffer, which was checked");
 }
@@ -459,16 +547,23 @@ enum Coded {
 }
 
 impl Encoder {
-    /// An encoder for a `width`×`height` picture, starting at `quality`
-    /// (1–100, clamped), coded by `coder` on `threads` threads. The thread
-    /// count is the caller's: how many cores a machine can spare is a question
-    /// about what else it runs. It also bounds the tile columns, and so
-    /// decides with the width whether the stream is loop filtered: from 2048
-    /// wide on four threads or more it is not.
-    pub fn new(width: u16, height: u16, quality: u8, threads: usize, coder: Coder) -> Result<Self, Error> {
+    /// An encoder for a `width`×`height` picture at `chroma`, starting at
+    /// `quality` (1–100, clamped), coded by `coder` on `threads` threads. The
+    /// thread count is the caller's: how many cores a machine can spare is a
+    /// question about what else it runs. It also bounds the tile columns, and
+    /// so decides with the width whether the stream is loop filtered: from
+    /// 2048 wide on four threads or more it is not.
+    pub fn new(width: u16, height: u16, quality: u8, chroma: Chroma, threads: usize, coder: Coder) -> Result<Self, Error> {
         Ok(Self(match coder {
-            Coder::Libvpx => Coded::Libvpx(Box::new(libvpx::Encoder::new(width, height, quality, threads)?)),
+            Coder::Libvpx => Coded::Libvpx(Box::new(libvpx::Encoder::new(width, height, quality, chroma, threads)?)),
         }))
+    }
+
+    /// How this encoder's stream samples colour.
+    pub fn chroma(&self) -> Chroma {
+        match &self.0 {
+            Coded::Libvpx(encoder) => encoder.chroma(),
+        }
     }
 
     /// The coder this encoder was made with.
@@ -588,9 +683,21 @@ enum Owed {
 }
 
 impl Stream {
-    /// A stream of `width`×`height` pictures, as [`Encoder::new`] takes them.
-    pub fn new(width: u16, height: u16, quality: u8, threads: usize, coder: Coder) -> Result<Self, Error> {
-        Ok(Self { encoder: Encoder::new(width, height, quality, threads, coder)?, picture: Picture::new(width, height, threads)?, filled: false, owed: Owed::Whole, changed: Vec::new() })
+    /// A stream of `width`×`height` pictures at `chroma`, as [`Encoder::new`]
+    /// takes them.
+    pub fn new(width: u16, height: u16, quality: u8, chroma: Chroma, threads: usize, coder: Coder) -> Result<Self, Error> {
+        Ok(Self {
+            encoder: Encoder::new(width, height, quality, chroma, threads, coder)?,
+            picture: Picture::new(width, height, chroma, threads)?,
+            filled: false,
+            owed: Owed::Whole,
+            changed: Vec::new(),
+        })
+    }
+
+    /// How this stream samples colour.
+    pub fn chroma(&self) -> Chroma {
+        self.encoder.chroma()
     }
 
     /// The coder this stream was made with.
@@ -742,7 +849,8 @@ impl Stream {
 /// What the opening bits of a VP9 frame say about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameHeader {
-    /// The VP9 profile, 0–3. Streams encoded here are 1, 8-bit 4:4:4.
+    /// The VP9 profile, 0–3. Streams encoded here are their chroma's, 1 for
+    /// 4:4:4 and 0 for 4:2:0 ([`Chroma::profile`]).
     pub profile: u8,
     /// Whether a decoder that has seen nothing before this frame can start here.
     pub keyframe: bool,
@@ -808,24 +916,25 @@ const LEVELS: [(u8, u64, u32, u16); 14] = [
     (62, 4_706_009_088, 35_651_584, 16_832),
 ];
 
-/// The WebCodecs codec string for a `w`×`h` stream of this crate's, every field
-/// of it: `vp09.<profile>.<level>.<depth>.<chroma>.<primaries>.<transfer>.<matrix>.<range>`.
+/// The WebCodecs codec string for a `w`×`h` stream of this crate's at
+/// `chroma`, every field of it:
+/// `vp09.<profile>.<level>.<depth>.<chroma>.<primaries>.<transfer>.<matrix>.<range>`.
 ///
-/// Profile 1, eight-bit and 4:4:4, because that is what the encoder produces.
-/// The optional fields are spelled out rather than left to their
-/// defaults because the defaults are wrong for this stream on both counts: an
-/// omitted chroma field means 4:2:0, which Chromium reads as 4:2:2 on a profile
-/// 1 string since 4:2:0 is not a profile 1 picture, and omitted colour fields
+/// The chroma's profile, eight bits and the chroma, because that is what the
+/// encoder produces. The optional fields are spelled out rather than left to
+/// their defaults because the defaults are wrong for this stream: an omitted
+/// chroma field means 4:2:0, which Chromium reads as 4:2:2 on a profile 1
+/// string since 4:2:0 is not a profile 1 picture, and omitted colour fields
 /// mean BT.709 where the keyframe header says BT.601 (SMPTE 170M primaries,
 /// transfer and matrix — code 6 each, what Chromium's own VP9 parser maps that
 /// header flag to) at studio swing. The level comes from `LEVELS` at `fps`
 /// frames a second. `None` for a picture no VP9 level covers.
-pub fn codec_string(w: u16, h: u16, fps: u64) -> Option<String> {
+pub fn codec_string(w: u16, h: u16, fps: u64, chroma: Chroma) -> Option<String> {
     let size = u32::from(w) * u32::from(h);
     let rate = u64::from(size) * fps;
     let breadth = w.max(h);
     let (level, ..) = LEVELS.iter().find(|(_, max_rate, max_size, max_breadth)| rate <= *max_rate && size <= *max_size && breadth <= *max_breadth).copied()?;
-    Some(format!("vp09.01.{level:02}.08.03.06.06.06.00"))
+    Some(format!("vp09.{:02}.{level:02}.08.{}.06.06.06.00", chroma.profile(), chroma.codec_field()))
 }
 
 // The crate's own tests: what every coder shares. Each coder's are beside it
@@ -837,28 +946,32 @@ mod tests {
     /// Every coder there is, which a test of what they share runs on each.
     const CODERS: [Coder; 1] = [Coder::Libvpx];
 
+    /// Both chromas, which a test of what they share runs at each.
+    const CHROMAS: [Chroma; 2] = [Chroma::Yuv444, Chroma::Yuv420];
+
     /// `w`×`h` of one colour, packed RGB.
     fn flat(w: u16, h: u16, colour: [u8; 3]) -> Vec<u8> {
         colour.iter().copied().cycle().take(usize::from(w) * usize::from(h) * 3).collect()
     }
 
     /// A stream is coded by the coder it was made with and by the same calls
-    /// whichever that is: a keyframe first, a frame of what was read after
-    /// it, and a settle at the dial it names, each a profile 1 frame the
-    /// decoder takes.
+    /// whichever that is, at either chroma: a keyframe first, a frame of what
+    /// was read after it, and a settle at the dial it names, each a frame of
+    /// the chroma's profile the decoder takes at that chroma.
     #[test]
     fn a_stream_is_coded_by_the_coder_it_names() {
         let (w, h) = (96u16, 64u16);
-        for coder in CODERS {
-            let mut stream = Stream::new(w, h, 40, 2, coder).expect("a stream");
-            assert_eq!((stream.coder(), stream.size(), stream.quality()), (coder, (w, h), 40));
+        for (coder, chroma) in CODERS.into_iter().flat_map(|coder| CHROMAS.map(|chroma| (coder, chroma))) {
+            let mut stream = Stream::new(w, h, 40, chroma, 2, coder).expect("a stream");
+            assert_eq!((stream.coder(), stream.chroma(), stream.size(), stream.quality()), (coder, chroma, (w, h), 40));
             let mut decoder = Decoder::new(1).expect("a decoder");
             let mut frame = Vec::new();
             assert!(matches!(stream.encode(false, &mut frame), Err(Error::Unread)), "{coder:?}");
             stream.read_rgb(&flat(w, h, [200, 40, 40]), None).expect("its own picture");
             assert!(stream.encode(false, &mut frame).expect("a frame"), "{coder:?}: a first frame that is no keyframe");
-            assert_eq!(frame_header(&frame), Some(FrameHeader { profile: PROFILE, keyframe: true }), "{coder:?}");
-            assert_eq!(decoder.decode(&frame).expect("a decode").size(), (u32::from(w), u32::from(h)), "{coder:?}");
+            assert_eq!(frame_header(&frame), Some(FrameHeader { profile: chroma.profile(), keyframe: true }), "{coder:?}");
+            let decoded = decoder.decode(&frame).expect("a decode");
+            assert_eq!((decoded.size(), decoded.chroma()), ((u32::from(w), u32::from(h)), chroma), "{coder:?}");
 
             stream.set_quality(20);
             frame.clear();
@@ -875,7 +988,7 @@ mod tests {
     }
 
     /// A rectangle converts to what the whole picture's conversion holds
-    /// there and leaves the rest alone: on an odd row or column, at the last
+    /// there and leaves the rest alone, at either chroma: on an odd row or column, at the last
     /// row and column, in a buffer that ends with its last row, past the
     /// picture's edge, and on any number of threads, whose bands a picture
     /// this small is given by a rectangle the size of a desktop below.
@@ -895,8 +1008,8 @@ mod tests {
             // Packed RGB, which is tight.
             let tight = |pixels: &[u8]| -> Vec<u8> { pixels.chunks(stride).flat_map(|row| row[..width * 4].chunks(4).flat_map(|px| [px[2], px[1], px[0]])).collect() };
             let (before_rgb, after_rgb) = (tight(&before), tight(&after));
-            for threads in [1, 4] {
-                let mut whole = Picture::new(width as u16, height as u16, 1).expect("a picture");
+            for (threads, chroma) in [1, 4].into_iter().flat_map(|threads| CHROMAS.map(|chroma| (threads, chroma))) {
+                let mut whole = Picture::new(width as u16, height as u16, chroma, 1).expect("a picture");
                 for named in &rects {
                     // What changed is this rectangle and nothing else.
                     let (mut changed, mut changed_rgb) = (before.clone(), before_rgb.clone());
@@ -906,16 +1019,16 @@ mod tests {
                         changed_rgb[row * width * 3..][cols.start * 3..cols.end * 3].copy_from_slice(&after_rgb[row * width * 3..][cols.start * 3..cols.end * 3]);
                     }
                     whole.read_bgrx(&changed, stride).expect("a picture that fits");
-                    let mut partial = Picture::new(width as u16, height as u16, threads).expect("a picture");
+                    let mut partial = Picture::new(width as u16, height as u16, chroma, threads).expect("a picture");
                     partial.read_bgrx(&before, stride).expect("a picture that fits");
                     partial.read_bgrx_rect(&changed, stride, *named).expect("a picture that fits");
-                    assert!(partial.planes() == whole.planes(), "{named:?} on {threads}: the planes are not the whole conversion's");
+                    assert!(partial.planes() == whole.planes(), "{named:?} on {threads} at {chroma:?}: the planes are not the whole conversion's");
 
                     whole.read_rgb(&changed_rgb).expect("its own picture");
-                    let mut partial = Picture::new(width as u16, height as u16, threads).expect("a picture");
+                    let mut partial = Picture::new(width as u16, height as u16, chroma, threads).expect("a picture");
                     partial.read_rgb(&before_rgb).expect("its own picture");
                     partial.read_rgb_rect(&changed_rgb, *named).expect("its own picture");
-                    assert!(partial.planes() == whole.planes(), "RGB {named:?} on {threads}: the planes are not the whole conversion's");
+                    assert!(partial.planes() == whole.planes(), "RGB {named:?} on {threads} at {chroma:?}: the planes are not the whole conversion's");
                 }
                 assert!(matches!(whole.read_bgrx_rect(&before[1..], stride, rect(0, 0, 1, 1)), Err(Error::Buffer { .. })), "a buffer too short for the picture was read");
                 assert!(matches!(whole.read_rgb_rect(&before_rgb[3..], rect(0, 0, 1, 1)), Err(Error::Crop(..))), "a buffer that is not the picture was read");
@@ -963,14 +1076,14 @@ mod tests {
 
     #[test]
     fn a_picture_refuses_a_crop_that_is_not_its_picture() {
-        let mut picture = Picture::new(64, 32, 1).expect("a picture");
+        let mut picture = Picture::new(64, 32, Chroma::Yuv444, 1).expect("a picture");
         picture.read_rgb(&flat(64, 32, [10, 20, 30])).expect("its own picture");
         assert!(picture.read_rgb(&flat(64, 31, [10, 20, 30])).is_err(), "a mis-sized crop would have indexed out of the planes");
         // Three full-size planes, tight.
         let [y, u, v] = picture.planes();
         assert_eq!((y.len(), u.len(), v.len()), (64 * 32, 64 * 32, 64 * 32));
         assert_eq!(picture.strides(), [64, 64, 64]);
-        assert!(matches!(Picture::new(0, 16, 1), Err(Error::Empty(0, 16))));
+        assert!(matches!(Picture::new(0, 16, Chroma::Yuv444, 1), Err(Error::Empty(0, 16))));
     }
 
     /// The conversion's arithmetic, at the points BT.601 studio swing pins
@@ -980,7 +1093,7 @@ mod tests {
     /// coefficients are allowed.
     #[test]
     fn the_conversion_is_bt601_studio_swing() {
-        let mut yuv = Picture::new(2, 2, 1).expect("a picture");
+        let mut yuv = Picture::new(2, 2, Chroma::Yuv444, 1).expect("a picture");
         let close = |got: u8, want: u8, what: &str| {
             assert!(got.abs_diff(want) <= 1, "{what}: got {got}, wanted {want}");
         };
@@ -1036,7 +1149,7 @@ mod tests {
         // picture per red: wide enough for every path's vectors and a tail.
         let values: Vec<u8> = (0..=255u8).step_by(7).chain([255]).collect();
         let w = values.len() * values.len();
-        let mut picture = Picture::new(w as u16, values.len() as u16, 1).expect("a picture");
+        let mut picture = Picture::new(w as u16, values.len() as u16, Chroma::Yuv444, 1).expect("a picture");
         let colours: Vec<[u8; 3]> = values.iter().flat_map(|&r| values.iter().map(move |&g| (r, g))).flat_map(|(r, g)| values.iter().map(move |&b| [r, g, b])).collect();
         let want: Vec<[u8; 3]> = colours.iter().map(|&c| [formula(c, Y, 16), formula(c, U, 128), formula(c, V, 128)]).collect();
         let held = |picture: &Picture, read: &str| {
@@ -1060,8 +1173,36 @@ mod tests {
         assert!(!fits(4, 2, 16, 31));
         assert!(fits(0, 0, 0, 0));
         assert!(!fits(4, 1, usize::MAX, 16), "a stride the conversion cannot carry, however the bytes add up");
-        let mut picture = Picture::new(4, 2, 1).expect("a picture");
+        let mut picture = Picture::new(4, 2, Chroma::Yuv444, 1).expect("a picture");
         assert!(matches!(picture.read_bgrx(&[0; 12], 16), Err(Error::Buffer { .. })));
+    }
+
+    #[test]
+    fn a_chroma_is_its_profile() {
+        assert_eq!((Chroma::Yuv444.profile(), Chroma::Yuv420.profile()), (1, 0));
+        for chroma in CHROMAS {
+            assert_eq!(Chroma::of_profile(chroma.profile()), Some(chroma));
+        }
+        assert_eq!(Chroma::of_profile(2), None, "ten and twelve bits are no chroma here");
+    }
+
+    /// A 4:2:0 picture's chroma planes are a sample per 2×2 pixels, the odd
+    /// last row and column included, and a block's sample is its four pixels'
+    /// colour together.
+    #[test]
+    fn a_420_picture_samples_colour_per_block() {
+        let mut picture = Picture::new(5, 3, Chroma::Yuv420, 1).expect("a picture");
+        picture.read_rgb(&flat(5, 3, [255, 0, 0])).expect("its own picture");
+        let [y, u, v] = picture.planes();
+        assert_eq!((y.len(), u.len(), v.len()), (15, 6, 6));
+        assert_eq!(picture.strides(), [5, 3, 3]);
+        assert!(u.iter().all(|&u| u.abs_diff(90) <= 1) && v.iter().all(|&v| v.abs_diff(240) <= 1), "red is red at 4:2:0: {u:?} {v:?}");
+        // A block of two red pixels and two blue is their mean, not either.
+        let mut quad = Picture::new(2, 2, Chroma::Yuv420, 1).expect("a picture");
+        quad.read_rgb(&[255, 0, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0]).expect("a 2x2 picture");
+        let [_, u, v] = quad.planes();
+        assert_eq!((u.len(), v.len()), (1, 1));
+        assert!(u[0].abs_diff(165) <= 1 && v[0].abs_diff(175) <= 1, "a block's colour is its pixels' mean: {u:?} {v:?}");
     }
 
     #[test]
@@ -1076,7 +1217,7 @@ mod tests {
     /// decoders that will accept the stream.
     #[test]
     fn the_codec_string_names_the_lowest_level_that_fits() {
-        let codec_string = |w, h| super::codec_string(w, h, 30);
+        let codec_string = |w, h| super::codec_string(w, h, 30, Chroma::Yuv444);
         // 1280x800 at 30: 1_024_000 samples. Level 3.1 allows only 983_040 of
         // them, so this is level 4 — the *picture size* binds here, not the
         // sample rate, which at 30_720_000 is well inside 3.1's 36_864_000.
@@ -1106,9 +1247,12 @@ mod tests {
         // At 60 frames a second the sample rate binds where the picture size did
         // not: 1080p60 is 124_416_000 samples a second, past 4.0's 83_558_400,
         // and 4K60 497_664_000, past 5.0's 311_951_360.
-        let at_60 = |w, h| super::codec_string(w, h, 60);
+        let at_60 = |w, h| super::codec_string(w, h, 60, Chroma::Yuv444);
         assert_eq!(at_60(1920, 1080).as_deref(), Some("vp09.01.41.08.03.06.06.06.00"));
         assert_eq!(at_60(3840, 2160).as_deref(), Some("vp09.01.51.08.03.06.06.06.00"));
-        assert_eq!(super::codec_string(20_000, 20_000, 60), None, "no level covers it");
+        assert_eq!(super::codec_string(20_000, 20_000, 60, Chroma::Yuv444), None, "no level covers it");
+        // 4:2:0 is profile 0 and chroma field 1 at the same level and colour.
+        assert_eq!(super::codec_string(1920, 1080, 30, Chroma::Yuv420).as_deref(), Some("vp09.00.40.08.01.06.06.06.00"));
+        assert_eq!(super::codec_string(3840, 2160, 60, Chroma::Yuv420).as_deref(), Some("vp09.00.51.08.01.06.06.06.00"));
     }
 }
