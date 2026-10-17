@@ -63,5 +63,5 @@ frame made in a test is held to.
 Use it by release tag:
 
 ```toml
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.25" }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "vx.y.z" }
 ```
