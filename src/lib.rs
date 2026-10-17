@@ -352,7 +352,8 @@ impl Picture {
 
     /// Convert `rect` of `rgb`, which holds the whole picture as
     /// [`Self::read_rgb`] takes it, and leave every other pixel as the last
-    /// conversion made it, as [`Self::read_bgrx_rect`] does.
+    /// conversion made it, as [`Self::read_bgrx_rect`] does, 4:2:0's whole
+    /// blocks included.
     pub fn read_rgb_rect(&mut self, rgb: &[u8], rect: Rect) -> Result<(), Error> {
         self.holds_rgb(rgb)?;
         self.convert(rgb, usize::from(self.size.0) * 3, rect, Packed::Rgb);
@@ -389,6 +390,10 @@ impl Picture {
     /// conversion made it: what a picture that changed in one place costs is
     /// that place and not the screen, nor the rows across it. What of `rect`
     /// lies past the picture's edge is not part of it.
+    ///
+    /// At 4:2:0 `rect` is read as the 2×2 blocks it touches, since a block's
+    /// one colour sample is all four of its pixels': `pixels` must hold the
+    /// picture there too, and every other pixel is left as it was.
     pub fn read_bgrx_rect(&mut self, pixels: &[u8], stride: usize, rect: Rect) -> Result<(), Error> {
         self.holds_bgrx(pixels, stride)?;
         self.convert(pixels, stride, rect, Packed::Bgrx);
@@ -731,11 +736,13 @@ impl Stream {
     ///
     /// `changed` is where the picture differs from the one read before it, or
     /// `None` for one that may differ anywhere, a keyframe's included: the
-    /// caller's word and not checked. With it only the rectangles are read,
-    /// and the next frame codes only the blocks they touch, and those of the
-    /// reads before it that no frame has carried: the rest of `pixels` may be
-    /// whatever it is. The stream's first read is the whole picture whatever
-    /// `changed` says, and reads all of `pixels`.
+    /// caller's word and not checked. With it only the rectangles are read —
+    /// at 4:2:0 the 2×2 blocks they touch, which never reach past the blocks
+    /// a frame codes ([`Picture::read_bgrx_rect`]) — and the next frame codes
+    /// only the blocks they touch, and those of the reads before it that no
+    /// frame has carried: the rest of `pixels` may be whatever it is. The
+    /// stream's first read is the whole picture whatever `changed` says, and
+    /// reads all of `pixels`.
     ///
     /// Nothing of `pixels` is kept: it is the planes that are coded, so the
     /// frame may be a while after the read, and the pixels changed by then.
@@ -1175,6 +1182,38 @@ mod tests {
         assert!(!fits(4, 1, usize::MAX, 16), "a stride the conversion cannot carry, however the bytes add up");
         let mut picture = Picture::new(4, 2, Chroma::Yuv444, 1).expect("a picture");
         assert!(matches!(picture.read_bgrx(&[0; 12], 16), Err(Error::Buffer { .. })));
+    }
+
+    /// At 4:2:0 a rectangle off the even grid reads the 2×2 blocks it touches
+    /// and not a pixel past them: a buffer that is not the picture anywhere
+    /// else leaves the rest of the planes as they were.
+    #[test]
+    fn a_420_rectangle_reads_the_blocks_it_touches_and_no_more() {
+        let (w, h) = (8u16, 6u16);
+        let mut picture = Picture::new(w, h, Chroma::Yuv420, 1).expect("a picture");
+        picture.read_rgb(&flat(w, h, [30, 60, 90])).expect("its own picture");
+        let (before_y, before_u) = (picture.planes()[0].to_vec(), picture.planes()[1].to_vec());
+        // The picture, red, in the block (2..4, 2..4) alone; garbage elsewhere.
+        let mut rgb = flat(w, h, [7, 250, 3]);
+        for (x, y) in [(2usize, 2usize), (3, 2), (2, 3), (3, 3)] {
+            rgb[(y * usize::from(w) + x) * 3..][..3].copy_from_slice(&[255, 0, 0]);
+        }
+        picture.read_rgb_rect(&rgb, Rect { x: 3, y: 3, width: 1, height: 1 }).expect("its own picture");
+        let [y_plane, u_plane, v_plane] = picture.planes();
+        for (i, (&now, &was)) in y_plane.iter().zip(&before_y).enumerate() {
+            let (x, y) = (i % usize::from(w), i / usize::from(w));
+            if (2..4).contains(&x) && (2..4).contains(&y) {
+                assert!(now.abs_diff(81) <= 1, "luma at {x},{y} is {now}, not red's");
+            } else {
+                assert_eq!(now, was, "luma at {x},{y} moved");
+            }
+        }
+        // The block's sample: row 1 of the 4-sample-wide chroma plane, column 1.
+        let block = 4 + 1;
+        assert!(u_plane[block].abs_diff(90) <= 1 && v_plane[block].abs_diff(240) <= 1, "the block's colour is not red's");
+        for (i, (&now, &was)) in u_plane.iter().zip(&before_u).enumerate().filter(|&(i, _)| i != block) {
+            assert_eq!(now, was, "chroma sample {i} moved");
+        }
     }
 
     #[test]
