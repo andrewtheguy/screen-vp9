@@ -7,7 +7,15 @@ use std::os::raw::{c_int, c_uint, c_ulong};
 
 use vpx_sys as vpx;
 
-use crate::{Error, MAX_THREADS, PROFILE, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, fits, loop_filtered, quality_to_q, tile_columns_log2};
+use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, fits, loop_filtered, quality_to_q, tile_columns_log2};
+
+/// libvpx's image format for a picture at `chroma`.
+fn image_format(chroma: Chroma) -> vpx::vpx_img_fmt_t {
+    match chroma {
+        Chroma::Yuv444 => vpx::vpx_img_fmt_VPX_IMG_FMT_I444,
+        Chroma::Yuv420 => vpx::vpx_img_fmt_VPX_IMG_FMT_I420,
+    }
+}
 
 /// libvpx's `cpu_used` for a speed, its speed setting, 0–9, higher being
 /// faster and worse. 7 is inside the 5–8 band libvpx's own live-encoding
@@ -53,6 +61,7 @@ pub struct Encoder {
     /// replaced on every frame. Never freed: `vpx_img_wrap` allocated nothing.
     img: vpx::vpx_image_t,
     size: (u16, u16),
+    chroma: Chroma,
     /// The dial the next frame is coded at, which [`Self::set_quality`] moves.
     quality: u8,
     /// The speed the next frame is searched at, which `set_speed` moves.
@@ -80,13 +89,13 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    /// An encoder for a `width`×`height` picture, starting at
+    /// An encoder for a `width`×`height` picture at `chroma`, starting at
     /// `quality` (1–100, clamped), coded by `threads` threads. The thread count
     /// is the caller's: how many cores a machine can spare is a question about
     /// what else it runs. It also bounds the tile columns, and so decides with
     /// the width whether the stream is loop filtered: from 2048 wide on four
     /// threads or more it is not.
-    pub fn new(width: u16, height: u16, quality: u8, threads: usize) -> Result<Self, Error> {
+    pub fn new(width: u16, height: u16, quality: u8, chroma: Chroma, threads: usize) -> Result<Self, Error> {
         if width == 0 || height == 0 {
             return Err(Error::Empty(width, height));
         }
@@ -110,10 +119,9 @@ impl Encoder {
 
         cfg.g_w = u32::from(width);
         cfg.g_h = u32::from(height);
-        // 4:4:4 at eight bits, and nothing else. It
-        // has to match the image format wrapped below, and `codec_string` tells
-        // a decoder the same number.
-        cfg.g_profile = u32::from(PROFILE);
+        // The chroma's profile at eight bits. It has to match the image format
+        // wrapped below, and `codec_string` tells a decoder the same number.
+        cfg.g_profile = u32::from(chroma.profile());
         cfg.g_threads = threads as u32;
         // Milliseconds, so a pts is elapsed wall-clock rather than a frame index.
         cfg.g_timebase.num = 1;
@@ -175,6 +183,7 @@ impl Encoder {
             // SAFETY: zeroed, then filled in by `vpx_img_wrap` below.
             img: unsafe { std::mem::zeroed() },
             size: (width, height),
+            chroma,
             quality,
             speed: Speed::default(),
             running: (quality, Speed::default()),
@@ -232,7 +241,7 @@ impl Encoder {
             // for "compute the layout, allocate nothing" — ffmpeg passes a
             // literal `1` — and it is why `vpx_img_free` must never be called on
             // this image.
-            let wrapped = vpx::vpx_img_wrap(&mut encoder.img, vpx::vpx_img_fmt_VPX_IMG_FMT_I444, cfg.g_w, cfg.g_h, 1, std::ptr::dangling_mut::<u8>());
+            let wrapped = vpx::vpx_img_wrap(&mut encoder.img, image_format(chroma), cfg.g_w, cfg.g_h, 1, std::ptr::dangling_mut::<u8>());
             if wrapped.is_null() {
                 return Err(Error::Codec { call: "img_wrap", detail: format!("refused a {width}x{height} picture") });
             }
@@ -243,6 +252,11 @@ impl Encoder {
     /// The picture size this encoder codes.
     pub fn size(&self) -> (u16, u16) {
         self.size
+    }
+
+    /// How this encoder's stream samples colour.
+    pub fn chroma(&self) -> Chroma {
+        self.chroma
     }
 
     /// The dial this encoder is coding at.
@@ -373,6 +387,9 @@ impl Encoder {
             let (pw, ph) = picture.size();
             return Err(Error::Mismatch(w, h, pw, ph));
         }
+        if picture.chroma() != self.chroma {
+            return Err(Error::Sampling(self.chroma, picture.chroma()));
+        }
         self.follow()?;
         // Strictly increasing, which two encodes inside one millisecond would
         // otherwise not be.
@@ -381,14 +398,14 @@ impl Encoder {
         // Windows. A cast rather than `From`, because no `From<u32>` exists for
         // the 32-bit case.
         let flags: vpx::vpx_enc_frame_flags_t = if keyframe { vpx::VPX_EFLAG_FORCE_KF as vpx::vpx_enc_frame_flags_t } else { 0 };
-        let (planes, stride) = (picture.planes(), usize::from(self.size.0));
+        let (planes, strides) = (picture.planes(), picture.strides());
         // An encoder's first frame is a keyframe whether asked or not, and a
         // keyframe has no blocks to skip.
         self.map(changed.filter(|_| !keyframe && self.begun))?;
 
         // SAFETY: the three planes outlive this call — they belong to `picture`,
-        // which is borrowed for it — and the stride is the one the picture
-        // reports for exactly this size. Casting away const is what the C API
+        // which is borrowed for it — and the strides are the ones the picture
+        // reports for exactly this size and chroma. Casting away const is what the C API
         // requires; libvpx does not write to an input image. The packets drained
         // below point into the encoder and are copied out before it is called
         // again, which is the lifetime libvpx documents for them.
@@ -396,7 +413,9 @@ impl Encoder {
             for (to, plane) in self.img.planes.iter_mut().zip(planes) {
                 *to = plane.as_ptr().cast_mut();
             }
-            self.img.stride[..3].fill(stride as c_int);
+            for (to, stride) in self.img.stride.iter_mut().zip(strides) {
+                *to = stride as c_int;
+            }
             check(
                 vpx::vpx_codec_encode(
                     &mut *self.ctx,
@@ -569,10 +588,11 @@ impl Decoder {
                 return Err(Error::NoPicture);
             }
             let img = &*img;
-            if img.fmt != vpx::vpx_img_fmt_VPX_IMG_FMT_I444 || img.bit_depth != 8 {
-                return Err(Error::Format(img.fmt as u32, img.bit_depth));
+            let chroma = [Chroma::Yuv444, Chroma::Yuv420].into_iter().find(|&chroma| img.fmt == image_format(chroma));
+            match chroma {
+                Some(chroma) if img.bit_depth == 8 => Ok(Decoded { img, chroma }),
+                _ => Err(Error::Format(img.fmt as u32, img.bit_depth)),
             }
-            Ok(Decoded { img })
         }
     }
 }
@@ -592,8 +612,9 @@ impl Drop for Decoder {
 /// The picture a decoded frame leaves on screen: libvpx's own image, borrowed
 /// from the decoder.
 pub struct Decoded<'a> {
-    /// Eight-bit 4:4:4, which the decode held it to.
+    /// Eight bits, at one of the two chromas, which the decode held it to.
     img: &'a vpx::vpx_image_t,
+    chroma: Chroma,
 }
 
 impl Decoded<'_> {
@@ -602,20 +623,29 @@ impl Decoded<'_> {
         (self.img.d_w, self.img.d_h)
     }
 
+    /// How the picture's colour is sampled.
+    pub fn chroma(&self) -> Chroma {
+        self.chroma
+    }
+
     /// Whether the stream declares its pixels BT.601 at studio swing, which is
     /// what every encoder here writes and what [`Self::write_bgrx`] assumes.
     pub fn declares_bt601_studio_swing(&self) -> bool {
         self.img.cs == vpx::vpx_color_space_VPX_CS_BT_601 && self.img.range == vpx::vpx_color_range_VPX_CR_STUDIO_RANGE
     }
 
-    /// Y, U and V, each at its own stride from [`Self::strides`].
+    /// Y, U and V, each at its own stride from [`Self::strides`], the chroma
+    /// planes at the chroma's size.
     pub fn planes(&self) -> [&[u8]; 3] {
-        let (w, h) = (self.img.d_w as usize, self.img.d_h as usize);
         let plane = |i: usize| {
+            let (mut w, mut h) = (self.img.d_w as usize, self.img.d_h as usize);
+            if i > 0 {
+                (w, h) = (w.div_ceil(1 << self.img.x_chroma_shift), h.div_ceil(1 << self.img.y_chroma_shift));
+            }
             let stride = self.img.stride[i] as usize;
             // SAFETY: the plane is the decoder's, laid out at the stride it
-            // reports, and read only inside the size it reports, which is
-            // every plane's at 4:4:4.
+            // reports, and read only inside the size it reports, shifted for
+            // a chroma plane by what it reports of its sampling.
             unsafe { std::slice::from_raw_parts(self.img.planes[i], (h - 1) * stride + w) }
         };
         [plane(0), plane(1), plane(2)]
@@ -646,7 +676,11 @@ impl Decoded<'_> {
             width: w as u32,
             height: h as u32,
         };
-        yuv::yuv444_to_bgra(&image, out, stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601).expect("the picture fits its buffer, which was checked");
+        match self.chroma {
+            Chroma::Yuv444 => yuv::yuv444_to_bgra(&image, out, stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601),
+            Chroma::Yuv420 => yuv::yuv420_to_bgra(&image, out, stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601),
+        }
+        .expect("the picture fits its buffer, which was checked");
         // It writes an opaque alpha where the X byte goes.
         for row in 0..h {
             for pixel in out[row * stride..row * stride + w * 4].as_chunks_mut::<4>().0 {
@@ -671,7 +705,7 @@ mod tests {
 
     /// A picture read from `rgb`.
     fn picture(w: u16, h: u16, rgb: &[u8]) -> Picture {
-        let mut picture = Picture::new(w, h, 1).expect("a picture");
+        let mut picture = Picture::new(w, h, Chroma::Yuv444, 1).expect("a picture");
         picture.read_rgb(rgb).expect("its own picture");
         picture
     }
@@ -751,7 +785,7 @@ mod tests {
                 }
             }
         };
-        let mut encoder = Encoder::new(w, h, 90, 2).expect("an encoder");
+        let mut encoder = Encoder::new(w, h, 90, Chroma::Yuv444, 2).expect("an encoder");
         let mut rgb = flat(w, h, GREY);
         let mut frames = vec![encode(&mut encoder, &picture(w, h, &rgb), false).0];
         let mut step = |rgb: &[u8], changed: Option<&[Rect]>, want: [(Rect, [u8; 3]); 3]| {
@@ -812,9 +846,9 @@ mod tests {
             sum as f64 / rest.count() as f64
         };
 
-        let mut encoder = Encoder::new(w, h, QUALITY_MIN, 2).expect("an encoder");
+        let mut encoder = Encoder::new(w, h, QUALITY_MIN, Chroma::Yuv444, 2).expect("an encoder");
         // Before a frame nothing is coded at any dial, wherever it has been.
-        let mut unused = Encoder::new(w, h, 20, 2).expect("an encoder");
+        let mut unused = Encoder::new(w, h, 20, Chroma::Yuv444, 2).expect("an encoder");
         unused.set_quality(90);
         assert_eq!(unused.coarsest(), 90, "before a frame, the dial as it stands");
         assert_eq!(encoder.coarsest(), QUALITY_MIN);
@@ -873,7 +907,7 @@ mod tests {
         };
         let near = |got: [u8; 3], want: [u8; 3]| (0..3).all(|c| got[c].abs_diff(want[c]) <= 40);
         for bgrx in [true, false] {
-            let mut stream = Stream::new(w, h, 90, 2, Coder::Libvpx).expect("a stream");
+            let mut stream = Stream::new(w, h, 90, Chroma::Yuv444, 2, Coder::Libvpx).expect("a stream");
             assert_eq!((stream.size(), stream.quality(), stream.coarsest()), ((w, h), 90, 90));
             let mut frames = Vec::new();
             let mut step = |stream: &mut Stream, rgb: &[u8], changed: Option<&[Rect]>, keyframe: bool| {
@@ -965,7 +999,7 @@ mod tests {
         let mut bits = frame.iter().flat_map(|byte| (0..8).rev().map(move |i| u32::from(byte >> i & 1)));
         let mut read = |n: usize| (0..n).fold(0, |value, _| value << 1 | bits.next().expect("a whole header"));
         assert_eq!(read(2), 2, "frame_marker");
-        assert_eq!(read(1) | read(1) << 1, u32::from(PROFILE), "profile");
+        assert_eq!(read(1) | read(1) << 1, u32::from(Chroma::Yuv444.profile()), "profile");
         assert_eq!(read(1), 0, "show_existing_frame");
         let keyframe = read(1) == 0;
         assert_eq!((read(1), read(1)), (1, 0), "show_frame, error_resilient_mode");
@@ -1004,7 +1038,7 @@ mod tests {
         assert!(loop_filtered(tile_columns_log2(3840, 3)));
 
         for (w, threads, filtered) in [(1440, 4, true), (2048, 4, false), (2048, 2, true)] {
-            let mut encoder = Encoder::new(w, 64, 50, threads).expect("an encoder");
+            let mut encoder = Encoder::new(w, 64, 50, Chroma::Yuv444, threads).expect("an encoder");
             let frames: Vec<Vec<u8>> = [[30, 60, 90], [200, 30, 30], [40, 180, 70]].iter().map(|colour| encode(&mut encoder, &picture(w, 64, &flat(w, 64, *colour)), false).0).collect();
             for (n, frame) in frames.iter().enumerate() {
                 assert_eq!(filter_level(frame) > 0, filtered, "frame {n} of {w} wide, {threads} threads");
@@ -1026,11 +1060,11 @@ mod tests {
             .collect();
         let width = colours.len();
         let pixels: Vec<u8> = colours.iter().flatten().copied().collect();
-        let mut picture = Picture::new(width as u16, 1, 1).expect("a picture");
+        let mut picture = Picture::new(width as u16, 1, Chroma::Yuv444, 1).expect("a picture");
         picture.read_bgrx(&pixels, width * 4).expect("a row");
         assert!(picture.planes()[0].iter().all(|&y| (16..=235).contains(&y)), "luma stays in studio range");
 
-        let mut encoder = Encoder::new(width as u16, 1, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Encoder::new(width as u16, 1, QUALITY_MAX, Chroma::Yuv444, 1).expect("an encoder");
         let (frame, _) = encode(&mut encoder, &picture, false);
         let back = decode_chain(&[frame], width, 1);
         for (i, (want, got)) in pixels.as_chunks::<4>().0.iter().zip(back.as_chunks::<4>().0).enumerate() {
@@ -1055,9 +1089,9 @@ mod tests {
                 pixels[row * stride + x * 4..][..4].copy_from_slice(&colour(row));
             }
         }
-        let mut picture = Picture::new(width as u16, height as u16, 1).expect("a picture");
+        let mut picture = Picture::new(width as u16, height as u16, Chroma::Yuv444, 1).expect("a picture");
         picture.read_bgrx(&pixels, stride).expect("a picture that fits");
-        let mut encoder = Encoder::new(width as u16, height as u16, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Encoder::new(width as u16, height as u16, QUALITY_MAX, Chroma::Yuv444, 1).expect("an encoder");
         let (frame, _) = encode(&mut encoder, &picture, false);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let mut back = vec![0xAA; (height - 1) * stride + width * 4];
@@ -1078,7 +1112,7 @@ mod tests {
     #[test]
     fn a_lower_quality_makes_a_smaller_stream() {
         let bytes = |quality| {
-            let mut encoder = Encoder::new(320, 240, quality, 2).expect("an encoder");
+            let mut encoder = Encoder::new(320, 240, quality, Chroma::Yuv444, 2).expect("an encoder");
             (0..5u16).map(|step| encode(&mut encoder, &picture(320, 240, &moving(step)), false).0.len()).sum::<usize>()
         };
         let (coarse, fine) = (bytes(5), bytes(90));
@@ -1087,27 +1121,27 @@ mod tests {
 
     #[test]
     fn the_first_frame_is_a_keyframe_and_another_can_be_asked_for() {
-        let mut encoder = Encoder::new(320, 240, 60, 2).expect("an encoder");
+        let mut encoder = Encoder::new(320, 240, 60, Chroma::Yuv444, 2).expect("an encoder");
         let mut frame = |step, keyframe| encode(&mut encoder, &picture(320, 240, &moving(step)), keyframe);
         let first = frame(0, false);
         assert!(first.1, "a decoder has to be able to start somewhere");
-        assert_eq!(frame_header(&first.0), Some(FrameHeader { profile: PROFILE, keyframe: true }));
+        assert_eq!(frame_header(&first.0), Some(FrameHeader { profile: Chroma::Yuv444.profile(), keyframe: true }));
         assert!(!frame(1, false).1, "an unasked-for keyframe is bytes for nothing");
         assert!(!frame(2, false).1);
         let asked = frame(3, true);
         assert!(asked.1, "the keyframe flag did not reach the encoder");
-        assert_eq!(frame_header(&asked.0), Some(FrameHeader { profile: PROFILE, keyframe: true }));
+        assert_eq!(frame_header(&asked.0), Some(FrameHeader { profile: Chroma::Yuv444.profile(), keyframe: true }));
         // And it is not sticky: the frame after a forced keyframe is an ordinary one.
         let after = frame(4, false);
         assert!(!after.1);
-        assert_eq!(frame_header(&after.0), Some(FrameHeader { profile: PROFILE, keyframe: false }));
+        assert_eq!(frame_header(&after.0), Some(FrameHeader { profile: Chroma::Yuv444.profile(), keyframe: false }));
     }
 
     /// However long a stream runs, no keyframe comes that was not asked for.
     #[test]
     fn no_keyframe_comes_unasked() {
         let (w, h) = (64u16, 48u16);
-        let mut encoder = Encoder::new(w, h, 60, 1).expect("an encoder");
+        let mut encoder = Encoder::new(w, h, 60, Chroma::Yuv444, 1).expect("an encoder");
         let mut rgb = flat(w, h, [80, 40, 20]);
         for step in 0..300u32 {
             let x = (step * 3) as usize % 48;
@@ -1116,7 +1150,7 @@ mod tests {
             }
             let (frame, keyframe) = encode(&mut encoder, &picture(w, h, &rgb), false);
             assert_eq!(keyframe, step == 0, "frame {step}");
-            assert_eq!(frame_header(&frame).map(|header| header.profile), Some(PROFILE), "frame {step}");
+            assert_eq!(frame_header(&frame).map(|header| header.profile), Some(Chroma::Yuv444.profile()), "frame {step}");
         }
     }
 
@@ -1144,7 +1178,7 @@ mod tests {
             sum as f64 / (wu * hu) as f64
         };
 
-        let mut encoder = Encoder::new(w, h, QUALITY_MIN, 2).expect("an encoder");
+        let mut encoder = Encoder::new(w, h, QUALITY_MIN, Chroma::Yuv444, 2).expect("an encoder");
         let mut frames = vec![encode(&mut encoder, &source, false).0];
         let coarse = error(&decode_chain(&frames, wu, hu));
 
@@ -1154,7 +1188,7 @@ mod tests {
         frames.push(settle);
         let settled = error(&decode_chain(&frames, wu, hu));
 
-        let mut fresh = Encoder::new(w, h, 90, 2).expect("an encoder");
+        let mut fresh = Encoder::new(w, h, 90, Chroma::Yuv444, 2).expect("an encoder");
         let fine = error(&decode_chain(&[encode(&mut fresh, &source, false).0], wu, hu));
         assert!(
             settled < coarse / 4.0 && settled < fine * 2.0,
@@ -1188,7 +1222,7 @@ mod tests {
         let start = std::time::Instant::now();
         for packed_rgb in [false, true] {
             let mut walk = walk::QualityWalk::new(90, std::time::Duration::from_millis(33), true);
-            let mut stream = Stream::new(w, h, 90, 2, Coder::Libvpx).expect("a stream");
+            let mut stream = Stream::new(w, h, 90, Chroma::Yuv444, 2, Coder::Libvpx).expect("a stream");
             stream.set_quality(QUALITY_MIN);
             let mut frames = vec![Vec::new()];
             if packed_rgb { stream.read_rgb(&rgb, None) } else { stream.read_bgrx(&bgrx, wu * 4, None) }.expect("a read");
@@ -1240,7 +1274,7 @@ mod tests {
     /// mid-stream without spending a keyframe to do it.
     #[test]
     fn the_quality_moves_on_a_live_encoder_without_a_keyframe() {
-        let mut encoder = Encoder::new(320, 240, 90, 2).expect("an encoder");
+        let mut encoder = Encoder::new(320, 240, 90, Chroma::Yuv444, 2).expect("an encoder");
         assert_eq!(encoder.quality(), 90);
         let frame = |encoder: &mut Encoder, step| encode(encoder, &picture(320, 240, &moving(step)), false);
         frame(&mut encoder, 0);
@@ -1260,7 +1294,7 @@ mod tests {
     /// across the change still decodes to its picture.
     #[test]
     fn the_speed_moves_on_a_live_encoder_without_a_keyframe() {
-        let mut encoder = Encoder::new(320, 240, 90, 2).expect("an encoder");
+        let mut encoder = Encoder::new(320, 240, 90, Chroma::Yuv444, 2).expect("an encoder");
         assert_eq!(encoder.speed(), Speed::Usual);
         let frame = |encoder: &mut Encoder, step| encode(encoder, &picture(320, 240, &moving(step)), false);
         let mut frames = vec![frame(&mut encoder, 0).0];
@@ -1281,8 +1315,8 @@ mod tests {
         assert!(ground.iter().zip([30u8, 60, 90]).all(|(c, want)| c.abs_diff(want) <= 8), "the background decoded as {ground:?}");
     }
 
-    /// An odd side is carried as it is, and decodes at its own
-    /// size, every sample to its last row and column within 3 levels of the
+    /// An odd side is carried as it is, at either chroma, and decodes at its
+    /// own size, every sample to its last row and column within 3 levels of the
     /// planes the encoder was given: the finest quantizer still moves a flat
     /// block by a level or two (luma 126 to 127 on x86_64, 125 to 127 on arm64).
     ///
@@ -1293,25 +1327,34 @@ mod tests {
     #[test]
     fn an_odd_sized_picture_encodes_and_decodes_at_its_own_size() {
         let (w, h) = (33u16, 17u16);
-        let source = picture(w, h, &flat(w, h, [40, 180, 90]));
-        let mut encoder = Encoder::new(w, h, QUALITY_MAX, 1).expect("an encoder");
-        let (frame, _) = encode(&mut encoder, &source, false);
-        let mut decoder = Decoder::new(1).expect("a decoder");
-        let decoded = decoder.decode(&frame).expect("a decode");
-        assert_eq!(decoded.size(), (33, 17));
-        let (given, got, got_strides) = (source.planes(), decoded.planes(), decoded.strides());
-        for plane in 0..3 {
-            for (x, y) in (0..17).flat_map(|y| (0..33).map(move |x| (x, y))) {
-                let (want, have) = (given[plane][y * source.strides()[0] + x], got[plane][y * got_strides[plane] + x]);
-                assert!(want.abs_diff(have) <= 3, "plane {plane} at {x},{y}: {have}, given {want}");
+        for chroma in [Chroma::Yuv444, Chroma::Yuv420] {
+            let mut source = Picture::new(w, h, chroma, 1).expect("a picture");
+            source.read_rgb(&flat(w, h, [40, 180, 90])).expect("its own picture");
+            let mut encoder = Encoder::new(w, h, QUALITY_MAX, chroma, 1).expect("an encoder");
+            let (frame, _) = encode(&mut encoder, &source, false);
+            let mut decoder = Decoder::new(1).expect("a decoder");
+            let decoded = decoder.decode(&frame).expect("a decode");
+            assert_eq!((decoded.size(), decoded.chroma()), ((33, 17), chroma));
+            let (given, got, given_strides, got_strides) = (source.planes(), decoded.planes(), source.strides(), decoded.strides());
+            for plane in 0..3 {
+                let (pw, ph) = if plane == 0 { (33, 17) } else { (given_strides[1], given[1].len() / given_strides[1]) };
+                assert_eq!(got[plane].len(), (ph - 1) * got_strides[plane] + pw, "plane {plane} at {chroma:?}");
+                for (x, y) in (0..ph).flat_map(|y| (0..pw).map(move |x| (x, y))) {
+                    let (want, have) = (given[plane][y * given_strides[plane] + x], got[plane][y * got_strides[plane] + x]);
+                    assert!(want.abs_diff(have) <= 3, "plane {plane} at {x},{y} at {chroma:?}: {have}, given {want}");
+                }
             }
+            let mut out = vec![0; 33 * 17 * 4];
+            decoded.write_bgrx(&mut out, 33 * 4).expect("a picture that fits");
+            // The last pixel, of the odd row and column, is the colour still.
+            let last = rgb_at(&out, 33, 32, 16);
+            assert!(last.iter().zip([40u8, 180, 90]).all(|(c, want)| c.abs_diff(want) <= 6), "the last pixel at {chroma:?} decoded as {last:?}");
+            // 1919×1079 as a desktop is.
+            let mut source = Picture::new(1919, 1079, chroma, 2).expect("a picture");
+            source.read_rgb(&flat(1919, 1079, [90, 90, 90])).expect("its own picture");
+            let mut encoder = Encoder::new(1919, 1079, 60, chroma, 2).expect("an encoder");
+            assert!(encoder.encode(&source, false, None, &mut Vec::new()).is_ok());
         }
-        let mut out = vec![0; 33 * 17 * 4];
-        decoded.write_bgrx(&mut out, 33 * 4).expect("a picture that fits");
-        // 1919×1079 as a desktop is.
-        let source = picture(1919, 1079, &flat(1919, 1079, [90, 90, 90]));
-        let mut encoder = Encoder::new(1919, 1079, 60, 2).expect("an encoder");
-        assert!(encoder.encode(&source, false, None, &mut Vec::new()).is_ok());
     }
 
     /// Only the frames that are asked to be keyframes are, and the ones between
@@ -1319,7 +1362,7 @@ mod tests {
     #[test]
     fn keyframes_come_when_asked_and_the_frames_between_decode() {
         let (w, h) = (64u16, 32u16);
-        let mut encoder = Encoder::new(w, h, 60, 1).expect("an encoder");
+        let mut encoder = Encoder::new(w, h, 60, Chroma::Yuv444, 1).expect("an encoder");
         let mut decoder = Decoder::new(1).expect("a decoder");
         let mut out = vec![0; 64 * 32 * 4];
         for step in 0..5usize {
@@ -1344,7 +1387,7 @@ mod tests {
     #[test]
     fn a_stream_keeps_a_one_pixel_stem_its_colour() {
         let (rgb, at) = stems(64, 64);
-        let mut encoder = Encoder::new(64, 64, QUALITY_MAX, 1).expect("an encoder");
+        let mut encoder = Encoder::new(64, 64, QUALITY_MAX, Chroma::Yuv444, 1).expect("an encoder");
         let (frame, _) = encode(&mut encoder, &picture(64, 64, &rgb), false);
         let decoded = decode_chain(&[frame], 64, 64);
         let worst = at.iter().map(|&(x, y)| rgb_at(&decoded, 64, x, y).iter().zip([255u8, 121, 198]).map(|(a, b)| a.abs_diff(b)).max().unwrap()).max().unwrap();
@@ -1356,7 +1399,7 @@ mod tests {
     /// which is not what the conversion did.
     #[test]
     fn the_bitstream_declares_bt601_studio_swing() {
-        let mut encoder = Encoder::new(64, 64, 60, 1).expect("an encoder");
+        let mut encoder = Encoder::new(64, 64, 60, Chroma::Yuv444, 1).expect("an encoder");
         let (frame, _) = encode(&mut encoder, &picture(64, 64, &flat(64, 64, [200, 30, 30])), false);
         let mut decoder = Decoder::new(1).expect("a decoder");
         let decoded = decoder.decode(&frame).expect("a decode");
@@ -1370,22 +1413,26 @@ mod tests {
         0x2f, 0xc0, 0xaf, 0x42, 0xc5, 0xec, 0xe9, 0x2f, 0x81, 0x85, 0x05, 0xc0, 0xce, 0x9d, 0x00,
     ];
 
-    /// A frame of any other profile decodes to a picture this crate does not
-    /// read, and says so rather than handing back planes of the wrong size.
+    /// A profile 0 frame libvpx coded elsewhere decodes as the 4:2:0 picture
+    /// it is, its chroma planes at half its size.
     #[test]
-    fn a_frame_not_444_is_refused() {
-        assert_eq!(frame_header(&SUBSAMPLED_KEYFRAME), Some(FrameHeader { profile: 0, keyframe: true }));
+    fn a_420_frame_decodes_at_its_chroma() {
+        assert_eq!(frame_header(&SUBSAMPLED_KEYFRAME), Some(FrameHeader { profile: Chroma::Yuv420.profile(), keyframe: true }));
         let mut decoder = Decoder::new(1).expect("a decoder");
-        assert!(matches!(decoder.decode(&SUBSAMPLED_KEYFRAME), Err(Error::Format(_, 8))));
+        let decoded = decoder.decode(&SUBSAMPLED_KEYFRAME).expect("a decode");
+        assert_eq!((decoded.size(), decoded.chroma()), ((16, 16), Chroma::Yuv420));
+        assert_eq!(decoded.planes()[1].len(), 7 * decoded.strides()[1] + 8);
     }
 
     #[test]
     fn a_wrong_picture_or_frame_is_an_error_rather_than_a_read_past_the_end() {
-        let mut encoder = Encoder::new(32, 16, 60, 1).expect("an encoder");
+        let mut encoder = Encoder::new(32, 16, 60, Chroma::Yuv444, 1).expect("an encoder");
         let other = picture(16, 16, &flat(16, 16, [0, 0, 0]));
         assert!(matches!(encoder.encode(&other, false, None, &mut Vec::new()), Err(Error::Mismatch(32, 16, 16, 16))));
-        assert!(matches!(Encoder::new(0, 16, 60, 1), Err(Error::Empty(0, 16))));
-        assert!(matches!(Encoder::new(16, 16, 60, 0), Err(Error::Threads(0))));
+        let subsampled = Picture::new(32, 16, Chroma::Yuv420, 1).expect("a picture");
+        assert!(matches!(encoder.encode(&subsampled, false, None, &mut Vec::new()), Err(Error::Sampling(Chroma::Yuv444, Chroma::Yuv420))));
+        assert!(matches!(Encoder::new(0, 16, 60, Chroma::Yuv444, 1), Err(Error::Empty(0, 16))));
+        assert!(matches!(Encoder::new(16, 16, 60, Chroma::Yuv444, 0), Err(Error::Threads(0))));
         assert!(matches!(Decoder::new(0), Err(Error::Threads(0))));
 
         let (frame, _) = encode(&mut encoder, &picture(32, 16, &flat(32, 16, [0, 0, 0])), false);
@@ -1498,7 +1545,7 @@ mod tests {
 
         // A second of delta frames at `quality`, on an encoder of its own.
         let per_second = |quality| {
-            let mut encoder = Encoder::new(W, H, quality, 2).expect("an encoder");
+            let mut encoder = Encoder::new(W, H, quality, Chroma::Yuv444, 2).expect("an encoder");
             (0..31).map(|step| encode(&mut encoder, &churning(step), false).0.len()).skip(1).sum::<usize>() as f64
         };
         let (ceiling, floor) = (per_second(CEILING), per_second(QUALITY_FLOOR));
@@ -1507,7 +1554,7 @@ mod tests {
 
         let start = Instant::now();
         let mut session = Session {
-            encoder: Encoder::new(W, H, CEILING, 2).expect("an encoder"),
+            encoder: Encoder::new(W, H, CEILING, Chroma::Yuv444, 2).expect("an encoder"),
             decoder: Decoder::new(1).expect("a decoder"),
             walk: QualityWalk::new(CEILING, FRAME, true),
             now: start,
